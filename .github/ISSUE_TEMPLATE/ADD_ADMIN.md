@@ -1,0 +1,9 @@
+- [ ] gmail USERNAME@peeringdb.com (see internal mail for personal email address)
+- [ ] slack
+- [ ]  deskpro
+- [ ] create / upgrade peeringdb user to admim
+- [ ]  check for 2FA
+- [ ] add to admincom mailing list
+- [ ] add to admin page in PDB deck, i.e. email Greg
+- [ ] add to admin page on docs.peeringdb.com
+- [ ] add to AC GitHub team (username needed first, what is it?)
