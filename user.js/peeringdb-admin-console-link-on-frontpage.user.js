@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name            PeeringDB - Admin Console Link on Frontpage
 // @namespace       https://www.peeringdb.com/
-// @version         2.1.4.20231228
+// @version         2.1.5.20240124
 // @description     Add direct link to the PeeringDB Admin Console from the frontpage to net/carrier/org/facility/ix
 // @author          <chriztoffer@PeeringDB.com>
 // @match           https://www.peeringdb.com/net/*
@@ -14,6 +14,7 @@
 // @grant           none
 // @updateURL       https://raw.githubusercontent.com/peeringdb/admincom/master/user.js/peeringdb-admin-console-link-on-frontpage.user.js
 // @downloadURL     https://raw.githubusercontent.com/peeringdb/admincom/master/user.js/peeringdb-admin-console-link-on-frontpage.user.js
+// @supportURL      https://github.com/peeringdb/admincom
 // ==/UserScript==
 
 (function() {
@@ -49,7 +50,7 @@
   go = 'https://www.peeringdb.com/cp/peeringdb_server/' + goto + '/' + id + '/change/';
 
   /* Select parent for where to append child */
-  parent = document.querySelector('#view > div:nth-child(4) > div > div > div.col-md-4.col-sm-4.col-2.right.button-bar > div:nth-child(1)');
+  parent = document.querySelector('div.right.button-bar > div:first-child');
 
   /* Define child and append element to parent */
   let copyBtnLabel = 'Admin Console';
