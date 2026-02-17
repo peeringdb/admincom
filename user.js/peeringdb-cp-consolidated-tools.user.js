@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      1.0.3.20260217
+// @version      1.0.4.20260217
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*/*/change/*
@@ -549,7 +549,6 @@
           label: "Reset Information",
           paddingRight: 618,
           onClick: async () => {
-            const originalNetworkName = getInputValue("#id_name");
             const orgId = getInputValue("#id_org");
             const asn = getInputValue("#id_asn");
 
@@ -557,20 +556,14 @@
 
             const baseName = await getOrganizationName(orgId);
             const appendName = getNameSuffixForDeletedNetwork(ctx.entityId);
-            const resolvedNetworkName = baseName
-              ? `${baseName}${appendName}`
-              : originalNetworkName;
+            const resolvedNetworkName = baseName ? `${baseName}${appendName}` : "";
 
             if (resolvedNetworkName) {
               setInputValue("#id_name", resolvedNetworkName);
             }
 
-            if (!getInputValue("#id_name") && originalNetworkName) {
-              setInputValue("#id_name", originalNetworkName);
-            }
-
-            // If both resolved and original names are empty, do an isolated RDAP
-            // ASN lookup to resolve the responsible organization name.
+            // If resolved network name is empty, do an isolated RDAP ASN lookup
+            // to resolve the responsible organization name.
             if (!getInputValue("#id_name")) {
               const rdapOrgName = await rdapAutnumClient.resolveOrganizationNameByAsn(asn);
               if (rdapOrgName) {
