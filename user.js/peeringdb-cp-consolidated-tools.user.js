@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      1.0.2.20260217
+// @version      1.0.3.20260217
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*/*/change/*
@@ -177,6 +177,157 @@
       deleteAction.click();
     });
   }
+
+  // RDAP client module (fully isolated from feature modules)
+  const rdapAutnumClient = (() => {
+    const BOOTSTRAP_ASN_URL = "https://data.iana.org/rdap/asn.json"; // RFC 9224 bootstrap registry
+    const RDAP_ACCEPT_HEADER = "application/rdap+json, application/json;q=0.8";
+
+    const bootstrapCache = {
+      loadedAt: 0,
+      ttlMs: 6 * 60 * 60 * 1000,
+      payload: null,
+    };
+
+    function parseAsn(value) {
+      const number = Number.parseInt(String(value || "").trim(), 10);
+      if (!Number.isInteger(number) || number <= 0) return null;
+      return number;
+    }
+
+    function normalizeBaseUrl(baseUrl) {
+      if (!baseUrl) return null;
+      return String(baseUrl).replace(/\/+$/, "");
+    }
+
+    async function getBootstrap() {
+      const now = Date.now();
+      if (
+        bootstrapCache.payload &&
+        bootstrapCache.loadedAt > 0 &&
+        now - bootstrapCache.loadedAt < bootstrapCache.ttlMs
+      ) {
+        return bootstrapCache.payload;
+      }
+
+      const response = await fetch(BOOTSTRAP_ASN_URL, {
+        headers: { Accept: RDAP_ACCEPT_HEADER },
+      });
+      if (!response.ok) return null;
+
+      const payload = await response.json();
+      bootstrapCache.payload = payload;
+      bootstrapCache.loadedAt = now;
+      return payload;
+    }
+
+    function isAsnInRange(asn, rangeText) {
+      const range = String(rangeText || "").trim();
+      if (!range) return false;
+
+      const parts = range.split("-").map((item) => Number.parseInt(item, 10));
+      if (parts.length !== 2 || parts.some((value) => !Number.isInteger(value))) {
+        return false;
+      }
+
+      return asn >= parts[0] && asn <= parts[1];
+    }
+
+    function getAutnumBaseUrlFromBootstrap(bootstrap, asn) {
+      const services = Array.isArray(bootstrap?.services) ? bootstrap.services : [];
+
+      for (const service of services) {
+        const ranges = Array.isArray(service?.[0]) ? service[0] : [];
+        const urls = Array.isArray(service?.[1]) ? service[1] : [];
+        const matchesRange = ranges.some((rangeText) => isAsnInRange(asn, rangeText));
+        if (!matchesRange || urls.length === 0) continue;
+
+        const preferred = urls.find((url) => String(url).startsWith("https://"));
+        return normalizeBaseUrl(preferred || urls[0]);
+      }
+
+      return null;
+    }
+
+    async function fetchAutnumRecord(asn) {
+      const bootstrap = await getBootstrap();
+      const baseUrl = getAutnumBaseUrlFromBootstrap(bootstrap, asn);
+      if (!baseUrl) return null;
+
+      const response = await fetch(`${baseUrl}/autnum/${asn}`, {
+        headers: { Accept: RDAP_ACCEPT_HEADER },
+      });
+      if (!response.ok) return null;
+
+      return response.json();
+    }
+
+    function getVcardProperty(vcardArray, propertyName) {
+      const cards = Array.isArray(vcardArray?.[1]) ? vcardArray[1] : [];
+      const property = cards.find(
+        (item) => Array.isArray(item) && String(item[0] || "").toLowerCase() === propertyName,
+      );
+      if (!property) return "";
+
+      return String(property[3] || "").trim();
+    }
+
+    function collectEntityCandidates(entities, candidates = [], depth = 0) {
+      if (!Array.isArray(entities)) return candidates;
+
+      entities.forEach((entity) => {
+        const roles = Array.isArray(entity?.roles) ? entity.roles.map((r) => String(r).toLowerCase()) : [];
+        const fn = getVcardProperty(entity?.vcardArray, "fn");
+        const org = getVcardProperty(entity?.vcardArray, "org");
+        const kind = getVcardProperty(entity?.vcardArray, "kind").toLowerCase();
+        const handle = String(entity?.handle || "").trim();
+
+        const value = fn || org || "";
+        if (value) {
+          let score = 0;
+          if (roles.includes("registrant")) score += 100;
+          if (roles.includes("administrative")) score += 30;
+          if (kind === "org" || kind === "organization") score += 40;
+          if (org) score += 20;
+          if (fn) score += 10;
+          if (value === handle) score -= 20;
+          score -= depth * 2;
+
+          candidates.push({ value, score });
+        }
+
+        collectEntityCandidates(entity?.entities, candidates, depth + 1);
+      });
+
+      return candidates;
+    }
+
+    function resolveOrganizationNameFromAutnumPayload(payload) {
+      const candidates = collectEntityCandidates(payload?.entities, []);
+      if (!candidates.length) return null;
+
+      candidates.sort((a, b) => b.score - a.score);
+      return candidates[0]?.value || null;
+    }
+
+    async function resolveOrganizationNameByAsn(asnInput) {
+      const asn = parseAsn(asnInput);
+      if (!asn) return null;
+
+      try {
+        const payload = await fetchAutnumRecord(asn);
+        if (!payload) return null;
+
+        return resolveOrganizationNameFromAutnumPayload(payload);
+      } catch (_error) {
+        return null;
+      }
+    }
+
+    return {
+      resolveOrganizationNameByAsn,
+    };
+  })();
 
   function runNetworkResetActions() {
     const formArea = qs("#network_form > div > fieldset:nth-child(2)");
@@ -400,6 +551,7 @@
           onClick: async () => {
             const originalNetworkName = getInputValue("#id_name");
             const orgId = getInputValue("#id_org");
+            const asn = getInputValue("#id_asn");
 
             runNetworkResetActions();
 
@@ -415,6 +567,15 @@
 
             if (!getInputValue("#id_name") && originalNetworkName) {
               setInputValue("#id_name", originalNetworkName);
+            }
+
+            // If both resolved and original names are empty, do an isolated RDAP
+            // ASN lookup to resolve the responsible organization name.
+            if (!getInputValue("#id_name")) {
+              const rdapOrgName = await rdapAutnumClient.resolveOrganizationNameByAsn(asn);
+              if (rdapOrgName) {
+                setInputValue("#id_name", `${rdapOrgName}${appendName}`);
+              }
             }
 
             clickSaveAndContinue();
