@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      1.0.4.20260217
+// @version      1.0.5.20260218
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*/*/change/*
@@ -551,6 +551,7 @@
           onClick: async () => {
             const orgId = getInputValue("#id_org");
             const asn = getInputValue("#id_asn");
+            const parsedAsn = Number.parseInt(asn, 10);
 
             runNetworkResetActions();
 
@@ -569,6 +570,14 @@
               if (rdapOrgName) {
                 setInputValue("#id_name", `${rdapOrgName}${appendName}`);
               }
+            }
+
+            // Final guard: keep name required-field validation from blocking first-run save.
+            if (!getInputValue("#id_name")) {
+              const deterministicFallbackName = Number.isInteger(parsedAsn) && parsedAsn > 0
+                ? `AS${parsedAsn}${appendName}`
+                : `AS${ctx.entityId}${appendName}`;
+              setInputValue("#id_name", deterministicFallbackName);
             }
 
             clickSaveAndContinue();
