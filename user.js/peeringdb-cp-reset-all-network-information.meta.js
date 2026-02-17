@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Reset all network information
 // @namespace    https://www.peeringdb.net/
-// @version      0.1.1.20260217
+// @version      0.1.2.20260217
 // @description  Reset all information for the network due to reassigned ASN by the RIPE NCC
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/network/*/change/*

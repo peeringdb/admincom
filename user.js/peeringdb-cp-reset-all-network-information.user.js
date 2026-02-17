@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Reset all network information
 // @namespace    https://www.peeringdb.net/
-// @version      0.1.1.20260217
+// @version      0.1.2.20260217
 // @description  Reset all information for the network due to reassigned ASN by the RIPE NCC
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/network/*/change/*
@@ -171,6 +171,7 @@
     const originalNetworkName = document.querySelector("#id_name")?.value || ""; // Preserve original name before resets
     resetActions();
     let obj; // Parsed org API response payload
+    let resolvedNetworkName = originalNetworkName;
     try {
       const response = await fetch(
         "https://www.peeringdb.com/api/org/" + orgId,
@@ -181,9 +182,6 @@
           "[resetActions] org lookup returned 404 (possibly soft-deleted):",
           orgId,
         );
-        if (originalNetworkName) {
-          orgName.setAttribute("value", originalNetworkName);
-        }
       } else if (!response.ok) {
         console.warn(
           "[resetActions] org lookup failed:",
@@ -193,11 +191,23 @@
       } else {
         obj = await response.json();
         if (obj?.data?.[0]?.name) {
-          orgName.setAttribute("value", obj.data[0].name + netAppendName);
+          resolvedNetworkName = obj.data[0].name + netAppendName;
         }
       }
     } catch (error) {
       console.warn("[resetActions] org lookup request error:", error);
+    }
+
+    // IMPORTANT: set the input property (live value), not only the HTML attribute.
+    if (orgName && resolvedNetworkName) {
+      orgName.value = resolvedNetworkName;
+      orgName.setAttribute("value", resolvedNetworkName);
+    }
+
+    // Guard against required-field validation blocking submit on first run.
+    if (orgName && !orgName.value && originalNetworkName) {
+      orgName.value = originalNetworkName;
+      orgName.setAttribute("value", originalNetworkName);
     }
 
     saveContinueEditing.click();
