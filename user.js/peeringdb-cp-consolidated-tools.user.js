@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      1.0.5.20260218
+// @version      1.0.7.20260218
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*/*/change/*
@@ -61,7 +61,7 @@
     const element = qs(selector);
     if (!element) return "";
 
-    if (Object.prototype.hasOwnProperty.call(element, "value")) {
+    if ("value" in element) {
       return String(element.value || "").trim();
     }
 
@@ -73,12 +73,37 @@
     if (!element) return false;
 
     const normalized = String(value || "");
-    if (Object.prototype.hasOwnProperty.call(element, "value")) {
+    if ("value" in element) {
       element.value = normalized;
+      if ("defaultValue" in element) {
+        element.defaultValue = normalized;
+      }
     }
 
     element.setAttribute("value", normalized);
     return true;
+  }
+
+  function setNetworkNameValue(value) {
+    const input = document.getElementById("id_name");
+    if (!input) return false;
+
+    const normalized = String(value || "").trim();
+    input.value = normalized;
+    input.defaultValue = normalized;
+    input.setAttribute("value", normalized);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  }
+
+  function getDeterministicNetworkFallbackName(asn, networkId, suffix = "") {
+    const parsedAsn = Number.parseInt(String(asn || "").trim(), 10);
+    if (Number.isInteger(parsedAsn) && parsedAsn > 0) {
+      return `AS${parsedAsn}${suffix}`;
+    }
+
+    return `AS${networkId}${suffix}`;
   }
 
   function getToolbarList() {
@@ -344,6 +369,7 @@
     };
 
     eachInForm("input.vTextField", (item) => {
+      if (item?.id === "id_name") return;
       item.value = "";
     });
     eachInForm("input.vURLField", (item) => {
@@ -551,16 +577,19 @@
           onClick: async () => {
             const orgId = getInputValue("#id_org");
             const asn = getInputValue("#id_asn");
-            const parsedAsn = Number.parseInt(asn, 10);
+            const appendName = getNameSuffixForDeletedNetwork(ctx.entityId);
 
             runNetworkResetActions();
 
+            // Seed name immediately so required-field validation can never block save.
+            const fallbackName = getDeterministicNetworkFallbackName(asn, ctx.entityId, appendName);
+            setNetworkNameValue(fallbackName);
+
             const baseName = await getOrganizationName(orgId);
-            const appendName = getNameSuffixForDeletedNetwork(ctx.entityId);
             const resolvedNetworkName = baseName ? `${baseName}${appendName}` : "";
 
             if (resolvedNetworkName) {
-              setInputValue("#id_name", resolvedNetworkName);
+              setNetworkNameValue(resolvedNetworkName);
             }
 
             // If resolved network name is empty, do an isolated RDAP ASN lookup
@@ -568,16 +597,14 @@
             if (!getInputValue("#id_name")) {
               const rdapOrgName = await rdapAutnumClient.resolveOrganizationNameByAsn(asn);
               if (rdapOrgName) {
-                setInputValue("#id_name", `${rdapOrgName}${appendName}`);
+                setNetworkNameValue(`${rdapOrgName}${appendName}`);
               }
             }
 
             // Final guard: keep name required-field validation from blocking first-run save.
-            if (!getInputValue("#id_name")) {
-              const deterministicFallbackName = Number.isInteger(parsedAsn) && parsedAsn > 0
-                ? `AS${parsedAsn}${appendName}`
-                : `AS${ctx.entityId}${appendName}`;
-              setInputValue("#id_name", deterministicFallbackName);
+            const finalNameInput = document.getElementById("id_name");
+            if (!finalNameInput || !String(finalNameInput.value || "").trim()) {
+              setNetworkNameValue(fallbackName);
             }
 
             clickSaveAndContinue();
