@@ -6,6 +6,10 @@ Tampermonkey is available from their homepage ([tampermonkey.net](https://www.ta
 
 Each script has a matching `.meta.js` file for lightweight update checks.
 
+Script versioning follows server format:
+
+- `major.minor.bugfix.YYYYMMDD`
+
 - `@updateURL` points to the script's `.meta.js` file
 - `@downloadURL` points to the script's `.user.js` file
 - `@supportURL` points to: `https://github.com/peeringdb/admincom/issues`
