@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Reset all network information
 // @namespace    https://www.peeringdb.net/
-// @version      0.1.0.20260217
+// @version      0.1.1.20260217
 // @description  Reset all information for the network due to reassigned ASN by the RIPE NCC
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/network/*/change/*
@@ -12,68 +12,194 @@
 // @supportURL   https://github.com/peeringdb/admincom/issues
 // ==/UserScript==
 
+(function () {
+  "use strict";
 
-(function() {
-  'use strict';
+  /**
+   * Clicks all inline delete controls for a given Django inline formset prefix.
+   * @param {string} inlineSetPrefix Prefix used by inline row IDs (e.g. netixlan_set)
+   */
+  function clickDeleteHandlersForInlineSet(inlineSetPrefix) {
+    document
+      .querySelectorAll(
+        `div.form-row.grp-dynamic-form[id^="${inlineSetPrefix}"]`,
+      )
+      .forEach((row) => {
+        if (row.id === `${inlineSetPrefix}-empty`) return;
+
+        const deleteCheckbox = row.querySelector(
+          'input[type="checkbox"][name$="-DELETE"]',
+        ); // Django inline DELETE checkbox
+        const deleteAction = row.querySelector(
+          'a.grp-icon.grp-delete-handler[title="Delete Item"]',
+        ); // Grappelli delete trigger
+
+        if (!deleteAction || !deleteCheckbox) return;
+        if (deleteCheckbox.checked) return;
+
+        deleteAction.click();
+      });
+  }
+
+  function resetNetworkContactsDeleteActions() {
+    clickDeleteHandlersForInlineSet("poc_set");
+  }
+
+  function resetNetworkFacilitiesDeleteActions() {
+    clickDeleteHandlersForInlineSet("netfac_set");
+  }
+
+  function resetNetworkIXLANDeleteActions() {
+    clickDeleteHandlersForInlineSet("netixlan_set");
+  }
 
   function resetActions() {
+    const fieldsetSelector = "#network_form > div > fieldset:nth-child(2)"; // Network details fieldset
+    const formArea = document.querySelector(fieldsetSelector); // Cached fieldset root for repeated queries
+
+    const safeRun = (label, callback) => {
+      try {
+        callback();
+      } catch (error) {
+        console.warn("[resetActions] failed step:", label, error);
+      }
+    };
+
+    const eachInForm = (label, selector, callback) => {
+      safeRun(label, () => {
+        if (!formArea) return;
+        formArea.querySelectorAll(selector).forEach(callback);
+      });
+    };
+
     // Strings
-    document.querySelector('#network_form > div > fieldset:nth-child(2)').querySelectorAll('input.vTextField').forEach((item) => {item.setAttribute('value', '')});
-    document.querySelector('#network_form > div > fieldset:nth-child(2)').querySelectorAll('input.vURLField').forEach((item) => {item.setAttribute('value', '')});
+    eachInForm("reset text fields", "input.vTextField", (item) => {
+      item.value = "";
+    });
+    eachInForm("reset URL fields", "input.vURLField", (item) => {
+      item.value = "";
+    });
 
     // Numbers
-    document.querySelector('#network_form > div > fieldset:nth-child(2)').querySelectorAll('input[name*="prefixes"]').forEach((item) => {item.setAttribute('value', 0)});
+    eachInForm("reset prefix counters", 'input[name*="prefixes"]', (item) => {
+      item.value = 0;
+    });
 
     // Arrays
-    document.querySelector('#network_form > div > fieldset:nth-child(2)').querySelector('textarea#id_social_media').innerText = '{}';
+    safeRun("reset social media JSON", () => {
+      const socialMedia = formArea?.querySelector("textarea#id_social_media"); // Social media JSON textarea
+      if (socialMedia) socialMedia.value = "{}";
+    });
 
     // Checkbox - Uncheck everything by default
-    document.querySelector('#network_form > div > fieldset:nth-child(2)').querySelectorAll('input[type="checkbox"]').forEach((item) => {item.checked = false});
-    document.querySelector('#network_form > div > fieldset:nth-child(2)').querySelectorAll('input[type="checkbox"]#id_allow_ixp_update').forEach((item) => {item.checked = true});
+    eachInForm("uncheck checkboxes", 'input[type="checkbox"]', (item) => {
+      item.checked = false;
+    });
+    eachInForm(
+      "enable allow_ixp_update checkbox",
+      'input[type="checkbox"]#id_allow_ixp_update',
+      (item) => {
+        item.checked = true;
+      },
+    );
 
     // Drop-downs
-    document.querySelector('#network_form > div > fieldset:nth-child(2)').querySelectorAll('select[name*="info"]').forEach((item) => {item.querySelector('option:first-child').selected = true});
-    document.querySelector('#network_form > div > fieldset:nth-child(2)').querySelectorAll('select[name*="policy"]').forEach((item) => {item.querySelector('option:first-child').selected = true});
+    eachInForm("reset info selects", 'select[name*="info"]', (item) => {
+      const firstOption = item.querySelector("option:first-child"); // Default/first option in select
+      if (firstOption) firstOption.selected = true;
+    });
+    eachInForm("reset policy selects", 'select[name*="policy"]', (item) => {
+      const firstOption = item.querySelector("option:first-child"); // Default/first option in select
+      if (firstOption) firstOption.selected = true;
+    });
 
     // Textareas
-    document.querySelector('#network_form > div > fieldset:nth-child(2)').querySelectorAll('textarea.vLargeTextField').forEach((item) => {item.innerText = ''});
+    eachInForm("reset large textareas", "textarea.vLargeTextField", (item) => {
+      item.value = "";
+    });
 
-    // Check pre-delete action - Network Contacts, Network Facilities, Network IX LAN(s)
-    document.querySelectorAll('div.grp-td.grp-tools-container > ul > li > a[title="Delete Item"]').forEach((item) => {item.parentNode.parentNode.parentNode.parentNode.parentNode.classList.add('grp-predelete')});
+    // Delete actions by inline group
+    safeRun("delete network contacts entries", () => {
+      resetNetworkContactsDeleteActions();
+    });
+
+    safeRun("delete network facilities entries", () => {
+      resetNetworkFacilitiesDeleteActions();
+    });
+
+    safeRun("delete network ixlan entries", () => {
+      resetNetworkIXLANDeleteActions();
+    });
   }
 
   /* Define variables */
-  let padLeft = 618,
-      netAppendName,
-      netId = window.location.pathname.split('/')[4],
-      netName = document.getElementById('id_name'),
-      netStatus = document.querySelector('#id_status > option[selected]').getAttribute('value'),
-      orgId = document.getElementById('id_org').getAttribute('value'),
-      orgName = document.getElementById('id_name'),
-      saveContinueEditing = document.querySelector('#network_form > div > footer > div > div:nth-child(4) > input');
+  let padLeft = 618, // Pixel offset used to position custom top action button
+    netAppendName, // Name suffix appended for deleted networks (" #<netId>")
+    netId = window.location.pathname.split("/")[4], // Network ID parsed from current URL
+    netName = document.getElementById("id_name"), // Network name input element (#id_name)
+    netStatus = document
+      .querySelector("#id_status > option[selected]")
+      .getAttribute("value"), // Currently selected network status
+    orgId = document.getElementById("id_org").getAttribute("value"), // Related organization ID from form
+    orgName = document.getElementById("id_name"), // Alias to the same #id_name input used for name updates
+    saveContinueEditing = document.querySelector(
+      "#network_form > div > footer > div > div:nth-child(4) > input",
+    ); // "Save and continue editing" button
 
-  const childNode = document.createElement('ul');
-  const parentNode = document.querySelector('#grp-content-title > ul').parentNode;
+  const childNode = document.createElement("ul"); // Wrapper list for custom toolbar action
+  const parentNode = document.querySelector(
+    "#grp-content-title > ul",
+  ).parentNode; // Parent container of page title tools
 
-  childNode.innerHTML = '<li class="grp-object-tools" style="padding-right:' + padLeft + 'px;"><a href="#" id="resetNetworkInformation">Reset Information</a></li>';
+  childNode.innerHTML =
+    '<li class="grp-object-tools" style="padding-right:' +
+    padLeft +
+    'px;"><a href="#" id="resetNetworkInformation">Reset Information</a></li>';
 
-  let sp2 = document.querySelector('#grp-content-title > ul');
+  let sp2 = document.querySelector("#grp-content-title > ul"); // Existing title tool list used as insertion anchor
   parentNode.insertBefore(childNode, sp2);
 
-  switch(netStatus) {
-    case 'deleted':
-      netAppendName = ' #' + netId;
+  switch (netStatus) {
+    case "deleted":
+      netAppendName = " #" + netId;
       break;
     default:
-      netAppendName = '';
+      netAppendName = "";
   }
 
-  document.getElementById('resetNetworkInformation').onclick = async() => {
+  document.getElementById("resetNetworkInformation").onclick = async () => {
+    const originalNetworkName = document.querySelector("#id_name")?.value || ""; // Preserve original name before resets
     resetActions();
-    let obj;
-    const response = await fetch('https://www.peeringdb.com/api/org/' + orgId)
-    obj = await response.json();
-    orgName.setAttribute('value', obj.data[0].name + netAppendName);
+    let obj; // Parsed org API response payload
+    try {
+      const response = await fetch(
+        "https://www.peeringdb.com/api/org/" + orgId,
+      ); // Org lookup by ID
+
+      if (response.status === 404) {
+        console.warn(
+          "[resetActions] org lookup returned 404 (possibly soft-deleted):",
+          orgId,
+        );
+        if (originalNetworkName) {
+          orgName.setAttribute("value", originalNetworkName);
+        }
+      } else if (!response.ok) {
+        console.warn(
+          "[resetActions] org lookup failed:",
+          response.status,
+          response.statusText,
+        );
+      } else {
+        obj = await response.json();
+        if (obj?.data?.[0]?.name) {
+          orgName.setAttribute("value", obj.data[0].name + netAppendName);
+        }
+      }
+    } catch (error) {
+      console.warn("[resetActions] org lookup request error:", error);
+    }
+
     saveContinueEditing.click();
   };
 })();
