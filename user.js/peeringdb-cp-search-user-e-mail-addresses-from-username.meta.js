@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name            PeeringDB CP - Search user E-mail addresses from username
 // @namespace       https://www.peeringdb.com/cp/peeringdb_server/user/
-// @version         1.1.0.20260217
-// @description     Lookup all User E-mail Addresses using the Username as the search key
+// @version         1.1.1.20260217
+// @description     DEPRECATED: replaced by PeeringDB CP - Consolidated Tools
 // @author          <chriztoffer@peeringdb.com>
 // @include         /^https:\/\/(\w+)\.peeringdb\.com\/cp\/peeringdb_server\/user\/(\d+)\/change\/(.*)?
 // @icon            https://icons.duckduckgo.com/ip2/peeringdb.com.ico

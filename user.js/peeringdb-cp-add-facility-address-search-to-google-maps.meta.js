@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         PeeringDB CP - Add facility address search to Google Maps
 // @namespace    https://www.peeringdb.com/cp/peeringdb_server/facility/
-// @version      1.2.0.20260217
-// @description  Add a google maps link to the facility page
+// @version      1.2.1.20260217
+// @description  DEPRECATED: replaced by PeeringDB CP - Consolidated Tools
 // @author       <chriztoffer@peeringdb.com>
 // @include      /^https:\/\/(\w+)\.peeringdb\.com\/cp\/peeringdb_server\/facility\/(\d+)\/change\/(.*)?
 // @icon         https://icons.duckduckgo.com/ip2/peeringdb.com.ico

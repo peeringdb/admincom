@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name            PeeringDB CP - Frontpage Link on Admin Console
 // @namespace       https://www.peeringdb.com/cp/
-// @version         1.3.0.20260217
-// @description     Add direct link to the PeeringDB frontend from the Admin Console to net
+// @version         1.3.1.20260217
+// @description     DEPRECATED: replaced by PeeringDB CP - Consolidated Tools
 // @author          <chriztoffer@peeringdb.com>
 // @include         /^https:\/\/(\w+)\.peeringdb\.com\/cp\/peeringdb_server\/(facility|network|organization|carrier|internetexchange|campus)\/(\d+)\/change\/(.*)
 // @icon            https://icons.duckduckgo.com/ip2/peeringdb.com.ico
