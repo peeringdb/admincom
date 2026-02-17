@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name            PeeringDB CP - Admin Console set link target BLANK for entity website
 // @namespace       https://www.peeringdb.com/cp/
-// @version         1.1.0.20260217
-// @description     Set the link target. Forcing clinking on the link to open a new tab.
+// @version         1.1.1.20260217
+// @description     DEPRECATED: replaced by PeeringDB CP - Consolidated Tools
 // @author          <chriztoffer@peeringdb.com>
 // @include         /^https:\/\/(\w+)\.peeringdb\.com\/cp\/peeringdb_server\/(facility|network|organization|carrier|internetexchange|campus)\/(\d+)\/change\/(.*)?
 // @icon            https://icons.duckduckgo.com/ip2/peeringdb.com.ico
