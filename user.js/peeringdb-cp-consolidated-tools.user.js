@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      1.0.1.20260217
+// @version      1.0.2.20260217
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*/*/change/*
@@ -98,6 +98,7 @@
 
     const wrapper = document.createElement("ul");
     wrapper.setAttribute("data-pdb-cp-action", id);
+    wrapper.style.pointerEvents = "none";
 
     const li = document.createElement("li");
     li.className = "grp-object-tools";
@@ -109,6 +110,7 @@
     a.id = id;
     a.href = href;
     a.textContent = label;
+    a.style.pointerEvents = "auto";
 
     if (target) {
       a.target = target;
