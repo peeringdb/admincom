@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.0.2.20260223
+// @version      1.0.3.20260223
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
@@ -108,6 +108,11 @@
     const btn = document.createElement("a");
     btn.className = "btn btn-primary";
     btn.style.cursor = "pointer";
+    btn.style.display = "inline-block";
+    btn.style.width = "auto";
+    btn.style.maxWidth = "none";
+    btn.style.whiteSpace = "nowrap";
+    btn.style.flex = "0 0 auto";
     btn.innerText = label;
     btn.href = href;
     btn.setAttribute("data-pdb-fp-action", actionId);
@@ -125,6 +130,96 @@
 
     parent.appendChild(btn);
     return btn;
+  }
+
+  function createTopRightOverflowMenu({
+    actionId,
+    label,
+    items,
+    parentSelector = "div.right.button-bar > div:first-child",
+  }) {
+    if (!actionId || !Array.isArray(items) || items.length === 0) return null;
+
+    const parent = getTopRightToolbarContainer(parentSelector);
+    if (!parent) return null;
+
+    const existing = qs(`span[data-pdb-fp-action="${actionId}"]`, parent);
+    if (existing) {
+      return existing;
+    }
+
+    const wrapper = document.createElement("span");
+    wrapper.setAttribute("data-pdb-fp-action", actionId);
+    wrapper.style.display = "inline-block";
+    wrapper.style.position = "relative";
+    wrapper.style.flex = "0 0 auto";
+
+    const toggle = document.createElement("a");
+    toggle.className = "btn btn-primary";
+    toggle.href = "#";
+    toggle.textContent = label;
+    toggle.style.cursor = "pointer";
+    toggle.style.display = "inline-block";
+    toggle.style.width = "auto";
+    toggle.style.maxWidth = "none";
+    toggle.style.whiteSpace = "nowrap";
+    toggle.style.flex = "0 0 auto";
+    toggle.style.userSelect = "none";
+
+    const menu = document.createElement("div");
+    menu.style.position = "absolute";
+    menu.style.right = "0";
+    menu.style.top = "calc(100% + 6px)";
+    menu.style.display = "grid";
+    menu.style.gap = "4px";
+    menu.style.padding = "6px";
+    menu.style.background = "rgba(255, 255, 255, 0.98)";
+    menu.style.border = "1px solid rgba(0, 0, 0, 0.12)";
+    menu.style.borderRadius = "6px";
+    menu.style.boxShadow = "0 2px 8px rgba(0, 0, 0, 0.15)";
+    menu.style.zIndex = "1000";
+    menu.style.display = "none";
+
+    items.forEach((item) => {
+      const link = document.createElement("a");
+      link.className = "btn btn-primary";
+      link.href = item.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = item.label;
+      link.style.whiteSpace = "nowrap";
+      link.style.display = "block";
+      menu.appendChild(link);
+    });
+
+    wrapper.appendChild(toggle);
+    wrapper.appendChild(menu);
+    parent.appendChild(wrapper);
+
+    const closeMenu = () => {
+      menu.style.display = "none";
+      wrapper.removeAttribute("data-open");
+    };
+
+    toggle.addEventListener("click", (event) => {
+      event.preventDefault();
+      const isOpen = wrapper.getAttribute("data-open") === "1";
+      if (isOpen) {
+        closeMenu();
+      } else {
+        menu.style.display = "grid";
+        wrapper.setAttribute("data-open", "1");
+      }
+    });
+
+    document.addEventListener("click", (event) => {
+      if (wrapper.getAttribute("data-open") !== "1") return;
+      if (!wrapper.contains(event.target)) {
+        closeMenu();
+      }
+    });
+
+    return wrapper;
   }
 
   function isPriorityMatch(child, priority) {
@@ -178,12 +273,114 @@
     return Boolean(qs('a[data-edit-action="toggle-edit"]', child));
   }
 
+  function applyTopRightToolbarFlexLayout(parent) {
+    if (!parent) return;
+
+    // Two-row layout host: rows are right-aligned and vertically spaced.
+    parent.style.display = "flex";
+    parent.style.flexDirection = "column";
+    parent.style.alignItems = "flex-end";
+    parent.style.rowGap = "6px";
+  }
+
+  function ensureTopRightRowContainer(parent, rowName) {
+    if (!parent || !rowName) return null;
+
+    let row = qs(`:scope > div[data-pdb-fp-row="${rowName}"]`, parent);
+    if (row) return row;
+
+    row = document.createElement("div");
+    row.setAttribute("data-pdb-fp-row", rowName);
+    row.style.display = "flex";
+    row.style.flexWrap = "nowrap";
+    row.style.justifyContent = "flex-end";
+    row.style.alignItems = "flex-start";
+    row.style.columnGap = "6px";
+    row.style.maxWidth = "100%";
+
+    parent.appendChild(row);
+    return row;
+  }
+
+  function routeTopRightButtonsToTwoRows(parent) {
+    if (!parent) return;
+
+    const row1 = ensureTopRightRowContainer(parent, "1");
+    const row2 = ensureTopRightRowContainer(parent, "2");
+    if (!row1 || !row2) return;
+
+    const editButton = Array.from(parent.children).find((child) => isNativeEditToolbarButton(child));
+    const adminButton = qs('a[data-pdb-fp-action="admin-console"]', parent);
+    const copyUrlButton = qs('a[data-pdb-fp-action="copy-url"]', parent);
+    const bgpToolsButton = qs('a[data-pdb-fp-action="bgp-tools"]', parent);
+    const bgpHeNetButton = qs('a[data-pdb-fp-action="bgp-he-net"]', parent);
+    const moreToolsButton = qs('[data-pdb-fp-action="network-tools-overflow"]', parent);
+
+    // Route deterministic first-row actions.
+    [editButton, adminButton, copyUrlButton].forEach((item) => {
+      if (item) row1.appendChild(item);
+    });
+
+    // Route deterministic second-row actions.
+    [bgpToolsButton, bgpHeNetButton, moreToolsButton].forEach((item) => {
+      if (item) row2.appendChild(item);
+    });
+
+    // Keep row visibility clean when optional buttons are absent.
+    row1.style.display = row1.children.length > 0 ? "flex" : "none";
+    row2.style.display = row2.children.length > 0 ? "flex" : "none";
+  }
+
+  function groupCustomItemsByVisualRow(customItems, topTolerance = 3) {
+    const rows = [];
+
+    customItems.forEach((item) => {
+      const top = item.offsetTop;
+      let row = rows.find((entry) => Math.abs(entry.top - top) <= topTolerance);
+
+      if (!row) {
+        row = { top, items: [] };
+        rows.push(row);
+      }
+
+      row.items.push(item);
+      row.top = Math.min(row.top, top);
+    });
+
+    rows.sort((a, b) => a.top - b.top);
+    rows.forEach((row) => {
+      row.items.sort((a, b) => a.offsetLeft - b.offsetLeft);
+    });
+
+    return rows;
+  }
+
   function applyTopRightCustomSpacing(parent) {
     if (!parent) return;
 
-    const customButtons = Array.from(parent.querySelectorAll('a[data-pdb-fp-action]'));
-    customButtons.forEach((button, index) => {
-      button.style.marginLeft = index === 0 ? "0" : "6px";
+    const customItems = Array.from(
+      parent.querySelectorAll('a[data-pdb-fp-action], details[data-pdb-fp-action], span[data-pdb-fp-action]')
+    );
+    if (customItems.length === 0) return;
+
+    // Reset per-item margins so container gap is the only spacing source.
+    customItems.forEach((item) => {
+      item.style.marginLeft = "0";
+      item.style.marginTop = "0";
+    });
+  }
+
+  function applyTopRightWrappedRowOffset(parent) {
+    if (!parent) return;
+
+    const customItems = Array.from(
+      parent.querySelectorAll('a[data-pdb-fp-action], details[data-pdb-fp-action], span[data-pdb-fp-action]')
+    );
+    if (customItems.length === 0) return;
+
+    // Vertical spacing is now handled by parent rowGap.
+    customItems.forEach((item) => {
+      item.style.marginTop = "0";
     });
   }
 
