@@ -388,6 +388,8 @@
     const parent = getTopRightToolbarContainer();
     if (!parent) return;
 
+    applyTopRightToolbarFlexLayout(parent);
+
     // FP top-right ordering policy:
     // 1) keep native Edit first (when present)
     // 2) order custom actions deterministically for consistency with CP conventions
@@ -399,6 +401,8 @@
       'a[data-pdb-fp-action="bgp-tools"]',
       'a[data-pdb-fp-action="bgp-he-net"]',
     ]);
+
+    routeTopRightButtonsToTwoRows(parent);
 
     applyTopRightCustomSpacing(parent);
   }
