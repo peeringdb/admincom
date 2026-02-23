@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      1.0.9.20260223
+// @version      1.0.15.20260223
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*/*/change/*
@@ -158,6 +158,62 @@
     return a;
   }
 
+  function getOrCreateSecondaryActionRow() {
+    const contentTitle = qs("#grp-content-title");
+    if (!contentTitle) return null;
+
+    const existing = qs(`#${MODULE_PREFIX}SecondaryActionRow`);
+    if (existing) return existing;
+
+    const row = document.createElement("ul");
+    row.id = `${MODULE_PREFIX}SecondaryActionRow`;
+    row.className = `${MODULE_PREFIX}SecondaryActionRow`;
+    row.style.clear = "both";
+    row.style.setProperty("float", "none", "important");
+    row.style.display = "block";
+    row.style.textAlign = "right";
+    row.style.width = "100%";
+    row.style.marginTop = "12px";
+    row.style.marginBottom = "2px";
+    row.style.boxSizing = "border-box";
+    row.style.padding = "0";
+    row.style.listStyle = "none";
+
+    contentTitle.appendChild(row);
+
+    return row;
+  }
+
+  function addSecondaryActionButton({ id, label, onClick }) {
+    const row = getOrCreateSecondaryActionRow();
+    if (!row || !id) return null;
+
+    const existing = qs(`#${id}`);
+    if (existing) return existing;
+
+    const listItem = document.createElement("li");
+    listItem.className = "grp-object-tools";
+    listItem.style.display = "inline-block";
+    listItem.style.setProperty("float", "none", "important");
+    listItem.style.marginLeft = "8px";
+
+    const button = document.createElement("a");
+    button.id = id;
+    button.href = "#";
+    button.textContent = label;
+
+    if (typeof onClick === "function") {
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        onClick(event);
+      });
+    }
+
+    listItem.appendChild(button);
+    row.appendChild(listItem);
+    return button;
+  }
+
   async function getOrganizationName(orgId) {
     if (!orgId) return null;
 
@@ -181,6 +237,57 @@
     if (!button) return false;
     button.click();
     return true;
+  }
+
+  async function copyToClipboard(text) {
+    const value = String(text || "");
+    if (!value) return false;
+
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+    } catch (_error) {
+      // fall through to legacy fallback
+    }
+
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = value;
+      textarea.setAttribute("readonly", "readonly");
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.select();
+      const copied = document.execCommand("copy");
+      document.body.removeChild(textarea);
+      return Boolean(copied);
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function pulseToolbarButton(anchor, successLabel = "Copied") {
+    if (!anchor) return;
+
+    const original = anchor.textContent || "";
+    anchor.textContent = successLabel;
+    setTimeout(() => {
+      anchor.textContent = original;
+    }, 1000);
+  }
+
+  function getCopyNetworkFrontendPath(ctx) {
+    if (ctx.entity === "carrier") {
+      return `/carrier/${ctx.entityId}`;
+    }
+
+    if (ctx.entity === "internetexchange") {
+      return `/ix/${ctx.entityId}`;
+    }
+
+    return `/net/${ctx.entityId}`;
   }
 
   function getSelectedStatus() {
@@ -461,6 +568,41 @@
 
   const modules = [
     {
+      id: "copy-frontend-urls",
+      match: (ctx) => ctx.isEntityChangePage,
+      preconditions: () => Boolean(getToolbarList()),
+      run: (ctx) => {
+        addSecondaryActionButton({
+          id: `${MODULE_PREFIX}CopyNetworkUrl`,
+          label: "Copy network URL",
+          onClick: async (event) => {
+            const path = getCopyNetworkFrontendPath(ctx);
+            const url = `https://www.peeringdb.com${path}`;
+            const copied = await copyToClipboard(url);
+            if (copied) {
+              pulseToolbarButton(event?.target, "Copied network URL");
+            }
+          },
+        });
+
+        addSecondaryActionButton({
+          id: `${MODULE_PREFIX}CopyOrganizationUrl`,
+          label: "Copy Org URL",
+          onClick: async (event) => {
+            const orgId =
+              ctx.entity === "organization" ? ctx.entityId : getInputValue("#id_org");
+            if (!orgId) return;
+
+            const url = `https://www.peeringdb.com/org/${orgId}`;
+            const copied = await copyToClipboard(url);
+            if (copied) {
+              pulseToolbarButton(event?.target, "Copied Org URL");
+            }
+          },
+        });
+      },
+    },
+    {
       id: "facility-google-maps",
       match: (ctx) => ctx.isEntityChangePage && ctx.entity === "facility",
       preconditions: () => Boolean(getToolbarList()),
@@ -548,7 +690,7 @@
         if (goto !== "org" && orgId) {
           addToolbarAction({
             id: `${MODULE_PREFIX}OrganizationFrontend`,
-            label: "Organization (front-end)",
+            label: "Org (front-end)",
             href: `/org/${orgId}`,
             target: "_new",
             paddingRight: 283,
@@ -556,7 +698,7 @@
 
           addToolbarAction({
             id: `${MODULE_PREFIX}OrganizationCp`,
-            label: "Organization",
+            label: "Org",
             href: `/cp/peeringdb_server/organization/${orgId}/change/`,
             target: "_new",
             paddingRight: 171,
