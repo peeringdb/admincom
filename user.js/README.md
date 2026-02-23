@@ -29,6 +29,14 @@ All legacy Control Panel (`peeringdb-cp-*`) scripts have been consolidated into 
 
 The consolidated script is scoped to `https://www.peeringdb.com/cp/peeringdb_server/*/*/change/*` and uses strict route guards so only relevant module behavior runs on matching pages.
 
+## FP consolidation and migration
+
+All legacy Frontend (`peeringdb-fp-*`) scripts have been consolidated into one modular userscript:
+
+- `peeringdb-fp-consolidated-tools.user.js`
+- `peeringdb-fp-consolidated-tools.meta.js`
+
+
 ### Legacy CP scripts
 
 The following legacy CP scripts are now deprecation stubs and only log a console message pointing to the consolidated script:
@@ -40,5 +48,15 @@ The following legacy CP scripts are now deprecation stubs and only log a console
 - `peeringdb-cp-reset-all-network-information.user.js`
 - `peeringdb-cp-search-user-e-mail-addresses-from-username.user.js`
 - `peeringdb-cp-set-network-name-equal-to-organisation-name.user.js`
+
+### Legacy FP scripts
+
+The following legacy FP scripts are now deprecation stubs:
+
+- `peeringdb-fp-admin-console-link-on-frontpage.user.js`
+- `peeringdb-fp-copy-record-to-clipboard.user.js`
+- `peeringdb-fp-copy-user-role-list.user.js`
+- `peeringdb-fp-replace-double-slashes-in-uri.user.js`
+- `peeringdb-fp-set-window-title.user.js`
 
 Each legacy `.meta.js` remains in place and version-synced to support update checks and explicit migration.
