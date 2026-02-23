@@ -400,11 +400,13 @@
       'a[data-pdb-fp-action="copy-url"]',
       'a[data-pdb-fp-action="bgp-tools"]',
       'a[data-pdb-fp-action="bgp-he-net"]',
+      '[data-pdb-fp-action="network-tools-overflow"]',
     ]);
 
     routeTopRightButtonsToTwoRows(parent);
 
     applyTopRightCustomSpacing(parent);
+    applyTopRightWrappedRowOffset(parent);
   }
 
   function addButton(label, onClick, parentSelector = "div.right.button-bar > div:first-child", actionId = "") {
@@ -531,7 +533,7 @@
           if (asn) {
             [
               { id: "bgp-tools", label: "BGP.TOOLS", url: `https://bgp.tools/as${asn}` },
-              { id: "bgp-he-net", label: "BGP.HE.NET", url: `https://bgp.he.net/as${asn}` },
+              { id: "bgp-he-net", label: "BGP.HE", url: `https://bgp.he.net/as${asn}` },
             ].forEach((tool) => {
               createTopRightAction({
                 actionId: tool.id,
