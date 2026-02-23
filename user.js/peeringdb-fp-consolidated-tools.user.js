@@ -542,6 +542,19 @@
                 target: "_blank",
               });
             });
+
+            createTopRightOverflowMenu({
+              actionId: "network-tools-overflow",
+              label: "More Tools",
+              items: [
+                { label: "RIPEstat", url: `https://stat.ripe.net/AS${asn}` },
+                { label: "BGPView", url: `https://bgpview.io/asn/${asn}` },
+                { label: "CIDR Report", url: `https://www.cidr-report.org/cgi-bin/as-report?as=${asn}` },
+                { label: "IPinfo", url: `https://ipinfo.io/AS${asn}` },
+                { label: "CF Radar", url: `https://radar.cloudflare.com/as${asn}` },
+                { label: "RouteViews", url: "https://routeviews.org/" },
+              ],
+            });
           }
 
           // Remove edit button if no website (legacy feature port)
