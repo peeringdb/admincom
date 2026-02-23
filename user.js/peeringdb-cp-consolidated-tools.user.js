@@ -1,12 +1,12 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      1.0.7.20260218
+// @version      1.0.9.20260223
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*/*/change/*
 // @icon         https://icons.duckduckgo.com/ip2/peeringdb.com.ico
-// @grant        none
+// @grant        GM_xmlhttpRequest
 // @updateURL    https://raw.githubusercontent.com/peeringdb/admincom/master/user.js/peeringdb-cp-consolidated-tools.meta.js
 // @downloadURL  https://raw.githubusercontent.com/peeringdb/admincom/master/user.js/peeringdb-cp-consolidated-tools.user.js
 // @supportURL   https://github.com/peeringdb/admincom/issues
@@ -98,7 +98,8 @@
   }
 
   function getDeterministicNetworkFallbackName(asn, networkId, suffix = "") {
-    const parsedAsn = Number.parseInt(String(asn || "").trim(), 10);
+    const cleaned = String(asn || "").replace(/^AS/i, "").trim();
+    const parsedAsn = Number.parseInt(cleaned, 10);
     if (Number.isInteger(parsedAsn) && parsedAsn > 0) {
       return `AS${parsedAsn}${suffix}`;
     }
@@ -195,12 +196,38 @@
     qsa(`div.form-row.grp-dynamic-form[id^='${inlineSetPrefix}']`).forEach((row) => {
       if (row.id === `${inlineSetPrefix}-empty`) return;
 
+      const statusField =
+        qs('select[name$="-status"]', row) ||
+        qs('select[id$="-status"]', row) ||
+        qs('input[name$="-status"]', row) ||
+        qs('input[id$="-status"]', row);
+
+      const statusValue = statusField
+        ? String(
+            ("value" in statusField && statusField.value) ||
+              qs("option:checked", statusField)?.value ||
+              qs("option[selected]", statusField)?.value ||
+              "",
+          )
+            .trim()
+            .toLowerCase()
+        : "";
+
+      // Only mark rows for deletion when row status is already "deleted".
+      if (statusValue !== "deleted") return;
+
       const deleteCheckbox = qs('input[type="checkbox"][name$="-DELETE"]', row);
       const deleteAction = qs('a.grp-icon.grp-delete-handler[title="Delete Item"]', row);
 
       if (!deleteAction || !deleteCheckbox || deleteCheckbox.checked) return;
       deleteAction.click();
     });
+  }
+
+  function markDeletedNetworkInlinesForDeletion() {
+    clickDeleteHandlersForInlineSet("poc_set");
+    clickDeleteHandlersForInlineSet("netfac_set");
+    clickDeleteHandlersForInlineSet("netixlan_set");
   }
 
   // RDAP client module (fully isolated from feature modules)
@@ -225,6 +252,28 @@
       return String(baseUrl).replace(/\/+$/, "");
     }
 
+    function requestJson(url) {
+      return new Promise((resolve) => {
+        GM_xmlhttpRequest({
+          method: "GET",
+          url,
+          headers: { Accept: RDAP_ACCEPT_HEADER },
+          onload: (response) => {
+            if (response.status >= 200 && response.status < 300) {
+              try {
+                resolve(JSON.parse(response.responseText));
+              } catch (_err) {
+                resolve(null);
+              }
+            } else {
+              resolve(null);
+            }
+          },
+          onerror: () => resolve(null),
+        });
+      });
+    }
+
     async function getBootstrap() {
       const now = Date.now();
       if (
@@ -235,12 +284,9 @@
         return bootstrapCache.payload;
       }
 
-      const response = await fetch(BOOTSTRAP_ASN_URL, {
-        headers: { Accept: RDAP_ACCEPT_HEADER },
-      });
-      if (!response.ok) return null;
+      const payload = await requestJson(BOOTSTRAP_ASN_URL);
+      if (!payload) return null;
 
-      const payload = await response.json();
       bootstrapCache.payload = payload;
       bootstrapCache.loadedAt = now;
       return payload;
@@ -279,12 +325,7 @@
       const baseUrl = getAutnumBaseUrlFromBootstrap(bootstrap, asn);
       if (!baseUrl) return null;
 
-      const response = await fetch(`${baseUrl}/autnum/${asn}`, {
-        headers: { Accept: RDAP_ACCEPT_HEADER },
-      });
-      if (!response.ok) return null;
-
-      return response.json();
+      return requestJson(`${baseUrl}/autnum/${asn}`);
     }
 
     function getVcardProperty(vcardArray, propertyName) {
@@ -339,12 +380,19 @@
       const asn = parseAsn(asnInput);
       if (!asn) return null;
 
+      console.log(`[rdapAutnumClient] Requesting RDAP for AS${asn}...`);
+
       try {
         const payload = await fetchAutnumRecord(asn);
         if (!payload) return null;
 
-        return resolveOrganizationNameFromAutnumPayload(payload);
+        const name = resolveOrganizationNameFromAutnumPayload(payload);
+        if (name) {
+          console.log(`[rdapAutnumClient] Successfully resolved AS${asn}: ${name}`);
+        }
+        return name;
       } catch (_error) {
+        console.error(`[rdapAutnumClient] Error resolving AS${asn}`, _error);
         return null;
       }
     }
@@ -408,9 +456,7 @@
       item.value = "";
     });
 
-    clickDeleteHandlersForInlineSet("poc_set");
-    clickDeleteHandlersForInlineSet("netfac_set");
-    clickDeleteHandlersForInlineSet("netixlan_set");
+    markDeletedNetworkInlinesForDeletion();
   }
 
   const modules = [
@@ -553,6 +599,8 @@
           label: "Update Name",
           paddingRight: 500,
           onClick: async () => {
+            markDeletedNetworkInlinesForDeletion();
+
             const orgId = getInputValue("#id_org");
             const baseName = await getOrganizationName(orgId);
             if (!baseName) return;
@@ -574,42 +622,76 @@
           id: `${MODULE_PREFIX}ResetNetworkInformation`,
           label: "Reset Information",
           paddingRight: 618,
-          onClick: async () => {
-            const orgId = getInputValue("#id_org");
-            const asn = getInputValue("#id_asn");
-            const appendName = getNameSuffixForDeletedNetwork(ctx.entityId);
+          onClick: async (event) => {
+            const button = event.target;
+            const originalLabel = button.textContent;
+            button.textContent = "Processing...";
+            button.style.opacity = "0.7";
+            button.style.pointerEvents = "none";
 
-            runNetworkResetActions();
+            try {
+              const orgId = getInputValue("#id_org");
+              const asn = getInputValue("#id_asn");
+              const appendName = getNameSuffixForDeletedNetwork(ctx.entityId);
 
-            // Seed name immediately so required-field validation can never block save.
-            const fallbackName = getDeterministicNetworkFallbackName(asn, ctx.entityId, appendName);
-            setNetworkNameValue(fallbackName);
+              runNetworkResetActions();
 
-            const baseName = await getOrganizationName(orgId);
-            const resolvedNetworkName = baseName ? `${baseName}${appendName}` : "";
-
-            if (resolvedNetworkName) {
-              setNetworkNameValue(resolvedNetworkName);
-            }
-
-            // If resolved network name is empty, do an isolated RDAP ASN lookup
-            // to resolve the responsible organization name.
-            if (!getInputValue("#id_name")) {
-              const rdapOrgName = await rdapAutnumClient.resolveOrganizationNameByAsn(asn);
-              if (rdapOrgName) {
-                setNetworkNameValue(`${rdapOrgName}${appendName}`);
-              }
-            }
-
-            // Final guard: keep name required-field validation from blocking first-run save.
-            const finalNameInput = document.getElementById("id_name");
-            if (!finalNameInput || !String(finalNameInput.value || "").trim()) {
+              // Seed name immediately so required-field validation can never block save.
+              const fallbackName = getDeterministicNetworkFallbackName(asn, ctx.entityId, appendName);
               setNetworkNameValue(fallbackName);
-            }
 
-            clickSaveAndContinue();
+              const baseName = await getOrganizationName(orgId);
+              const resolvedNetworkName = baseName ? `${baseName}${appendName}` : "";
+
+              if (resolvedNetworkName) {
+                setNetworkNameValue(resolvedNetworkName);
+              }
+
+              // If resolved network name is empty, do an isolated RDAP ASN lookup
+              // to resolve the responsible organization name.
+              const currentName = getInputValue("#id_name");
+              if (!currentName || currentName === fallbackName) {
+                const rdapOrgName = await rdapAutnumClient.resolveOrganizationNameByAsn(asn);
+                if (rdapOrgName) {
+                  setNetworkNameValue(`${rdapOrgName}${appendName}`);
+                }
+              }
+
+              // Final guard: keep name required-field validation from blocking first-run save.
+              const finalNameInput = document.getElementById("id_name");
+              if (!finalNameInput || !String(finalNameInput.value || "").trim()) {
+                setNetworkNameValue(fallbackName);
+              }
+
+              clickSaveAndContinue();
+            } catch (error) {
+              console.error(`[${MODULE_PREFIX}] Reset failed`, error);
+              button.textContent = originalLabel;
+              button.style.opacity = "1";
+              button.style.pointerEvents = "auto";
+            }
           },
         });
+      },
+    },
+    {
+      id: "set-window-title",
+      match: (ctx) => ctx.isCp && ctx.isEntityChangePage,
+      run: (ctx) => {
+        const sep = " | ";
+        let title = "";
+
+        if (ctx.entity === "user") {
+          const username = getInputValue("#id_username");
+          const email = getInputValue("#id_email");
+          title = `${username}${sep}${email}`;
+        } else {
+          const name = getInputValue("#id_name");
+          const country = qs("#id_country > option[selected]")?.innerText || "";
+          title = `${name}${sep}${country}`;
+        }
+
+        document.title = `PDB CP${sep}${ctx.entity.toUpperCase()}${sep}${title}`;
       },
     },
   ];
