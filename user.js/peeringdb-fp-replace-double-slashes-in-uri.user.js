@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name            PeeringDB FP - Replace double slashes in URI
 // @namespace       https://www.peeringdb.com/
-// @version         1.1.0.20260217
-// @description     Redirect page while replace double-slashes in the URI with single-slash
+// @version         1.1.1.20260223
+// @description     DEPRECATED: replaced by PeeringDB FP - Consolidated Tools
 // @author          <chriztoffer@peeringdb.com>
 // @match           https://www.peeringdb.com//*
 // @icon            https://icons.duckduckgo.com/ip2/peeringdb.com.ico
@@ -14,16 +14,6 @@
 
 (function() {
   'use strict';
-
-  /* Define variables */
-  let url = window.location;
-  let path = url.pathname.replace('/', '').split('/');
-  let type = path[0];
-  let id = path[1];
-
-  /* Redirect page to normal, if pathname starts with '//' */
-  if (path.length > 2) {
-    window.location.href = url.protocol + '//' + url.hostname + url.pathname.replace('//', '/');
-  }
+  console.warn('[Deprecated] PeeringDB FP - Replace double slashes in URI has been replaced by PeeringDB FP - Consolidated Tools (install: peeringdb-fp-consolidated-tools.user.js).');
 
 })();

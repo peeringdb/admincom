@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name            PeeringDB FP - Admin Console Link on Frontpage
 // @namespace       https://www.peeringdb.com/
-// @version         2.2.0.20260217
-// @description     Add direct link to the PeeringDB Admin Console from the frontpage to net/carrier/org/facility/ix
+// @version         2.2.1.20260223
+// @description     DEPRECATED: replaced by PeeringDB FP - Consolidated Tools
 // @author          <chriztoffer@peeringdb.com>
 // @match           https://www.peeringdb.com/net/*
 // @match           https://www.peeringdb.com/asn/*

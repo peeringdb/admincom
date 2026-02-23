@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name            PeeringDB FP - Replace double slashes in URI
 // @namespace       https://www.peeringdb.com/
-// @version         1.1.0.20260217
-// @description     Redirect page while replace double-slashes in the URI with single-slash
+// @version         1.1.1.20260223
+// @description     DEPRECATED: replaced by PeeringDB FP - Consolidated Tools
 // @author          <chriztoffer@peeringdb.com>
 // @match           https://www.peeringdb.com//*
 // @icon            https://icons.duckduckgo.com/ip2/peeringdb.com.ico

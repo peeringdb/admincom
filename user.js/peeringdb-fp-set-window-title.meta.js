@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name            PeeringDB FP - Set window title
 // @namespace       https://www.peeringdb.com
-// @description     Updates the Window Title in your Browser
+// @description     DEPRECATED: replaced by PeeringDB FP - Consolidated Tools
 // @author          <chriztoffer@peeringdb.com>
 // @match           https://www.peeringdb.com/asn/*
 // @match           https://www.peeringdb.com/org/*
@@ -14,7 +14,7 @@
 // @match           https://www.peeringdb.com/cp/peeringdb_server/carrier/*
 // @match           https://www.peeringdb.com/cp/peeringdb_server/organization/*
 // @match           https://www.peeringdb.com/cp/peeringdb_server/internetexchange/*
-// @version         1.4.0.20260217
+// @version         1.4.1.20260223
 // @updateURL       https://raw.githubusercontent.com/peeringdb/admincom/master/user.js/peeringdb-fp-set-window-title.meta.js
 // @downloadURL     https://raw.githubusercontent.com/peeringdb/admincom/master/user.js/peeringdb-fp-set-window-title.user.js
 // @supportURL      https://github.com/peeringdb/admincom/issues
