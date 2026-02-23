@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      1.0.15.20260223
+// @version      1.0.35.20260223
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*/*/change/*
@@ -24,7 +24,7 @@
     "carrier",
     "internetexchange",
     "campus",
-  ]);
+  ]); 
 
   function getRouteContext() {
     const path = window.location.pathname.replace(/(^\/|\/$)/g, "").split("/");
@@ -108,35 +108,55 @@
   }
 
   function getToolbarList() {
-    return qs("#grp-content-title > ul");
+    return (
+      qs("#grp-content-title > ul.grp-object-tools:not([data-pdb-cp-toolbar-row]):not([data-pdb-cp-action])") ||
+      qs("#grp-content-title > ul.grp-object-tools") ||
+      qs("#grp-content-title > ul")
+    );
   }
 
-  function addToolbarAction({ id, label, href = "#", onClick, paddingRight = null, target = null }) {
+  function cleanupLegacyPrimaryActionRow() {
+    const legacyRow = qs(`#${MODULE_PREFIX}PrimaryActionRow`);
+    if (!legacyRow) return;
+
+    legacyRow.remove();
+  }
+
+  function applySecondaryRowVerticalOffset(row) {
+    if (!row) return;
+
     const toolbar = getToolbarList();
-    if (!toolbar || !id) return null;
+    const baseOffset = 5;
+    if (!toolbar) {
+      row.style.marginTop = `${baseOffset}px`;
+      return;
+    }
+
+    const toolbarRect = toolbar.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    const overlap = Math.ceil(toolbarRect.bottom - rowRect.top);
+    const computedOffset = overlap > 0 ? baseOffset + overlap : baseOffset;
+    row.style.marginTop = `${computedOffset}px`;
+  }
+
+  function addToolbarAction({ id, label, href = "#", onClick, target = null, insertLeft = false }) {
+    if (!id) return null;
 
     if (qs(`#${id}`)) {
       return qs(`#${id}`);
     }
 
-    const parent = toolbar.parentNode;
-    if (!parent) return null;
-
-    const wrapper = document.createElement("ul");
-    wrapper.setAttribute("data-pdb-cp-action", id);
-    wrapper.style.pointerEvents = "none";
+    const toolbar = getToolbarList();
+    if (!toolbar) return null;
 
     const li = document.createElement("li");
-    li.className = "grp-object-tools";
-    if (Number.isFinite(paddingRight)) {
-      li.style.paddingRight = `${paddingRight}px`;
-    }
+    li.setAttribute("data-pdb-cp-action", id);
+    li.style.marginLeft = "5px";
 
     const a = document.createElement("a");
     a.id = id;
     a.href = href;
     a.textContent = label;
-    a.style.pointerEvents = "auto";
 
     if (target) {
       a.target = target;
@@ -150,11 +170,24 @@
     }
 
     li.appendChild(a);
-    wrapper.appendChild(li);
 
-    // Insert as a sibling UL, mirroring legacy CP scripts to avoid disturbing
-    // the built-in toolbar/history layout implementation.
-    parent.insertBefore(wrapper, toolbar);
+    const firstCustom = qs("li[data-pdb-cp-action]", toolbar);
+    const firstNonCustom = qs("li:not([data-pdb-cp-action])", toolbar);
+
+    if (insertLeft) {
+      if (firstCustom) {
+        toolbar.insertBefore(li, firstCustom);
+      } else if (firstNonCustom) {
+        toolbar.insertBefore(li, firstNonCustom);
+      } else {
+        toolbar.appendChild(li);
+      }
+    } else if (firstNonCustom) {
+      toolbar.insertBefore(li, firstNonCustom);
+    } else {
+      toolbar.appendChild(li);
+    }
+
     return a;
   }
 
@@ -167,19 +200,34 @@
 
     const row = document.createElement("ul");
     row.id = `${MODULE_PREFIX}SecondaryActionRow`;
-    row.className = `${MODULE_PREFIX}SecondaryActionRow`;
+    row.className = `grp-object-tools ${MODULE_PREFIX}SecondaryActionRow`;
     row.style.clear = "both";
     row.style.setProperty("float", "none", "important");
+    row.style.setProperty("position", "static", "important");
+    row.style.setProperty("top", "auto", "important");
+    row.style.setProperty("right", "auto", "important");
+    row.style.setProperty("left", "auto", "important");
     row.style.display = "block";
     row.style.textAlign = "right";
     row.style.width = "100%";
-    row.style.marginTop = "12px";
-    row.style.marginBottom = "2px";
+    row.style.marginTop = "5px";
+    row.style.marginBottom = "10px";
+    row.style.minHeight = "28px";
     row.style.boxSizing = "border-box";
     row.style.padding = "0";
     row.style.listStyle = "none";
 
-    contentTitle.appendChild(row);
+    contentTitle.parentNode?.insertBefore(row, contentTitle.nextSibling);
+
+    const syncOffset = () => applySecondaryRowVerticalOffset(row);
+    requestAnimationFrame(syncOffset);
+    setTimeout(syncOffset, 0);
+    setTimeout(syncOffset, 80);
+
+    if (!row.hasAttribute("data-offset-bound")) {
+      row.setAttribute("data-offset-bound", "1");
+      window.addEventListener("resize", syncOffset);
+    }
 
     return row;
   }
@@ -192,10 +240,15 @@
     if (existing) return existing;
 
     const listItem = document.createElement("li");
-    listItem.className = "grp-object-tools";
+    listItem.setAttribute("data-pdb-cp-secondary-action", id);
     listItem.style.display = "inline-block";
     listItem.style.setProperty("float", "none", "important");
-    listItem.style.marginLeft = "8px";
+    listItem.style.margin = "0";
+
+    const hasExistingButtons = row.children.length > 0;
+    if (hasExistingButtons) {
+      listItem.style.marginLeft = "5px";
+    }
 
     const button = document.createElement("a");
     button.id = id;
@@ -212,6 +265,82 @@
     listItem.appendChild(button);
     row.appendChild(listItem);
     return button;
+  }
+
+  function isPriorityMatch(child, priority) {
+    if (!child || !priority) return false;
+
+    if (typeof priority === "function") {
+      return Boolean(priority(child));
+    }
+
+    if (typeof priority !== "string") {
+      return false;
+    }
+
+    try {
+      return child.matches(priority);
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function isHistoryToolbarItem(child) {
+    if (!child || child.hasAttribute("data-pdb-cp-action")) return false;
+
+    const anchor = qs("a", child);
+    if (!anchor) return false;
+
+    const href = String(anchor.getAttribute("href") || "");
+    const text = String(anchor.textContent || "").trim().toLowerCase();
+    return href.includes("/history/") || text === "history";
+  }
+
+  function reorderChildrenByPriority(container, priorities) {
+    if (!container || !Array.isArray(priorities) || priorities.length === 0) return;
+
+    const currentChildren = Array.from(container.children);
+    if (!currentChildren.length) return;
+
+    const used = new Set();
+    const ordered = [];
+
+    for (const priority of priorities) {
+      const match = currentChildren.find((child) => !used.has(child) && isPriorityMatch(child, priority));
+      if (!match) continue;
+      ordered.push(match);
+      used.add(match);
+    }
+
+    currentChildren.forEach((child) => {
+      if (!used.has(child)) ordered.push(child);
+    });
+
+    ordered.forEach((child) => container.appendChild(child));
+  }
+
+  function enforceToolbarButtonOrder(ctx) {
+    if (!ctx?.isEntityChangePage || ctx.entity !== "network") return;
+
+    const primaryToolbar = getToolbarList();
+    if (primaryToolbar) {
+      reorderChildrenByPriority(primaryToolbar, [
+        'li[data-pdb-cp-action="pdbCpConsolidatedFrontend"]',
+        'li[data-pdb-cp-action="pdbCpConsolidatedOrganizationFrontend"]',
+        'li[data-pdb-cp-action="pdbCpConsolidatedOrganizationCp"]',
+        isHistoryToolbarItem,
+        'li[data-pdb-cp-action="pdbCpConsolidatedUpdateNetworkName"]',
+        'li[data-pdb-cp-action="pdbCpConsolidatedResetNetworkInformation"]',
+      ]);
+    }
+
+    const secondaryRow = qs(`#${MODULE_PREFIX}SecondaryActionRow`);
+    if (secondaryRow) {
+      reorderChildrenByPriority(secondaryRow, [
+        'li[data-pdb-cp-secondary-action="pdbCpConsolidatedCopyNetworkUrl"]',
+        'li[data-pdb-cp-secondary-action="pdbCpConsolidatedCopyOrganizationUrl"]',
+      ]);
+    }
   }
 
   async function getOrganizationName(orgId) {
@@ -237,6 +366,24 @@
     if (!button) return false;
     button.click();
     return true;
+  }
+
+  function confirmDangerousReset(asn, networkName, networkId) {
+    const asnLabel = String(asn || "").trim();
+    const nameLabel = String(networkName || "").trim();
+    const networkIdLabel = String(networkId || "").trim();
+    const summary = [
+      networkIdLabel ? `ID ${networkIdLabel}` : null,
+      asnLabel ? `AS${asnLabel}` : null,
+      nameLabel || null,
+    ]
+      .filter(Boolean)
+      .join(" / ");
+    const contextLine = summary ? `\n\nTarget: ${summary}` : "";
+
+    return window.confirm(
+      `Are you sure you want to reset all network information? This action will clear many fields.${contextLine}`,
+    );
   }
 
   async function copyToClipboard(text) {
@@ -628,7 +775,6 @@
           label: "Google Maps",
           href,
           target: query || "_blank",
-          paddingRight: 459,
         });
       },
     },
@@ -693,7 +839,6 @@
             label: "Org (front-end)",
             href: `/org/${orgId}`,
             target: "_new",
-            paddingRight: 283,
           });
 
           addToolbarAction({
@@ -701,7 +846,6 @@
             label: "Org",
             href: `/cp/peeringdb_server/organization/${orgId}/change/`,
             target: "_new",
-            paddingRight: 171,
           });
         }
 
@@ -710,7 +854,6 @@
           label: "Frontend",
           href: `/${goto}/${ctx.entityId}`,
           target: "_new",
-          paddingRight: 80,
         });
       },
     },
@@ -727,7 +870,6 @@
           id: `${MODULE_PREFIX}SearchUsername`,
           label: "Search Username",
           href: `/cp/account/emailaddress/?q=${encodeURIComponent(username)}`,
-          paddingRight: 205,
         });
       },
     },
@@ -739,7 +881,7 @@
         addToolbarAction({
           id: `${MODULE_PREFIX}UpdateNetworkName`,
           label: "Update Name",
-          paddingRight: 500,
+          insertLeft: true,
           onClick: async () => {
             markDeletedNetworkInlinesForDeletion();
 
@@ -763,8 +905,15 @@
         addToolbarAction({
           id: `${MODULE_PREFIX}ResetNetworkInformation`,
           label: "Reset Information",
-          paddingRight: 618,
+          insertLeft: true,
           onClick: async (event) => {
+            const asn = getInputValue("#id_asn");
+            const networkName = getInputValue("#id_name");
+
+            if (!confirmDangerousReset(asn, networkName, ctx.entityId)) {
+              return;
+            }
+
             const button = event.target;
             const originalLabel = button.textContent;
             button.textContent = "Processing...";
@@ -773,7 +922,6 @@
 
             try {
               const orgId = getInputValue("#id_org");
-              const asn = getInputValue("#id_asn");
               const appendName = getNameSuffixForDeletedNetwork(ctx.entityId);
 
               runNetworkResetActions();
@@ -857,5 +1005,8 @@
     return;
   }
 
+  cleanupLegacyPrimaryActionRow();
+
   dispatchModules(ctx);
+  enforceToolbarButtonOrder(ctx);
 })();
