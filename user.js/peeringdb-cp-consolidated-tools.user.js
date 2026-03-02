@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      1.0.35.20260223
+// @version      1.0.40.20260302
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*/*/change/*
@@ -17,6 +17,18 @@
 
   const MODULE_PREFIX = "pdbCpConsolidated";
   const DUMMY_ORG_ID = 20525;
+  const DISABLED_MODULES_STORAGE_KEY = `${MODULE_PREFIX}.disabledModules`;
+  const USER_AGENT_STORAGE_KEY = `${MODULE_PREFIX}.userAgent`;
+  const SESSION_UUID_STORAGE_KEY = `${MODULE_PREFIX}.sessionUuid`;
+  const TRUSTED_DOMAINS_FOR_UA = [
+    "peeringdb.com",
+    "*.peeringdb.com",
+    "api.peeringdb.com",
+    "127.0.0.1",
+    "::1",
+    "localhost",
+  ];
+  const DEFAULT_REQUEST_USER_AGENT = "PeeringDB-Admincom-CP-Consolidated";
   const ENTITY_TYPES = new Set([
     "facility",
     "network",
@@ -25,6 +37,170 @@
     "internetexchange",
     "campus",
   ]); 
+
+  /**
+   * Retrieves the set of disabled module IDs from localStorage.
+   * Purpose: Allows individual modules to be toggled on/off without code changes.
+   * Necessity: Provides user-level module control for the modular architecture.
+   * Supports both JSON array and comma-separated formats for backward compatibility.
+   */
+  function getDisabledModules() {
+    const raw = String(window.localStorage?.getItem(DISABLED_MODULES_STORAGE_KEY) || "").trim();
+    if (!raw) return new Set();
+
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return new Set(parsed.map((item) => String(item || "").trim()).filter(Boolean));
+      }
+    } catch (_error) {
+      // fallback to comma-separated format
+    }
+
+    return new Set(
+      raw
+        .split(",")
+        .map((item) => String(item || "").trim())
+        .filter(Boolean),
+    );
+  }
+
+  /**
+   * Checks if a module is enabled (not in the disabled set).
+   * Purpose: Gate-keeper for module execution in dispatchModules().
+   * Necessity: Implements selective module control without removing code.
+   */
+  function isModuleEnabled(moduleId, disabledModules) {
+    if (!moduleId) return false;
+    return !disabledModules.has(moduleId);
+  }
+
+  /**
+   * Retrieves explicit or auto-computed User-Agent for this session.
+   * Purpose: Provide flexible UA configuration with fallback to trust-based generation.
+   * Necessity: Allows manual override via localStorage while auto-computing from domain trust.
+   */
+  function getCustomRequestUserAgent() {
+    const configured = String(window.localStorage?.getItem(USER_AGENT_STORAGE_KEY) || "").trim();
+    if (configured) return configured;
+    // Auto-compute trust-based UA if not explicitly configured
+    return buildTrustBasedUserAgent(window.location.hostname);
+  }
+
+  /**
+   * Generates or retrieves a persistent session UUID for the browser session.
+   * Purpose: Provides a unique identifier for correlating requests within a session.
+   * Necessity: Enables server-side analytics and request tracking without exposing device fingerprint.
+   * UUID persists across page reloads but is cleared when tab/session closes.
+   */
+  function getSessionUuid() {
+    const sessionKey = SESSION_UUID_STORAGE_KEY;
+    let uuid = window.sessionStorage?.getItem(sessionKey);
+    if (!uuid) {
+      uuid = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      if (window.sessionStorage) {
+        window.sessionStorage.setItem(sessionKey, uuid);
+      }
+    }
+    return uuid;
+  }
+
+  /**
+   * Computes a stable client fingerprint from browser/device attributes.
+   * Purpose: Creates a privacy-preserving identifier for requests from untrusted domains.
+   * Necessity: Balances analytics tracking with user privacy for non-trusted networks.
+   * Returns a 16-character hex string derived from UA, platform, language, CPU count, memory.
+   */
+  function computeClientFingerprint() {
+    const parts = [
+      navigator.userAgent,
+      navigator.platform,
+      navigator.language,
+      navigator.hardwareConcurrency || "unknown",
+      navigator.deviceMemory || "unknown",
+    ].join("|");
+
+    let hash = 0;
+    for (let i = 0; i < parts.length; i++) {
+      const char = parts.charCodeAt(i);
+      hash = (hash << 5) - hash + char;
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    return Math.abs(hash).toString(16).padStart(16, "0").substr(0, 16);
+  }
+
+  /**
+   * Determines if a domain is in the trusted domain list.
+   * Purpose: Implement domain-based trust policy for User-Agent header generation.
+   * Necessity: Distinguishes between trusted (localhost, peeringdb.com) and untrusted domains
+   * to decide whether to use full browser info or privacy-preserving fingerprint.
+   * Also normalizes IPv6 URIs with bracket notation ([::1]) for transparent matching.
+   */
+  function isDomainTrusted(domain) {
+    if (!domain) return false;
+    // Normalize: trim, lowercase, and strip IPv6 URI brackets (e.g., [::1] → ::1)
+    let domainText = String(domain).trim().toLowerCase();
+    if (domainText.startsWith("[") && domainText.endsWith("]")) {
+      domainText = domainText.slice(1, -1);  // Strip IPv6 URI brackets
+    }
+    if (!domainText) return false;
+
+    for (const pattern of TRUSTED_DOMAINS_FOR_UA) {
+      const patternLower = pattern.toLowerCase();
+      if (patternLower === domainText) return true;
+
+      // Handle wildcard patterns like *.peeringdb.com
+      if (patternLower.startsWith("*.")) {
+        const baseDomain = patternLower.slice(2);
+        if (domainText === baseDomain || domainText.endsWith("." + baseDomain)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Constructs a User-Agent string based on domain trust level.
+   * Purpose: Provide contextual information to backend while respecting user privacy.
+   * Necessity: For trusted domains (development, peeringdb.com), includes browser/platform for debugging;
+   * for untrusted domains, uses fingerprint only to minimize data exposure.
+   * Includes session UUID in both cases for request correlation.
+   */
+  function buildTrustBasedUserAgent(domain) {
+    const isTrusted = isDomainTrusted(domain);
+    const sessionUuid = getSessionUuid();
+
+    if (isTrusted) {
+      // Full-detail UA for trusted domains (server-side context, logging, analytics)
+      const browserInfo = `${navigator.userAgent.split(" ").slice(-1)[0]} ${navigator.platform}`;
+      return `${DEFAULT_REQUEST_USER_AGENT} (${browserInfo} uuid/${sessionUuid})`;
+    }
+
+    // Privacy-preserving UA with fingerprint only for untrusted domains
+    const fingerprint = computeClientFingerprint();
+    return `${DEFAULT_REQUEST_USER_AGENT} (fingerprint/${fingerprint} uuid/${sessionUuid})`;
+  }
+
+  /**
+   * Constructs HTTP headers for Tampermonkey requests with User-Agent.
+   * Purpose: Centralize header building for all script-initiated requests.
+   * Necessity: Ensures consistent User-Agent and other important headers across all API calls.
+   */
+  function buildTampermonkeyRequestHeaders(baseHeaders = {}) {
+    const headers = { ...baseHeaders };
+    const configured = String(window.localStorage?.getItem(USER_AGENT_STORAGE_KEY) || "").trim();
+
+    // Use configured UA if explicitly set, otherwise auto-compute from domain trust
+    const userAgent =
+      configured ||
+      buildTrustBasedUserAgent(window.location.hostname);
+
+    if (userAgent) {
+      headers["User-Agent"] = userAgent;
+    }
+    return headers;
+  }
 
   function getRouteContext() {
     const path = window.location.pathname.replace(/(^\/|\/$)/g, "").split("/");
@@ -41,6 +217,12 @@
     };
   }
 
+  /**
+   * Convenience wrapper for querySelector.
+   * Purpose: Reduce boilerplate for DOM querying throughout the script.
+   * Necessity: Used extensively for finding form fields and toolbar elements.
+   * Wraps in try-catch to safely return null on selector errors.
+   */
   function qs(selector, root = document) {
     try {
       return root.querySelector(selector);
@@ -49,6 +231,11 @@
     }
   }
 
+  /**
+   * Convenience wrapper for querySelectorAll returning an array.
+   * Purpose: Reduce boilerplate for finding multiple DOM elements.
+   * Necessity: Used for inline sets, dynamic forms, and multi-element operations.
+   */
   function qsa(selector, root = document) {
     try {
       return Array.from(root.querySelectorAll(selector));
@@ -57,6 +244,11 @@
     }
   }
 
+  /**
+   * Retrieves trimmed value from form input elements (input, select, textarea).
+   * Purpose: Unified value extraction that handles both .value property and data attributes.
+   * Necessity: Normalizes form field reading across different input types in Django admin forms.
+   */
   function getInputValue(selector) {
     const element = qs(selector);
     if (!element) return "";
@@ -68,6 +260,11 @@
     return String(element.getAttribute("value") || "").trim();
   }
 
+  /**
+   * Sets value on form input elements with consistent synchronization.
+   * Purpose: Unified value assignment that updates both .value and attributes.
+   * Necessity: Ensures form frameworks recognize the change (defaultValue for reset detection).
+   */
   function setInputValue(selector, value) {
     const element = qs(selector);
     if (!element) return false;
@@ -84,6 +281,11 @@
     return true;
   }
 
+  /**
+   * Sets network name field value with proper change event firing.
+   * Purpose: Ensure form validation and dependency updates trigger when name changes.
+   * Necessity: Django admin forms monitor change events; manual setting requires event dispatch.
+   */
   function setNetworkNameValue(value) {
     const input = document.getElementById("id_name");
     if (!input) return false;
@@ -97,6 +299,12 @@
     return true;
   }
 
+  /**
+   * Generates a deterministic ASN-based network name with optional suffix.
+   * Purpose: Provide sensible fallback names for networks when org lookup fails.
+   * Necessity: Required field can't be empty; ASN is stable and visible on network pages.
+   * Includes '#deleted' suffix for networks in deleted status.
+   */
   function getDeterministicNetworkFallbackName(asn, networkId, suffix = "") {
     const cleaned = String(asn || "").replace(/^AS/i, "").trim();
     const parsedAsn = Number.parseInt(cleaned, 10);
@@ -107,6 +315,11 @@
     return `AS${networkId}${suffix}`;
   }
 
+  /**
+   * Retrieves the primary toolbar list from the page header.
+   * Purpose: Centralize toolbar element selection with fallback selectors.
+   * Necessity: Uses multiple fallbacks to handle Django admin version variations.
+   */
   function getToolbarList() {
     return (
       qs("#grp-content-title > ul.grp-object-tools:not([data-pdb-cp-toolbar-row]):not([data-pdb-cp-action])") ||
@@ -115,6 +328,11 @@
     );
   }
 
+  /**
+   * Removes deprecated primary action row from legacy versions.
+   * Purpose: Clean up stale DOM elements from previous script versions.
+   * Necessity: Ensures backward compatibility when script updates; prevents duplicate action rows.
+   */
   function cleanupLegacyPrimaryActionRow() {
     const legacyRow = qs(`#${MODULE_PREFIX}PrimaryActionRow`);
     if (!legacyRow) return;
@@ -122,6 +340,12 @@
     legacyRow.remove();
   }
 
+  /**
+   * Applies calculated vertical offset to secondary action row.
+   * Purpose: Prevent overlap between primary toolbar and secondary action row.
+   * Necessity: Secondary row appears below primary toolbar; must account for toolbar height
+   * which varies by content. Uses BoundingClientRect to detect actual overlap.
+   */
   function applySecondaryRowVerticalOffset(row) {
     if (!row) return;
 
@@ -139,6 +363,12 @@
     row.style.marginTop = `${computedOffset}px`;
   }
 
+  /**
+   * Creates and inserts a toolbar action button (link) into the primary toolbar.
+   * Purpose: Standardized way to add custom buttons (Google Maps, Frontend links, etc.).
+   * Necessity: Ensures consistent styling, idempotency (prevents duplicates), and placement.
+   * Marks buttons with data-pdb-cp-action attribute for reordering and identification.
+   */
   function addToolbarAction({ id, label, href = "#", onClick, target = null, insertLeft = false }) {
     if (!id) return null;
 
@@ -191,6 +421,12 @@
     return a;
   }
 
+  /**
+   * Creates or retrieves secondary action row below primary toolbar.
+   * Purpose: Provide a second row for less-critical actions (Copy URL, Copy Org URL).
+   * Necessity: Prevents primary toolbar overcrowding while keeping actions accessible.
+   * Applies vertical offset dynamically and handles resize events.
+   */
   function getOrCreateSecondaryActionRow() {
     const contentTitle = qs("#grp-content-title");
     if (!contentTitle) return null;
@@ -232,6 +468,11 @@
     return row;
   }
 
+  /**
+   * Creates and appends a button to the secondary action row.
+   * Purpose: Add custom actions to secondary row with consistent styling.
+   * Necessity: Secondary row actions need inline-block styling and spacing different from primary toolbar.
+   */
   function addSecondaryActionButton({ id, label, onClick }) {
     const row = getOrCreateSecondaryActionRow();
     if (!row || !id) return null;
@@ -267,6 +508,11 @@
     return button;
   }
 
+  /**
+   * Tests if a DOM element matches a given priority (CSS selector or function).
+   * Purpose: Support flexible matching in reorderChildrenByPriority (handles strings and predicates).
+   * Necessity: Enables both CSS-based matching and custom function-based matching in one API.
+   */
   function isPriorityMatch(child, priority) {
     if (!child || !priority) return false;
 
@@ -285,6 +531,11 @@
     }
   }
 
+  /**
+   * Identifies if a toolbar item is the History button.
+   * Purpose: Handle History button specially in reordering (position it before custom actions).
+   * Necessity: History button is Django admin native; needs position priority awareness.
+   */
   function isHistoryToolbarItem(child) {
     if (!child || child.hasAttribute("data-pdb-cp-action")) return false;
 
@@ -296,6 +547,12 @@
     return href.includes("/history/") || text === "history";
   }
 
+  /**
+   * Reorders children of a container according to priority list.
+   * Purpose: Establish deterministic button order (Frontend before Org links, History before custom).
+   * Necessity: Ensures consistent UI layout across page variations and module load orders.
+   * Unmatched children stay in original order at the end.
+   */
   function reorderChildrenByPriority(container, priorities) {
     if (!container || !Array.isArray(priorities) || priorities.length === 0) return;
 
@@ -319,6 +576,12 @@
     ordered.forEach((child) => container.appendChild(child));
   }
 
+  /**
+   * Enforces deterministic action button order in both primary and secondary toolbars (network only).
+   * Purpose: Coordinate reordering of all network page toolbar buttons.
+   * Necessity: Network pages have most custom actions; reordering provides consistent UX.
+   * For other entity types, no special ordering applied (preserves natural order).
+   */
   function enforceToolbarButtonOrder(ctx) {
     if (!ctx?.isEntityChangePage || ctx.entity !== "network") return;
 
@@ -343,6 +606,12 @@
     }
   }
 
+  /**
+   * Fetches organization name from PeeringDB API by organization ID.
+   * Purpose: Resolve human-readable org names for network initialization.
+   * Necessity: Network name should match org name; API lookup is more reliable than manual lookup.
+   * Returns null on network error or missing data (graceful degradation).
+   */
   async function getOrganizationName(orgId) {
     if (!orgId) return null;
 
@@ -357,6 +626,11 @@
     }
   }
 
+  /**
+   * Programmatically clicks the "Save and continue editing" button.
+   * Purpose: Auto-submit form after automated edits (Reset Information, Update Name).
+   * Necessity: Script-driven form changes need programmatic submission; improves UX.
+   */
   function clickSaveAndContinue() {
     const button =
       qs("#network_form input[name='_continue']") ||
@@ -368,6 +642,11 @@
     return true;
   }
 
+  /**
+   * Prompts user to confirm dangerous network reset operation.
+   * Purpose: Prevent accidental data loss from Reset Information action.
+   * Necessity: Shows user which network is being reset (by ID, ASN, name) for confirmation.
+   */
   function confirmDangerousReset(asn, networkName, networkId) {
     const asnLabel = String(asn || "").trim();
     const nameLabel = String(networkName || "").trim();
@@ -386,6 +665,11 @@
     );
   }
 
+  /**
+   * Copies text to clipboard with modern and fallback implementations.
+   * Purpose: Enable "Copy URL" actions for user convenience.
+   * Necessity: Handles browsers with and without Clipboard API support.
+   */
   async function copyToClipboard(text) {
     const value = String(text || "");
     if (!value) return false;
@@ -415,6 +699,11 @@
     }
   }
 
+  /**
+   * Temporarily changes button text then reverts after a delay.
+   * Purpose: Provide user feedback that copy action succeeded.
+   * Necessity: "Copied" feedback improves UX for copy-to-clipboard buttons.
+   */
   function pulseToolbarButton(anchor, successLabel = "Copied") {
     if (!anchor) return;
 
@@ -425,6 +714,11 @@
     }, 1000);
   }
 
+  /**
+   * Determines the frontend URL path for a CP entity (network, carrier, ix).
+   * Purpose: Generate correct copy-to-clipboard URL for the current entity type.
+   * Necessity: Different entity types map to different URL paths.
+   */
   function getCopyNetworkFrontendPath(ctx) {
     if (ctx.entity === "carrier") {
       return `/carrier/${ctx.entityId}`;
@@ -437,15 +731,30 @@
     return `/net/${ctx.entityId}`;
   }
 
+  /**
+   * Retrieves currently selected status from the status dropdown.
+   * Purpose: Determine if network/entity is marked as deleted.
+   * Necessity: Used to add " #deleted" suffix to entity names for deleted records.
+   */
   function getSelectedStatus() {
     const option = qs("#id_status > option:checked") || qs("#id_status > option[selected]");
     return option ? String(option.getAttribute("value") || "") : "";
   }
 
+  /**
+   * Generates a name suffix for deleted networks.
+   * Purpose: Append " #networkId" to network name if status is "deleted".
+   * Necessity: Marks deleted networks visibly; required for duplicate network handling.
+   */
   function getNameSuffixForDeletedNetwork(netId) {
     return getSelectedStatus() === "deleted" ? ` #${netId}` : "";
   }
 
+  /**
+   * Marks inline form rows (POCs, netfacs, netixlans) for deletion if status = 'deleted'.
+   * Purpose: Clean up stale inline items when network status is deleted.
+   * Necessity: Automatic cleanup prevents orphaned POCs/facilities when network is marked deleted.
+   */
   function clickDeleteHandlersForInlineSet(inlineSetPrefix) {
     qsa(`div.form-row.grp-dynamic-form[id^='${inlineSetPrefix}']`).forEach((row) => {
       if (row.id === `${inlineSetPrefix}-empty`) return;
@@ -478,6 +787,11 @@
     });
   }
 
+  /**
+   * Marks all deleted-status inline items for deletion across all inline sets.
+   * Purpose: Centralize deletion of all stale inline items (POCs, facilities, ixlans).
+   * Necessity: Ensures consistent cleanup of deleted network members across all relation types.
+   */
   function markDeletedNetworkInlinesForDeletion() {
     clickDeleteHandlersForInlineSet("poc_set");
     clickDeleteHandlersForInlineSet("netfac_set");
@@ -485,6 +799,12 @@
   }
 
   // RDAP client module (fully isolated from feature modules)
+  /**
+   * Isolated RDAP AutoNum client for resolving organization names by ASN.
+   * Purpose: Provide fallback organization name lookup via IANA RDAP bootstrap.
+   * Necessity: When org lookup fails (org_id invalid), RDAP provides ASN-based name resolution.
+   * Bootstraps RDAP service URLs from IANA registry with 6-hour TTL cache.
+   */
   const rdapAutnumClient = (() => {
     const BOOTSTRAP_ASN_URL = "https://data.iana.org/rdap/asn.json"; // RFC 9224 bootstrap registry
     const RDAP_ACCEPT_HEADER = "application/rdap+json, application/json;q=0.8";
@@ -495,23 +815,38 @@
       payload: null,
     };
 
+    /**
+     * Parses and validates ASN from string input.
+     * Purpose: Convert ASN string (with or without "AS" prefix) to integer.
+     * Necessity: Validates ASN format before RDAP queries.
+     */
     function parseAsn(value) {
       const number = Number.parseInt(String(value || "").trim(), 10);
       if (!Number.isInteger(number) || number <= 0) return null;
       return number;
     }
 
+    /**
+     * Normalizes RDAP base URL by removing trailing slashes.
+     * Purpose: Create consistent URLs for RDAP endpoint construction.
+     * Necessity: Base URLs may have trailing slashes; normalization prevents double slashes.
+     */
     function normalizeBaseUrl(baseUrl) {
       if (!baseUrl) return null;
       return String(baseUrl).replace(/\/+$/, "");
     }
 
+    /**
+     * Fetches JSON from URL with proper headers and error handling.
+     * Purpose: Unified JSON request helper for RDAP API calls.
+     * Necessity: Uses Tampermonkey's GM_xmlhttpRequest for cross-origin CORS-free requests.
+     */
     function requestJson(url) {
       return new Promise((resolve) => {
         GM_xmlhttpRequest({
           method: "GET",
           url,
-          headers: { Accept: RDAP_ACCEPT_HEADER },
+          headers: buildTampermonkeyRequestHeaders({ Accept: RDAP_ACCEPT_HEADER }),
           onload: (response) => {
             if (response.status >= 200 && response.status < 300) {
               try {
@@ -528,6 +863,12 @@
       });
     }
 
+    /**
+     * Fetches or retrieves cached IANA RDAP bootstrap registry.
+     * Purpose: Get list of RDAP service providers for various ASN ranges.
+     * Necessity: Bootstrap registry maps ASN ranges to RDAP endpoints; 6-hour TTL cache
+     * reduces load on IANA servers. Required before any RDAP autnum queries.
+     */
     async function getBootstrap() {
       const now = Date.now();
       if (
@@ -546,6 +887,12 @@
       return payload;
     }
 
+    /**
+     * Tests if ASN falls within a hyphen-separated range.
+     * Purpose: Determine if given ASN matches a bootstrap range.
+     * Necessity: Bootstrap registry uses ranges like "1-23456"; membership test needed
+     * to find correct RDAP endpoint provider.
+     */
     function isAsnInRange(asn, rangeText) {
       const range = String(rangeText || "").trim();
       if (!range) return false;
@@ -558,6 +905,11 @@
       return asn >= parts[0] && asn <= parts[1];
     }
 
+    /**
+     * Finds the appropriate RDAP base URL for an ASN from bootstrap registry.
+     * Purpose: Look up correct RDAP service endpoint (RIPE, APNIC, ARIN, etc.) by ASN.
+     * Necessity: Different RIRs operate different RDAP endpoints; bootstrap maps ASNs to regions.
+     */
     function getAutnumBaseUrlFromBootstrap(bootstrap, asn) {
       const services = Array.isArray(bootstrap?.services) ? bootstrap.services : [];
 
@@ -574,6 +926,11 @@
       return null;
     }
 
+    /**
+     * Fetches RDAP AutNum record for a given ASN.
+     * Purpose: Retrieve organization and contact data from authoritative RDAP source.
+     * Necessity: RDAP provides RFC 7483 standard organization data including vcard info.
+     */
     async function fetchAutnumRecord(asn) {
       const bootstrap = await getBootstrap();
       const baseUrl = getAutnumBaseUrlFromBootstrap(bootstrap, asn);
@@ -582,6 +939,11 @@
       return requestJson(`${baseUrl}/autnum/${asn}`);
     }
 
+    /**
+     * Extracts property value from RDAP vCard array.
+     * Purpose: Safely retrieve vCard properties (fn=full name, org=organization).
+     * Necessity: vCard is RFC 6350 format array; property names are lowercase.
+     */
     function getVcardProperty(vcardArray, propertyName) {
       const cards = Array.isArray(vcardArray?.[1]) ? vcardArray[1] : [];
       const property = cards.find(
@@ -592,6 +954,12 @@
       return String(property[3] || "").trim();
     }
 
+    /**
+     * Recursively collects entity candidates from RDAP payload with scoring.
+     * Purpose: Build ranked list of organization name candidates.
+     * Necessity: RDAP can have multiple entities (registrant, admin, billing, etc.);
+     * scoring prioritizes registrant > administrative roles, organizations > people.
+     */
     function collectEntityCandidates(entities, candidates = [], depth = 0) {
       if (!Array.isArray(entities)) return candidates;
 
@@ -622,6 +990,11 @@
       return candidates;
     }
 
+    /**
+     * Extracts best organization name from RDAP AutoNum payload.
+     * Purpose: Determine most likely official name for network entity.
+     * Necessity: Collects entities, scores by role/type, returns highest-scored name.
+     */
     function resolveOrganizationNameFromAutnumPayload(payload) {
       const candidates = collectEntityCandidates(payload?.entities, []);
       if (!candidates.length) return null;
@@ -630,6 +1003,12 @@
       return candidates[0]?.value || null;
     }
 
+    /**
+     * Public API: Resolves organization name for ASN via RDAP lookup.
+     * Purpose: Fallback organization name resolution when direct org ID lookup fails.
+     * Necessity: Enables Reset Information to work even if org_id field is invalid/empty.
+     * Returns null on network error or missing organization data (graceful degradation).
+     */
     async function resolveOrganizationNameByAsn(asnInput) {
       const asn = parseAsn(asnInput);
       if (!asn) return null;
@@ -656,6 +1035,12 @@
     };
   })();
 
+  /**
+   * Executes comprehensive network reset clearing all fields to defaults.
+   * Purpose: Prepare network record for re-initialization (especially for RDAP lookups).
+   * Necessity: Reset Information action clears stale data before re-populating from API sources.
+   * Preserves critical fields (name handles separately) and marks deleted inlines for removal.
+   */
   function runNetworkResetActions() {
     const formArea = qs("#network_form > div > fieldset:nth-child(2)");
     if (!formArea) return;
@@ -774,7 +1159,7 @@
           id: `${MODULE_PREFIX}GoogleMaps`,
           label: "Google Maps",
           href,
-          target: query || "_blank",
+          target: "_blank",
         });
       },
     },
@@ -986,9 +1371,18 @@
     },
   ];
 
+  /**
+   * Executes all enabled modules that match the current route context.
+   * Purpose: Central dispatcher that activates modules for the current page.
+   * Necessity: Implements modular architecture; checks both enabled status and page match
+   * before running each module. Catches and logs errors to prevent cascade failures.
+   */
   function dispatchModules(ctx) {
+    const disabledModules = getDisabledModules();
+
     modules.forEach((module) => {
       try {
+        if (!isModuleEnabled(module.id, disabledModules)) return;
         if (!module.match(ctx)) return;
         if (typeof module.preconditions === "function" && !module.preconditions(ctx)) return;
         module.run(ctx);
@@ -998,15 +1392,75 @@
     });
   }
 
-  const ctx = getRouteContext();
+  /**
+   * Runs the complete initialization sequence for consolidated tools.
+   * Purpose: Parse route, dispatch modules, and enforce button order on current page.
+   * Necessity: Single entry point for all initialization logic; ensures modules run before layout.
+   * Sets isInitRunning flag to prevent duplicate initialization during mutations.
+   */
+  let isInitRunning = false;
+  function runConsolidatedInit() {
+    const ctx = getRouteContext();
 
-  // Hard route safety: consolidated script should never run outside intended CP entity change pages.
-  if (!ctx.isCp || !ctx.isEntityChangePage) {
-    return;
+    if (!ctx.isCp || !ctx.isEntityChangePage) {
+      return;
+    }
+
+    isInitRunning = true;
+    try {
+      cleanupLegacyPrimaryActionRow();
+      dispatchModules(ctx);
+      enforceToolbarButtonOrder(ctx);
+    } finally {
+      isInitRunning = false;
+    }
   }
 
-  cleanupLegacyPrimaryActionRow();
+  /**
+   * Schedules initialization to run on next animation frame, preventing duplicates.
+   * Purpose: Debounce repeated mutation events into a single initialization.
+   * Necessity: DOM mutations can fire many times per millisecond; this batches them into
+   * one operation to avoid redundant module calls and button reordering.
+   */
+  let initScheduled = false;
+  function scheduleConsolidatedInit() {
+    // Prevent triggering while modules are actively running (to avoid duplicate DOM insertions)
+    if (initScheduled || isInitRunning) return;
+    initScheduled = true;
 
-  dispatchModules(ctx);
-  enforceToolbarButtonOrder(ctx);
+    requestAnimationFrame(() => {
+      initScheduled = false;
+      runConsolidatedInit();
+    });
+  }
+
+  /**
+   * Bootstrap the consolidated init system and attach event listeners.
+   * Purpose: Initialize the script on page load or immediately if DOM is ready.
+   * Necessity: Entry point that hooks into DOMContentLoaded and DOM mutations to detect
+   * when init should run. Sets up MutationObserver for AJAX/PJAX page navigation.
+   */
+  function bootstrapConsolidatedInit() {
+    scheduleConsolidatedInit();
+
+    window.addEventListener("popstate", scheduleConsolidatedInit);
+    window.addEventListener("hashchange", scheduleConsolidatedInit);
+
+    if (document.body) {
+      const observer = new MutationObserver(() => {
+        // Only allow re-init triggered by MutationObserver if not already running
+        if (!isInitRunning) {
+          scheduleConsolidatedInit();
+        }
+      });
+
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bootstrapConsolidatedInit, { once: true });
+  } else {
+    bootstrapConsolidatedInit();
+  }
 })();

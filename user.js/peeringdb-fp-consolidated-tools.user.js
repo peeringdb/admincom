@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.0.15.20260224
+// @version      1.0.20.20260302
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
@@ -16,7 +16,184 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbFpConsolidated";
+  const DISABLED_MODULES_STORAGE_KEY = `${MODULE_PREFIX}.disabledModules`;
+  const USER_AGENT_STORAGE_KEY = `${MODULE_PREFIX}.userAgent`;
+  const SESSION_UUID_STORAGE_KEY = `${MODULE_PREFIX}.sessionUuid`;
+  const TRUSTED_DOMAINS_FOR_UA = [
+    "peeringdb.com",
+    "*.peeringdb.com",
+    "api.peeringdb.com",
+    "127.0.0.1",
+    "::1",
+    "localhost",
+  ];
+  const DEFAULT_REQUEST_USER_AGENT = "PeeringDB-Admincom-FP-Consolidated";
 
+  /**
+   * Retrieves the set of disabled module IDs from localStorage.
+   * Purpose: Allows individual modules to be toggled on/off without code changes.
+   * Necessity: Provides user-level module control for the modular architecture.
+   * Supports both JSON array and comma-separated formats for backward compatibility.
+   */
+  function getDisabledModules() {
+    const raw = String(window.localStorage?.getItem(DISABLED_MODULES_STORAGE_KEY) || "").trim();
+    if (!raw) return new Set();
+
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return new Set(parsed.map((item) => String(item || "").trim()).filter(Boolean));
+      }
+    } catch (_error) {
+      // fallback to comma-separated format
+    }
+
+    return new Set(
+      raw
+        .split(",")
+        .map((item) => String(item || "").trim())
+        .filter(Boolean),
+    );
+  }
+
+  /**
+   * Checks if a module is enabled (not in the disabled set).
+   * Purpose: Gate-keeper for module execution in dispatchModules().
+   * Necessity: Implements selective module control without removing code.
+   */
+  function isModuleEnabled(moduleId, disabledModules) {
+    if (!moduleId) return false;
+    return !disabledModules.has(moduleId);
+  }
+
+  /**
+   * Generates or retrieves a persistent session UUID for the browser session.
+   * Purpose: Provides a unique identifier for correlating requests within a session.
+   * Necessity: Enables server-side analytics and request tracking without exposing device fingerprint.
+   * UUID persists across page reloads but is cleared when tab/session closes.
+   */
+  function getSessionUuid() {
+    const sessionKey = SESSION_UUID_STORAGE_KEY;
+    let uuid = window.sessionStorage?.getItem(sessionKey);
+    if (!uuid) {
+      uuid = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      if (window.sessionStorage) {
+        window.sessionStorage.setItem(sessionKey, uuid);
+      }
+    }
+    return uuid;
+  }
+
+  /**
+   * Computes a stable client fingerprint from browser/device attributes.
+   * Purpose: Creates a privacy-preserving identifier for requests from untrusted domains.
+   * Necessity: Balances analytics tracking with user privacy for non-trusted networks.
+   * Returns a 16-character hex string derived from UA, platform, language, CPU count, memory.
+   */
+  function computeClientFingerprint() {
+    const parts = [
+      navigator.userAgent,
+      navigator.platform,
+      navigator.language,
+      navigator.hardwareConcurrency || "unknown",
+      navigator.deviceMemory || "unknown",
+    ].join("|");
+
+    let hash = 0;
+    for (let i = 0; i < parts.length; i++) {
+      const char = parts.charCodeAt(i);
+      hash = (hash << 5) - hash + char;
+      hash = hash & hash;
+    }
+    return Math.abs(hash).toString(16).padStart(16, "0").substr(0, 16);
+  }
+
+  /**
+   * Determines if a domain is in the trusted domain list.
+   * Purpose: Implement domain-based trust policy for User-Agent header generation.
+   * Necessity: Distinguishes between trusted (localhost, peeringdb.com) and untrusted domains
+   * to decide whether to use full browser info or privacy-preserving fingerprint.
+   * Also normalizes IPv6 URIs with bracket notation ([::1]) for transparent matching.
+   */
+  function isDomainTrusted(domain) {
+    if (!domain) return false;
+    // Normalize: trim, lowercase, and strip IPv6 URI brackets (e.g., [::1] → ::1)
+    let domainText = String(domain).trim().toLowerCase();
+    if (domainText.startsWith("[") && domainText.endsWith("]")) {
+      domainText = domainText.slice(1, -1);
+    }
+    if (!domainText) return false;
+
+    for (const pattern of TRUSTED_DOMAINS_FOR_UA) {
+      const patternLower = pattern.toLowerCase();
+      if (patternLower === domainText) return true;
+
+      if (patternLower.startsWith("*.")) {
+        const baseDomain = patternLower.slice(2);
+        if (domainText === baseDomain || domainText.endsWith("." + baseDomain)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Constructs a User-Agent string based on domain trust level.
+   * Purpose: Provide contextual information to backend while respecting user privacy.
+   * Necessity: For trusted domains (development, peeringdb.com), includes browser/platform for debugging;
+   * for untrusted domains, uses fingerprint only to minimize data exposure.
+   * Includes session UUID in both cases for request correlation.
+   */
+  function buildTrustBasedUserAgent(domain) {
+    const isTrusted = isDomainTrusted(domain);
+    const sessionUuid = getSessionUuid();
+
+    if (isTrusted) {
+      const browserInfo = `${navigator.userAgent.split(" ").slice(-1)[0]} ${navigator.platform}`;
+      return `${DEFAULT_REQUEST_USER_AGENT} (${browserInfo} uuid/${sessionUuid})`;
+    }
+
+    const fingerprint = computeClientFingerprint();
+    return `${DEFAULT_REQUEST_USER_AGENT} (fingerprint/${fingerprint} uuid/${sessionUuid})`;
+  }
+
+  /**
+   * Retrieves explicit or auto-computed User-Agent for this session.
+   * Purpose: Provide flexible UA configuration with fallback to trust-based generation.
+   * Necessity: Allows manual override via localStorage while auto-computing from domain trust.
+   */
+  function getCustomRequestUserAgent() {
+    const configured = String(window.localStorage?.getItem(USER_AGENT_STORAGE_KEY) || "").trim();
+    if (configured) return configured;
+    return buildTrustBasedUserAgent(window.location.hostname);
+  }
+
+  /**
+   * Constructs HTTP headers for Tampermonkey requests with User-Agent.
+   * Purpose: Centralize header building for all script-initiated requests.
+   * Necessity: Ensures consistent User-Agent and other important headers across all API calls.
+   */
+  function buildTampermonkeyRequestHeaders(baseHeaders = {}) {
+    const headers = { ...baseHeaders };
+    const configured = String(window.localStorage?.getItem(USER_AGENT_STORAGE_KEY) || "").trim();
+
+    const userAgent =
+      configured ||
+      buildTrustBasedUserAgent(window.location.hostname);
+
+    if (userAgent) {
+      headers["User-Agent"] = userAgent;
+    }
+    return headers;
+  }
+
+  /**
+   * Parses the current URL to extract route context (entity type, ID, page kind).
+   * Purpose: Provide route info to modules for conditional execution.
+   * Necessity: Enables modules to match specific pages (e.g., /net/1234) and determine
+   * whether to run. Used by all modules' match() function.
+   */
   function getRouteContext() {
     const path = window.location.pathname;
     // Split and filter empty strings to handle leading/trailing slashes robustly
@@ -41,15 +218,30 @@
     };
   }
 
+  /**
+   * Convenience wrapper for querySelector.
+   * Purpose: Reduce boilerplate for DOM querying throughout the script.
+   * Necessity: Used extensively for finding form fields and toolbar elements.
+   */
   function qs(selector, root = document) {
     return root.querySelector(selector);
   }
 
+  /**
+   * Retrieves trimmed innerText from a selected element.
+   * Purpose: Safe extraction of display text for form fields and data fields.
+   * Necessity: Provides consistent empty-string fallback vs. throwing on missing elements.
+   */
   function getText(selector, root = document) {
     const el = qs(selector, root);
     return el ? el.innerText.trim() : "";
   }
 
+  /**
+   * Retrieves trimmed value from form input elements (input, select, textarea).
+   * Purpose: Unified value extraction that handles both .value property and data attributes.
+   * Necessity: Normalizes form field reading across different input types.
+   */
   function getInputValue(selector, root = document) {
     const el = qs(selector, root);
     if (!el) return "";
@@ -61,6 +253,11 @@
     return String(el.getAttribute("value") || "").trim();
   }
 
+  /**
+   * Copies text to clipboard with modern and fallback implementations.
+   * Purpose: Enable "Copy URL" and similar copy actions for user convenience.
+   * Necessity: Handles browsers with and without Clipboard API support.
+   */
   function copyToClipboard(text) {
     if (navigator.clipboard) {
       navigator.clipboard.writeText(text).catch((err) => {
@@ -83,10 +280,21 @@
     }
   }
 
+  /**
+   * Retrieves the container element for top-right toolbar buttons.
+   * Purpose: Centralize toolbar element selection with fallback selectors.
+   * Necessity: Top-right button area varies in PeeringDB pages; needs fallback chain.
+   */
   function getTopRightToolbarContainer(parentSelector = "div.right.button-bar > div:first-child") {
     return qs(parentSelector);
   }
 
+  /**
+   * Creates and appends an action button to the top-right toolbar.
+   * Purpose: Standardized way to add custom links (Admin Console, BGP tools, etc.) to FP pages.
+   * Necessity: Ensures consistent styling, idempotency (prevents duplicates), and event handling.
+   * Marks buttons with data-pdb-fp-action attribute for later reordering and identification.
+   */
   function createTopRightAction({
     actionId,
     label,
@@ -132,6 +340,12 @@
     return btn;
   }
 
+  /**
+   * Creates an overflow dropdown menu in the top-right toolbar.
+   * Purpose: Provide a compact menu for multiple related tools (RIPEstat, BGPView, CIDR Report, etc.).
+   * Necessity: Prevents toolbar overcrowding by grouping secondary network analysis tools.
+   * Manages menu open/close state and click-outside dismissal.
+   */
   function createTopRightOverflowMenu({
     actionId,
     label,
@@ -222,6 +436,11 @@
     return wrapper;
   }
 
+  /**
+   * Tests if a DOM element matches a given priority (CSS selector or function).
+   * Purpose: Support flexible matching in reorderChildrenByPriority (handles strings and predicates).
+   * Necessity: Enables both CSS-based matching and custom function-based matching in one API.
+   */
   function isPriorityMatch(child, priority) {
     if (!child || !priority) return false;
 
@@ -240,6 +459,12 @@
     }
   }
 
+  /**
+   * Reorders children of a container according to priority list.
+   * Purpose: Establish deterministic button order (Admin Console before BGP tools, etc.).
+   * Necessity: Ensures consistent UI layout across page variations and module load orders.
+   * Unmatched children stay in original order at the end.
+   */
   function reorderChildrenByPriority(container, priorities) {
     if (!container || !Array.isArray(priorities) || priorities.length === 0) return;
 
@@ -263,6 +488,11 @@
     ordered.forEach((child) => container.appendChild(child));
   }
 
+  /**
+   * Identifies if a child element is PeeringDB's native Edit toggle button.
+   * Purpose: Distinguish PeeringDB native structure from custom FP buttons.
+   * Necessity: Route native Edit button to separate row position per PeeringDB layout conventions.
+   */
   function isNativeEditToolbarButton(child) {
     if (!child) return false;
 
@@ -273,6 +503,11 @@
     return Boolean(qs('a[data-edit-action="toggle-edit"]', child));
   }
 
+  /**
+   * Applies flex layout to toolbar container for two-row button arrangement.
+   * Purpose: Enable column-based layout with right alignment and gap spacing.
+   * Necessity: Foundation for enforceTopRightButtonOrder two-row structure.
+   */
   function applyTopRightToolbarFlexLayout(parent) {
     if (!parent) return;
 
@@ -283,6 +518,11 @@
     parent.style.rowGap = "6px";
   }
 
+  /**
+   * Ensures a named row container exists in the toolbar.
+   * Purpose: Create or reuse row div with data-pdb-fp-row attribute for button grouping.
+   * Necessity: Routes buttons to two distinct visual rows (Edit/Admin/Copy-URL, then BGP tools).
+   */
   function ensureTopRightRowContainer(parent, rowName) {
     if (!parent || !rowName) return null;
 
@@ -302,6 +542,12 @@
     return row;
   }
 
+  /**
+   * Routes all toolbar buttons to two predetermined rows.
+   * Purpose: Implement the two-row layout convention (primary actions row 1, analysis tools row 2).
+   * Necessity: Creates visual hierarchy and improves mobile UX by grouping related actions.
+   * Hides empty rows to maintain clean toolbar appearance.
+   */
   function routeTopRightButtonsToTwoRows(parent) {
     if (!parent) return;
 
@@ -331,6 +577,11 @@
     row2.style.display = row2.children.length > 0 ? "flex" : "none";
   }
 
+  /**
+   * Groups custom toolbar items by vertical pixel position (visual rows).
+   * Purpose: Detect which buttons wrap to new lines due to narrow viewports.
+   * Necessity: Understand natural wrapping behavior for spacing adjustments.
+   */
   function groupCustomItemsByVisualRow(customItems, topTolerance = 3) {
     const rows = [];
 
@@ -355,6 +606,11 @@
     return rows;
   }
 
+  /**
+   * Removes individual button margins to rely on container gap for spacing.
+   * Purpose: Standardize spacing through flexbox gap instead of element margins.
+   * Necessity: Prevents double-spacing and inconsistent gaps from mixed margin/gap sources.
+   */
   function applyTopRightCustomSpacing(parent) {
     if (!parent) return;
 
@@ -370,6 +626,11 @@
     });
   }
 
+  /**
+   * Clears top margins on wrapped toolbar items.
+   * Purpose: Clean spacing when buttons wrap to multiple rows.
+   * Necessity: Prevents excessive vertical gaps when items wrap at narrow viewports.
+   */
   function applyTopRightWrappedRowOffset(parent) {
     if (!parent) return;
 
@@ -384,9 +645,24 @@
     });
   }
 
+  /**
+   * Enforces deterministic button order and layout in top-right toolbar.
+   * Purpose: Coordinate layout detection, reordering, and two-row routing for consistent UX.
+   * Necessity: Main orchestrator for toolbar DOM changes; detects when PeeringDB has already
+   * laid out buttons and skips processing to avoid interfering with native layout.
+   * Version 1.0.20 adds detection for pre-existing data-pdb-fp-row containers.
+   */
   function enforceTopRightButtonOrder() {
     const parent = getTopRightToolbarContainer();
     if (!parent) return;
+
+    // Skip re-layout if PeeringDB has already structured buttons into rows (data-pdb-fp-row).
+    // New PeeringDB versions handle button layout automatically; don't interfere.
+    const hasPreExistingRows = qs('div[data-pdb-fp-row]', parent);
+    if (hasPreExistingRows) {
+      // Buttons already placed by PeeringDB's native two-row layout.
+      return;
+    }
 
     applyTopRightToolbarFlexLayout(parent);
 
@@ -409,6 +685,11 @@
     applyTopRightWrappedRowOffset(parent);
   }
 
+  /**
+   * Convenience wrapper for createTopRightAction with minimal arguments.
+   * Purpose: Simplify button creation for module code.
+   * Necessity: Reduces boilerplate in module run functions.
+   */
   function addButton(label, onClick, parentSelector = "div.right.button-bar > div:first-child", actionId = "") {
     return createTopRightAction({
       actionId,
@@ -586,8 +867,13 @@
 
         if (!parent || !refNode) return;
 
+        // Guard: check if button already exists to prevent duplicates on re-init
+        const existing = qs('a[data-pdb-fp-copy-user-roles]', parent);
+        if (existing) return;
+
         const btn = document.createElement("a");
         btn.className = "btn btn-default";
+        btn.setAttribute("data-pdb-fp-copy-user-roles", "true");
         btn.style.textAlign = "center";
         btn.style.marginRight = "5px";
         btn.style.cursor = "pointer";
@@ -620,16 +906,90 @@
     },
   ];
 
-  const ctx = getRouteContext();
-  modules.forEach((module) => {
-    try {
-      if (module.match(ctx)) {
-        module.run(ctx);
-      }
-    } catch (e) {
-      console.warn(`[${MODULE_PREFIX}] Module ${module.id} failed`, e);
-    }
-  });
+  /**
+   * Executes all enabled modules that match the current route context.
+   * Purpose: Central dispatcher that activates modules for the current page.
+   * Necessity: Implements modular architecture; checks both enabled status and page match
+   * before running each module. Catches and logs errors to prevent cascade failures.
+   */
+  function dispatchModules(ctx) {
+    const disabledModules = getDisabledModules();
 
-  enforceTopRightButtonOrder();
+    modules.forEach((module) => {
+      try {
+        if (!isModuleEnabled(module.id, disabledModules)) return;
+        if (!module.match(ctx)) return;
+        if (typeof module.preconditions === "function" && !module.preconditions(ctx)) return;
+        module.run(ctx);
+      } catch (error) {
+        console.warn(`[${MODULE_PREFIX}] Module ${module.id} failed`, error);
+      }
+    });
+  }
+
+  /**
+   * Runs the complete initialization sequence for consolidated tools.
+   * Purpose: Parse route, dispatch modules, and enforce button order on current page.
+   * Necessity: Single entry point for all initialization logic; ensures modules run before layout.
+   * Sets isInitRunning flag to prevent duplicate initialization during mutations.
+   */
+  let isInitRunning = false;
+  function runConsolidatedInit() {
+    const ctx = getRouteContext();
+    isInitRunning = true;
+    try {
+      dispatchModules(ctx);
+      enforceTopRightButtonOrder();
+    } finally {
+      isInitRunning = false;
+    }
+  }
+
+  /**
+   * Schedules initialization to run on next animation frame, preventing duplicates.
+   * Purpose: Debounce repeated mutation events into a single initialization.
+   * Necessity: DOM mutations can fire many times per millisecond; this batches them into
+   * one operation to avoid redundant module calls and button reordering.
+   */
+  let initScheduled = false;
+  function scheduleConsolidatedInit() {
+    // Prevent triggering while modules are actively running (to avoid duplicate DOM insertions)
+    if (initScheduled || isInitRunning) return;
+    initScheduled = true;
+
+    requestAnimationFrame(() => {
+      initScheduled = false;
+      runConsolidatedInit();
+    });
+  }
+
+  /**
+   * Bootstrap the consolidated init system and attach event listeners.
+   * Purpose: Initialize the script on page load or immediately if DOM is ready.
+   * Necessity: Entry point that hooks into DOMContentLoaded, popstate (SPA navigation),
+   * and DOM mutations to detect when init should run. Sets up MutationObserver for AJAX/PJAX pages.
+   */
+  function bootstrapConsolidatedInit() {
+    scheduleConsolidatedInit();
+
+    window.addEventListener("popstate", scheduleConsolidatedInit);
+    window.addEventListener("hashchange", scheduleConsolidatedInit);
+
+    if (document.body) {
+      const observer = new MutationObserver(() => {
+        // Only allow re-init triggered by MutationObserver if not already running
+        if (!isInitRunning) {
+          scheduleConsolidatedInit();
+        }
+      });
+
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bootstrapConsolidatedInit, { once: true });
+  } else {
+    bootstrapConsolidatedInit();
+  }
 })();
