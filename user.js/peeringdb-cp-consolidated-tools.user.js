@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      1.0.40.20260302
+// @version      1.0.42.20260303
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*/*/change/*
@@ -321,11 +321,12 @@
    * Necessity: Uses multiple fallbacks to handle Django admin version variations.
    */
   function getToolbarList() {
-    return (
+    const toolbar = (
       qs("#grp-content-title > ul.grp-object-tools:not([data-pdb-cp-toolbar-row]):not([data-pdb-cp-action])") ||
       qs("#grp-content-title > ul.grp-object-tools") ||
       qs("#grp-content-title > ul")
     );
+    return toolbar;
   }
 
   /**
@@ -387,17 +388,29 @@
     a.id = id;
     a.href = href;
     a.textContent = label;
+    a.style.cursor = "pointer";
 
     if (target) {
       a.target = target;
     }
 
-    if (typeof onClick === "function") {
-      a.addEventListener("click", (event) => {
+    a.addEventListener("click", (event) => {
+      if (typeof onClick === "function") {
         event.preventDefault();
         onClick(event);
-      });
-    }
+        return;
+      }
+
+      if (href && href !== "#") {
+        event.preventDefault();
+        const resolvedUrl = new URL(href, window.location.origin).toString();
+        if (target && target !== "_self") {
+          window.open(resolvedUrl, target, "noopener");
+        } else {
+          window.location.href = resolvedUrl;
+        }
+      }
+    });
 
     li.appendChild(a);
 
@@ -495,6 +508,7 @@
     button.id = id;
     button.href = "#";
     button.textContent = label;
+    button.style.cursor = "pointer";
 
     if (typeof onClick === "function") {
       button.addEventListener("click", (event) => {
@@ -1396,9 +1410,7 @@
    * Runs the complete initialization sequence for consolidated tools.
    * Purpose: Parse route, dispatch modules, and enforce button order on current page.
    * Necessity: Single entry point for all initialization logic; ensures modules run before layout.
-   * Sets isInitRunning flag to prevent duplicate initialization during mutations.
    */
-  let isInitRunning = false;
   function runConsolidatedInit() {
     const ctx = getRouteContext();
 
@@ -1406,61 +1418,14 @@
       return;
     }
 
-    isInitRunning = true;
-    try {
-      cleanupLegacyPrimaryActionRow();
-      dispatchModules(ctx);
-      enforceToolbarButtonOrder(ctx);
-    } finally {
-      isInitRunning = false;
-    }
-  }
-
-  /**
-   * Schedules initialization to run on next animation frame, preventing duplicates.
-   * Purpose: Debounce repeated mutation events into a single initialization.
-   * Necessity: DOM mutations can fire many times per millisecond; this batches them into
-   * one operation to avoid redundant module calls and button reordering.
-   */
-  let initScheduled = false;
-  function scheduleConsolidatedInit() {
-    // Prevent triggering while modules are actively running (to avoid duplicate DOM insertions)
-    if (initScheduled || isInitRunning) return;
-    initScheduled = true;
-
-    requestAnimationFrame(() => {
-      initScheduled = false;
-      runConsolidatedInit();
-    });
-  }
-
-  /**
-   * Bootstrap the consolidated init system and attach event listeners.
-   * Purpose: Initialize the script on page load or immediately if DOM is ready.
-   * Necessity: Entry point that hooks into DOMContentLoaded and DOM mutations to detect
-   * when init should run. Sets up MutationObserver for AJAX/PJAX page navigation.
-   */
-  function bootstrapConsolidatedInit() {
-    scheduleConsolidatedInit();
-
-    window.addEventListener("popstate", scheduleConsolidatedInit);
-    window.addEventListener("hashchange", scheduleConsolidatedInit);
-
-    if (document.body) {
-      const observer = new MutationObserver(() => {
-        // Only allow re-init triggered by MutationObserver if not already running
-        if (!isInitRunning) {
-          scheduleConsolidatedInit();
-        }
-      });
-
-      observer.observe(document.body, { childList: true, subtree: true });
-    }
+    cleanupLegacyPrimaryActionRow();
+    dispatchModules(ctx);
+    enforceToolbarButtonOrder(ctx);
   }
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", bootstrapConsolidatedInit, { once: true });
+    document.addEventListener("DOMContentLoaded", runConsolidatedInit, { once: true });
   } else {
-    bootstrapConsolidatedInit();
+    runConsolidatedInit();
   }
 })();
