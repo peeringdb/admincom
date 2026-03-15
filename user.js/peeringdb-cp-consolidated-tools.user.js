@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      1.0.42.20260303
+// @version      1.0.49.20260315
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*/*/change/*
@@ -37,6 +37,36 @@
     "internetexchange",
     "campus",
   ]); 
+  const COPY_FIELD_DENY_LABELS = new Set([
+    "logo",
+    "manual ix-f import request",
+    "manual ix-f import status",
+    "status",
+    "social media",
+    "ixf import request user",
+    "number of facilities at this exchange",
+    "number of networks at this exchange",
+    "version",
+    "ixf import history",
+    "ix-f network count",
+    "unicast ipv4",
+    "unicast ipv6",
+    "multicast",
+    "ix-f member export url visibility",
+    "id",
+    "ixf ixp import enabled",
+    "ix-f error",
+    "ix-f sent ips for unsupported protocol",
+    "ixf import attempt info",
+  ]);
+  const COPY_FIELD_CONDITIONAL_EMPTY_LABELS = new Set([
+    "technical phone",
+    "policy phone",
+    "sales phone",
+    "technical email",
+    "policy email",
+    "sales email",
+  ]);
 
   /**
    * Retrieves the set of disabled module IDs from localStorage.
@@ -729,6 +759,214 @@
   }
 
   /**
+   * Temporarily changes copy-icon button text then reverts after a delay.
+   * Purpose: Give immediate feedback for field-level copy actions.
+   * Necessity: Field copy buttons are icon-only by default and need success confirmation.
+   */
+  function pulseCopyIconButton(button, successLabel = "Copied") {
+    if (!button) return;
+
+    const original = button.textContent || "";
+    button.textContent = successLabel;
+    setTimeout(() => {
+      button.textContent = original;
+    }, 1000);
+  }
+
+  /**
+   * Ensures copy button CSS is available for field-level copy buttons.
+   * Purpose: Keep button visuals consistent and lightweight without external CSS dependencies.
+   * Necessity: The userscript runs in-page and must inject styles itself.
+   */
+  function ensureFieldCopyButtonStyles() {
+    const styleId = `${MODULE_PREFIX}CopyFieldStyle`;
+    if (document.getElementById(styleId)) return;
+
+    const style = document.createElement("style");
+    style.id = styleId;
+    style.textContent = `
+      .${MODULE_PREFIX}CopyFieldButton {
+        float: right;
+        margin-left: 6px;
+        border: 1px solid #d7d7d7;
+        border-radius: 3px;
+        background: #f9f9f9;
+        color: #444;
+        font-size: 11px;
+        line-height: 1.4;
+        padding: 0 6px;
+        cursor: pointer;
+      }
+      .${MODULE_PREFIX}CopyFieldButton:hover {
+        background: #efefef;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  /**
+   * Normalizes text copied from rendered field contents.
+   * Purpose: Remove excessive whitespace while preserving readable one-line output.
+   * Necessity: Rendered HTML often contains line breaks and spacing artifacts.
+   */
+  function normalizeRenderedCopyText(text) {
+    return String(text || "")
+      .replace(/\u00a0/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  /**
+   * Finds the field label text for a value container.
+   * Purpose: Support field-level filtering rules by human-visible label.
+   * Necessity: Some CP rows are metadata or helper rows and should not get copy icons.
+   */
+  function getFieldLabelText(valueCell) {
+    const row = valueCell?.closest(".form-row");
+    if (!row) return "";
+
+    const label = qs(".c-1 label", row) || qs(".c-1", row);
+    return normalizeRenderedCopyText(label?.textContent || "").toLowerCase();
+  }
+
+  /**
+   * Resolves best non-help data value from direct controls inside a field value cell.
+   * Purpose: Distinguish actual field data from explanatory helper text.
+   * Necessity: Prevents copy buttons from appearing when only help text is present.
+   */
+  function getDirectFieldDataValue(valueCell) {
+    if (!valueCell) return "";
+
+    const readonly = qs(".grp-readonly", valueCell);
+    if (readonly) {
+      return normalizeRenderedCopyText(readonly.textContent || "");
+    }
+
+    const select = qs("select", valueCell);
+    if (select) {
+      const selectedOptions = Array.from(select.selectedOptions || []);
+      const selectedText = selectedOptions
+        .map((option) => normalizeRenderedCopyText(option.textContent || option.value || ""))
+        .filter(Boolean)
+        .join(", ");
+      if (selectedText) return selectedText;
+    }
+
+    const textarea = qs("textarea", valueCell);
+    if (textarea) {
+      const value = normalizeRenderedCopyText(textarea.value || textarea.textContent || "");
+      if (value) return value;
+    }
+
+    const input = qs("input:not([type='hidden']):not([type='button']):not([type='submit']):not([type='reset']):not([type='file'])", valueCell);
+    if (input) {
+      const inputType = String(input.getAttribute("type") || "text").toLowerCase();
+      if (inputType === "checkbox" || inputType === "radio") {
+        return input.checked ? "true" : "false";
+      }
+
+      const value = normalizeRenderedCopyText(input.value || "");
+      if (value) return value;
+    }
+
+    const anchor = qs("a[href^='http://'], a[href^='https://']", valueCell);
+    if (anchor) {
+      const href = normalizeRenderedCopyText(anchor.getAttribute("href") || "");
+      if (href) return href;
+    }
+
+    return "";
+  }
+
+  /**
+   * Determines whether a value container should receive a copy button.
+   * Purpose: Exclude helper/metadata/lookup-only rows while keeping real data fields copiable.
+   * Necessity: Avoids noisy icons on rows that do not represent useful copyable values.
+   */
+  function shouldAttachCopyButtonToValueCell(valueCell) {
+    if (!valueCell) return false;
+
+    const labelText = getFieldLabelText(valueCell);
+    if (COPY_FIELD_DENY_LABELS.has(labelText)) return false;
+
+    const directValue = getDirectFieldDataValue(valueCell);
+    const isConditionalEmptyField = COPY_FIELD_CONDITIONAL_EMPTY_LABELS.has(labelText);
+    if (isConditionalEmptyField && !directValue) return false;
+
+    if (qs("input[type='file']", valueCell)) return false;
+
+    if (qs(".grp-help", valueCell) && !qs("input, textarea, select, .grp-readonly", valueCell)) {
+      return false;
+    }
+
+    const hasReadonly = Boolean(qs(".grp-readonly", valueCell));
+    const hasDataInput = Boolean(
+      qs("input:not([type='hidden']):not([type='button']):not([type='submit']):not([type='reset']):not([type='file']), textarea, select", valueCell),
+    );
+    const hasPublicLink = Boolean(qs("a[href^='http://'], a[href^='https://']", valueCell));
+
+    return hasReadonly || hasDataInput || hasPublicLink;
+  }
+
+  /**
+   * Resolves the best rendered value from a Django admin field value container.
+   * Purpose: Prefer human-visible values (grp-readonly, selected option labels) over raw markup.
+   * Necessity: Different field types render values differently in CP forms and inline forms.
+   */
+  function getRenderedFieldValue(container) {
+    if (!container) return "";
+
+    const directValue = getDirectFieldDataValue(container);
+    if (directValue) return directValue;
+
+    const clone = container.cloneNode(true);
+    qsa(".grp-help", clone).forEach((help) => help.remove());
+    qsa(`button.${MODULE_PREFIX}CopyFieldButton`, clone).forEach((button) => button.remove());
+    return normalizeRenderedCopyText(clone.textContent || "");
+  }
+
+  /**
+   * Adds a copy icon button to each rendered form value container.
+   * Purpose: Make every visible field value directly copiable from the CP UI.
+   * Necessity: Admin workflows often require copying readonly values such as Prefixes.
+   */
+  function addCopyButtonsToRenderedFields() {
+    ensureFieldCopyButtonStyles();
+
+    qsa(".form-row .c-2").forEach((valueCell) => {
+      if (valueCell.hasAttribute("data-pdb-cp-copy-bound")) return;
+      if (!shouldAttachCopyButtonToValueCell(valueCell)) return;
+
+      const initialValue = getRenderedFieldValue(valueCell);
+      if (!initialValue) return;
+
+      valueCell.setAttribute("data-pdb-cp-copy-bound", "1");
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `${MODULE_PREFIX}CopyFieldButton`;
+      button.title = "Copy value";
+      button.setAttribute("aria-label", "Copy value");
+      button.textContent = "⧉";
+
+      button.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+
+        const value = getRenderedFieldValue(valueCell);
+        if (!value) return;
+
+        const copied = await copyToClipboard(value);
+        if (copied) {
+          pulseCopyIconButton(button);
+        }
+      });
+
+      valueCell.appendChild(button);
+    });
+  }
+
+  /**
    * Determines the frontend URL path for a CP entity (network, carrier, ix).
    * Purpose: Generate correct copy-to-clipboard URL for the current entity type.
    * Necessity: Different entity types map to different URL paths.
@@ -1146,6 +1384,14 @@
             }
           },
         });
+      },
+    },
+    {
+      id: "copy-rendered-field-values",
+      match: (ctx) => ctx.isEntityChangePage,
+      preconditions: () => Boolean(qs(".form-row .c-2")),
+      run: () => {
+        addCopyButtonsToRenderedFields();
       },
     },
     {
