@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.0.20.20260302
+// @version      1.0.24.20260316
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*

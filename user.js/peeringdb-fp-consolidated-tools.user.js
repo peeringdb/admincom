@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.0.20.20260302
+// @version      1.0.24.20260316
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
@@ -861,6 +861,69 @@
       id: "copy-user-roles",
       match: (ctx) => ctx.type === "org" && ctx.isEntityPage,
       run: () => {
+        const CP_EMAIL_SEARCH_BASE = "https://www.peeringdb.com/cp/account/emailaddress/?q=";
+        const EMAIL_REGEX = /[A-Z0-9._+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+
+        function createCpSearchLink(queryText, titleText) {
+          const link = document.createElement("a");
+          link.href = `${CP_EMAIL_SEARCH_BASE}${encodeURIComponent(queryText)}`;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.textContent = "🔍";
+          link.title = titleText;
+          link.setAttribute("aria-label", titleText);
+          link.style.display = "inline-block";
+          link.style.marginLeft = "6px";
+          link.style.textDecoration = "none";
+          return link;
+        }
+
+        const users = document.querySelectorAll(
+          '#org-user-manager > div[data-edit-template="user-item"] > .editable'
+        );
+
+        users.forEach((item) => {
+          const usernameRow = item.querySelector(".item > div:nth-child(1) > div:nth-child(2)");
+          if (usernameRow && !usernameRow.querySelector("a[data-pdb-fp-username-search]")) {
+            const username = Array.from(usernameRow.childNodes)
+              .filter((node) => node.nodeType === Node.TEXT_NODE)
+              .map((node) => String(node.textContent || ""))
+              .join(" ")
+              .trim();
+
+            if (username) {
+              const usernameSearchLink = createCpSearchLink(
+                username,
+                "Search user by username in CP email address"
+              );
+              usernameSearchLink.setAttribute("data-pdb-fp-username-search", "true");
+
+              const badge = usernameRow.querySelector("span.badge-2fa-enabled");
+              if (badge) {
+                badge.insertAdjacentElement("afterend", usernameSearchLink);
+              } else {
+                usernameRow.appendChild(usernameSearchLink);
+              }
+            }
+          }
+
+          const emailCell = item.querySelector(".item > div:nth-child(2)");
+          if (!emailCell) return;
+
+          const emailRows = emailCell.querySelectorAll(":scope > div");
+          emailRows.forEach((emailRow) => {
+            const emailMatch = String(emailRow.textContent || "").match(EMAIL_REGEX);
+            const email = emailMatch ? emailMatch[0].trim() : "";
+
+            // Add quick CP email search link for each email line in the same column.
+            if (!email || emailRow.querySelector("a[data-pdb-fp-email-search]")) return;
+
+            const searchLink = createCpSearchLink(email, "Search user by email in CP");
+            searchLink.setAttribute("data-pdb-fp-email-search", "true");
+            emailRow.appendChild(searchLink);
+          });
+        });
+
         // Insert before the submit button in the user manager
         const parent = qs("#org-user-manager > div:nth-child(5)");
         const refNode = qs('a[data-edit-action="submit"]', parent);
@@ -883,12 +946,23 @@
           const admins = [];
           const members = [];
 
-          const users = document.querySelectorAll(
+          const currentUsers = document.querySelectorAll(
             '#org-user-manager > div[data-edit-template="user-item"] > .editable'
           );
 
-          users.forEach((item) => {
-            const email = getText(".item > div:nth-child(2)", item);
+          currentUsers.forEach((item) => {
+            const emailCell = item.querySelector(".item > div:nth-child(2)");
+            const emailRows = emailCell ? emailCell.querySelectorAll(":scope > div") : [];
+            let email = "";
+
+            for (const row of emailRows) {
+              const match = String(row.textContent || "").match(EMAIL_REGEX);
+              if (match && match[0]) {
+                email = match[0].trim();
+                break;
+              }
+            }
+
             const role = item
               .querySelector(".item > div:nth-child(3) > div:first-child")
               ?.getAttribute("data-edit-value");
