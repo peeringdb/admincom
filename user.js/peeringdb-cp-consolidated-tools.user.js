@@ -1,12 +1,19 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      1.0.49.20260315
+// @version      1.0.50.20260323
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*/*/change/*
 // @icon         https://icons.duckduckgo.com/ip2/peeringdb.com.ico
 // @grant        GM_xmlhttpRequest
+// @run-at       document-end
+// @connect      data.iana.org
+// @connect      rdap.arin.net
+// @connect      rdap.db.ripe.net
+// @connect      rdap.apnic.net
+// @connect      rdap.lacnic.net
+// @connect      rdap.afrinic.net
 // @updateURL    https://raw.githubusercontent.com/peeringdb/admincom/master/user.js/peeringdb-cp-consolidated-tools.meta.js
 // @downloadURL  https://raw.githubusercontent.com/peeringdb/admincom/master/user.js/peeringdb-cp-consolidated-tools.user.js
 // @supportURL   https://github.com/peeringdb/admincom/issues
@@ -290,6 +297,40 @@
     return String(element.getAttribute("value") || "").trim();
   }
 
+  function getSelectedOptionText(selector) {
+    const select = qs(selector);
+    if (!select) return "";
+
+    const selectedOption =
+      qs("option:checked", select) ||
+      qs("option[selected]", select) ||
+      ("selectedIndex" in select && select.options?.[select.selectedIndex]) ||
+      null;
+
+    return String(selectedOption?.textContent || "").trim();
+  }
+
+  function buildFacilityMapsQuerySource() {
+    const latitude = getInputValue("#id_latitude");
+    const longitude = getInputValue("#id_longitude");
+
+    if (latitude && longitude) {
+      return `${latitude},${longitude}`;
+    }
+
+    const address1 = getInputValue("#id_address1");
+    const city = getInputValue("#id_city");
+    const state = getInputValue("#id_state");
+    const zipcode = getInputValue("#id_zipcode");
+    const country = getSelectedOptionText("#id_country");
+
+    const localityLine = [city, [state, zipcode].filter(Boolean).join(" ")]
+      .filter(Boolean)
+      .join(", ");
+
+    return [address1, localityLine, country].filter(Boolean).join(", ");
+  }
+
   /**
    * Sets value on form input elements with consistent synchronization.
    * Purpose: Unified value assignment that updates both .value and attributes.
@@ -345,11 +386,44 @@
     return `AS${networkId}${suffix}`;
   }
 
-  /**
-   * Retrieves the primary toolbar list from the page header.
-   * Purpose: Centralize toolbar element selection with fallback selectors.
-   * Necessity: Uses multiple fallbacks to handle Django admin version variations.
-   */
+  function getFrontendSlugByEntity(entity) {
+    const slugByEntity = {
+      facility: "fac",
+      network: "net",
+      organization: "org",
+      carrier: "carrier",
+      internetexchange: "ix",
+      campus: "campus",
+    };
+
+    return slugByEntity[entity] || "";
+  }
+
+  function getEntityFrontendPath(ctx) {
+    const slug = getFrontendSlugByEntity(ctx?.entity);
+    if (!slug || !ctx?.entityId) return "";
+    return `/${slug}/${ctx.entityId}`;
+  }
+
+  function getEntityCopyLabel(entity) {
+    const labelByEntity = {
+      facility: "Copy Facility URL",
+      network: "Copy Network URL",
+      organization: "Copy Org URL",
+      carrier: "Copy Carrier URL",
+      internetexchange: "Copy IX URL",
+      campus: "Copy Campus URL",
+    };
+
+    return labelByEntity[entity] || "Copy URL";
+  }
+
+  function getOrganizationIdForNameUpdate(ctx) {
+    if (!ctx?.isEntityChangePage) return "";
+    if (ctx.entity === "organization") return String(ctx.entityId || "").trim();
+    return getInputValue("#id_org");
+  }
+
   function getToolbarList() {
     const toolbar = (
       qs("#grp-content-title > ul.grp-object-tools:not([data-pdb-cp-toolbar-row]):not([data-pdb-cp-action])") ||
@@ -464,12 +538,128 @@
     return a;
   }
 
-  /**
-   * Creates or retrieves secondary action row below primary toolbar.
-   * Purpose: Provide a second row for less-critical actions (Copy URL, Copy Org URL).
-   * Necessity: Prevents primary toolbar overcrowding while keeping actions accessible.
-   * Applies vertical offset dynamically and handles resize events.
-   */
+  function createDropdownActionListItem({ id, label, items }) {
+    if (!id || !Array.isArray(items) || items.length === 0) return null;
+
+    const li = document.createElement("li");
+    li.style.position = "relative";
+    li.style.overflow = "visible";
+
+    const toggle = document.createElement("a");
+    toggle.id = id;
+    toggle.href = "#";
+    toggle.textContent = label;
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.setAttribute("aria-haspopup", "true");
+
+    const menu = document.createElement("div");
+    menu.style.position = "absolute";
+    menu.style.right = "0";
+    menu.style.top = "calc(100% + 6px)";
+    menu.style.display = "none";
+    menu.style.flexDirection = "column";
+    menu.style.gap = "4px";
+    menu.style.padding = "6px";
+    menu.style.background = "rgba(255, 255, 255, 0.98)";
+    menu.style.border = "1px solid rgba(0, 0, 0, 0.12)";
+    menu.style.borderRadius = "6px";
+    menu.style.boxShadow = "0 2px 8px rgba(0, 0, 0, 0.15)";
+    menu.style.zIndex = "1000";
+    menu.style.minWidth = "140px";
+
+    items.forEach((item) => {
+      const link = document.createElement("a");
+      link.href = item.href;
+      link.textContent = item.label;
+      link.target = item.target || "_blank";
+      link.rel = "noopener noreferrer";
+      link.style.display = "block";
+      link.style.whiteSpace = "nowrap";
+      link.style.padding = "2px 4px";
+      menu.appendChild(link);
+    });
+
+    const closeMenu = () => {
+      menu.style.display = "none";
+      toggle.setAttribute("aria-expanded", "false");
+      li.removeAttribute("data-open");
+      li.style.zIndex = "";
+    };
+
+    toggle.addEventListener("click", (event) => {
+      const isOpen = li.getAttribute("data-open") === "1";
+      if (isOpen) {
+        closeMenu();
+        return;
+      }
+
+      menu.style.display = "flex";
+      toggle.setAttribute("aria-expanded", "true");
+      li.setAttribute("data-open", "1");
+      li.style.zIndex = "1001";
+    });
+
+    menu.addEventListener("click", (event) => {
+      event.stopPropagation();
+    });
+
+    toggle.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        closeMenu();
+      }
+    });
+
+    document.addEventListener("click", (event) => {
+      if (li.getAttribute("data-open") !== "1") return;
+      if (!li.contains(event.target)) {
+        closeMenu();
+      }
+    });
+
+    li.appendChild(toggle);
+    li.appendChild(menu);
+
+    return { li, toggle };
+  }
+
+  function addToolbarDropdownAction({ id, label, items, insertLeft = false }) {
+    if (!id || !Array.isArray(items) || items.length === 0) return null;
+
+    const existing = qs(`#${id}`);
+    if (existing) {
+      return existing;
+    }
+
+    const toolbar = getToolbarList();
+    if (!toolbar) return null;
+
+    const dropdown = createDropdownActionListItem({ id, label, items });
+    if (!dropdown) return null;
+
+    const { li, toggle } = dropdown;
+    li.setAttribute("data-pdb-cp-action", id);
+    li.style.marginLeft = "5px";
+
+    const firstCustom = qs("li[data-pdb-cp-action]", toolbar);
+    const firstNonCustom = qs("li:not([data-pdb-cp-action])", toolbar);
+
+    if (insertLeft) {
+      if (firstCustom) {
+        toolbar.insertBefore(li, firstCustom);
+      } else if (firstNonCustom) {
+        toolbar.insertBefore(li, firstNonCustom);
+      } else {
+        toolbar.appendChild(li);
+      }
+    } else if (firstNonCustom) {
+      toolbar.insertBefore(li, firstNonCustom);
+    } else {
+      toolbar.appendChild(li);
+    }
+
+    return toggle;
+  }
+
   function getOrCreateSecondaryActionRow() {
     const contentTitle = qs("#grp-content-title");
     if (!contentTitle) return null;
@@ -495,6 +685,9 @@
     row.style.boxSizing = "border-box";
     row.style.padding = "0";
     row.style.listStyle = "none";
+    row.style.overflow = "visible";
+    row.style.position = "relative";
+    row.style.zIndex = "5";
 
     contentTitle.parentNode?.insertBefore(row, contentTitle.nextSibling);
 
@@ -552,11 +745,27 @@
     return button;
   }
 
-  /**
-   * Tests if a DOM element matches a given priority (CSS selector or function).
-   * Purpose: Support flexible matching in reorderChildrenByPriority (handles strings and predicates).
-   * Necessity: Enables both CSS-based matching and custom function-based matching in one API.
-   */
+  function addSecondaryDropdownAction({ id, label, items }) {
+    const row = getOrCreateSecondaryActionRow();
+    if (!row || !id || !Array.isArray(items) || items.length === 0) return null;
+
+    const existing = qs(`#${id}`);
+    if (existing) return existing;
+
+    const dropdown = createDropdownActionListItem({ id, label, items });
+    if (!dropdown) return null;
+
+    const { li, toggle } = dropdown;
+    li.setAttribute("data-pdb-cp-secondary-action", id);
+    li.style.display = "inline-block";
+    li.style.setProperty("float", "none", "important");
+    li.style.margin = row.children.length > 0 ? "0 0 0 5px" : "0";
+    li.style.verticalAlign = "top";
+
+    row.appendChild(li);
+    return toggle;
+  }
+
   function isPriorityMatch(child, priority) {
     if (!child || !priority) return false;
 
@@ -627,24 +836,25 @@
    * For other entity types, no special ordering applied (preserves natural order).
    */
   function enforceToolbarButtonOrder(ctx) {
-    if (!ctx?.isEntityChangePage || ctx.entity !== "network") return;
+    if (!ctx?.isEntityChangePage) return;
 
     const primaryToolbar = getToolbarList();
     if (primaryToolbar) {
       reorderChildrenByPriority(primaryToolbar, [
+        'li[data-pdb-cp-action="pdbCpConsolidatedResetNetworkInformation"]',
         'li[data-pdb-cp-action="pdbCpConsolidatedFrontend"]',
         'li[data-pdb-cp-action="pdbCpConsolidatedOrganizationFrontend"]',
         'li[data-pdb-cp-action="pdbCpConsolidatedOrganizationCp"]',
         isHistoryToolbarItem,
-        'li[data-pdb-cp-action="pdbCpConsolidatedUpdateNetworkName"]',
-        'li[data-pdb-cp-action="pdbCpConsolidatedResetNetworkInformation"]',
       ]);
     }
 
     const secondaryRow = qs(`#${MODULE_PREFIX}SecondaryActionRow`);
     if (secondaryRow) {
       reorderChildrenByPriority(secondaryRow, [
-        'li[data-pdb-cp-secondary-action="pdbCpConsolidatedCopyNetworkUrl"]',
+        'li[data-pdb-cp-secondary-action="pdbCpConsolidatedUpdateEntityName"]',
+        'li[data-pdb-cp-secondary-action="pdbCpConsolidatedMapsDropdown"]',
+        'li[data-pdb-cp-secondary-action="pdbCpConsolidatedCopyEntityUrl"]',
         'li[data-pdb-cp-secondary-action="pdbCpConsolidatedCopyOrganizationUrl"]',
       ]);
     }
@@ -677,9 +887,9 @@
    */
   function clickSaveAndContinue() {
     const button =
-      qs("#network_form input[name='_continue']") ||
-      qs("#network_form > div > footer > div input[name='_continue']") ||
-      qs("#network_form > div > footer > div > div:nth-child(4) > input");
+      qs("form input[name='_continue']") ||
+      qs("form > div > footer > div input[name='_continue']") ||
+      qs("form > div > footer > div > div:nth-child(4) > input[name='_continue']");
 
     if (!button) return false;
     button.click();
@@ -993,13 +1203,8 @@
     return option ? String(option.getAttribute("value") || "") : "";
   }
 
-  /**
-   * Generates a name suffix for deleted networks.
-   * Purpose: Append " #networkId" to network name if status is "deleted".
-   * Necessity: Marks deleted networks visibly; required for duplicate network handling.
-   */
-  function getNameSuffixForDeletedNetwork(netId) {
-    return getSelectedStatus() === "deleted" ? ` #${netId}` : "";
+  function getNameSuffixForDeletedEntity(entityId) {
+    return getSelectedStatus() === "deleted" ? ` #${entityId}` : "";
   }
 
   /**
@@ -1356,27 +1561,28 @@
       match: (ctx) => ctx.isEntityChangePage,
       preconditions: () => Boolean(getToolbarList()),
       run: (ctx) => {
-        addSecondaryActionButton({
-          id: `${MODULE_PREFIX}CopyNetworkUrl`,
-          label: "Copy network URL",
-          onClick: async (event) => {
-            const path = getCopyNetworkFrontendPath(ctx);
-            const url = `https://www.peeringdb.com${path}`;
-            const copied = await copyToClipboard(url);
-            if (copied) {
-              pulseToolbarButton(event?.target, "Copied network URL");
-            }
-          },
-        });
+        const entityPath = getEntityFrontendPath(ctx);
+        if (entityPath) {
+          addSecondaryActionButton({
+            id: `${MODULE_PREFIX}CopyEntityUrl`,
+            label: getEntityCopyLabel(ctx.entity),
+            onClick: async (event) => {
+              const url = `https://www.peeringdb.com${entityPath}`;
+              const copied = await copyToClipboard(url);
+              if (copied) {
+                pulseToolbarButton(event?.target, "Copied URL");
+              }
+            },
+          });
+        }
+
+        const orgId = ctx.entity === "organization" ? "" : getInputValue("#id_org");
+        if (!orgId) return;
 
         addSecondaryActionButton({
           id: `${MODULE_PREFIX}CopyOrganizationUrl`,
           label: "Copy Org URL",
           onClick: async (event) => {
-            const orgId =
-              ctx.entity === "organization" ? ctx.entityId : getInputValue("#id_org");
-            if (!orgId) return;
-
             const url = `https://www.peeringdb.com/org/${orgId}`;
             const copied = await copyToClipboard(url);
             if (copied) {
@@ -1397,29 +1603,19 @@
     {
       id: "facility-google-maps",
       match: (ctx) => ctx.isEntityChangePage && ctx.entity === "facility",
-      preconditions: () => Boolean(getToolbarList()),
+      preconditions: () => Boolean(getOrCreateSecondaryActionRow()),
       run: () => {
-        const latitude = getInputValue("#id_latitude");
-        const longitude = getInputValue("#id_longitude");
-        const address1 = getInputValue("#id_address1");
-        const city = getInputValue("#id_city");
-        const state = getInputValue("#id_state");
-        const zipcode = getInputValue("#id_zipcode");
-        const country = getInputValue("#id_country");
+        const query = encodeURIComponent(buildFacilityMapsQuerySource());
+        const mapsItems = [
+          { label: "Google Maps", href: `https://www.google.com/maps?q=${query}` },
+          { label: "Bing Maps", href: `https://www.bing.com/maps?q=${query}` },
+          { label: "OpenStreetMap", href: `https://www.openstreetmap.org/search?query=${query}` },
+        ];
 
-        const querySource =
-          latitude && longitude
-            ? `${latitude},${longitude}`
-            : `${address1}${city ? `+${city}` : ""}${state ? `+${state}` : ""}${zipcode ? `+${zipcode}` : ""}${country ? `+${country}` : ""}`;
-
-        const query = encodeURIComponent(querySource);
-        const href = `https://www.google.com/maps?q=${query}`;
-
-        addToolbarAction({
-          id: `${MODULE_PREFIX}GoogleMaps`,
-          label: "Google Maps",
-          href,
-          target: "_blank",
+        addSecondaryDropdownAction({
+          id: `${MODULE_PREFIX}MapsDropdown`,
+          label: "Maps",
+          items: mapsItems,
         });
       },
     },
@@ -1464,16 +1660,7 @@
         ENTITY_TYPES.has(ctx.entity),
       preconditions: () => Boolean(getToolbarList()),
       run: (ctx) => {
-        const gotoByEntity = {
-          facility: "fac",
-          network: "net",
-          organization: "org",
-          carrier: "carrier",
-          internetexchange: "ix",
-          campus: "campus",
-        };
-
-        const goto = gotoByEntity[ctx.entity];
+        const goto = getFrontendSlugByEntity(ctx.entity);
         if (!goto) return;
 
         const orgId = getInputValue("#id_org");
@@ -1519,23 +1706,40 @@
       },
     },
     {
-      id: "set-network-name-equal-org-name",
-      match: (ctx) => ctx.isEntityChangePage && ctx.entity === "network",
-      preconditions: () => Boolean(getToolbarList() && qs("#id_org") && qs("#id_name")),
+      id: "set-entity-name-equal-org-name",
+      match: (ctx) =>
+        ctx.isEntityChangePage &&
+        ["network", "facility", "internetexchange", "organization", "carrier", "campus"].includes(ctx.entity),
+      preconditions: (ctx) =>
+        Boolean(
+          getToolbarList() &&
+            qs("#id_name") &&
+            (ctx.entity === "organization" || qs("#id_org")),
+        ),
       run: (ctx) => {
-        addToolbarAction({
-          id: `${MODULE_PREFIX}UpdateNetworkName`,
+        addSecondaryActionButton({
+          id: `${MODULE_PREFIX}UpdateEntityName`,
           label: "Update Name",
-          insertLeft: true,
           onClick: async () => {
-            markDeletedNetworkInlinesForDeletion();
+            const appendName = getNameSuffixForDeletedEntity(ctx.entityId);
+            let baseName;
+            if (["organization", "facility", "internetexchange"].includes(ctx.entity)) {
+              const rawName = getInputValue("#id_name");
+              const existingSuffix = ` #${ctx.entityId}`;
+              baseName = rawName.endsWith(existingSuffix)
+                ? rawName.slice(0, -existingSuffix.length)
+                : rawName;
+            } else {
+              const orgId = getOrganizationIdForNameUpdate(ctx);
+              baseName = await getOrganizationName(orgId);
+              if (!baseName) return;
+            }
 
-            const orgId = getInputValue("#id_org");
-            const baseName = await getOrganizationName(orgId);
-            if (!baseName) return;
-
-            const appendName = getNameSuffixForDeletedNetwork(ctx.entityId);
             const nextName = `${baseName}${appendName}`;
+            const currentName = getInputValue("#id_name");
+            if (nextName === currentName) return;
+
+            markDeletedNetworkInlinesForDeletion();
             setInputValue("#id_name", nextName);
             clickSaveAndContinue();
           },
@@ -1545,7 +1749,7 @@
     {
       id: "reset-network-information",
       match: (ctx) => ctx.isEntityChangePage && ctx.entity === "network",
-      preconditions: () => Boolean(getToolbarList() && qs("#id_org") && qs("#id_name")),
+      preconditions: () => Boolean(getToolbarList() && qs("#id_org") && qs("#id_name") && getSelectedStatus() === "deleted"),
       run: (ctx) => {
         addToolbarAction({
           id: `${MODULE_PREFIX}ResetNetworkInformation`,
@@ -1567,7 +1771,7 @@
 
             try {
               const orgId = getInputValue("#id_org");
-              const appendName = getNameSuffixForDeletedNetwork(ctx.entityId);
+              const appendName = getNameSuffixForDeletedEntity(ctx.entityId);
 
               runNetworkResetActions();
 
