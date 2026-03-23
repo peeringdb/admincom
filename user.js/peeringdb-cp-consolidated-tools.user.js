@@ -40,6 +40,12 @@
   const DEFAULT_REQUEST_USER_AGENT = "PeeringDB-Admincom-CP-Consolidated";
   const ORG_NAME_CACHE_TTL_MS = 15 * 60 * 1000;
   const ORG_NAME_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.orgNameCache.`;
+  /**
+   * Increment this integer whenever the shape of a stored org-name cache entry changes.
+   * On first read after a script update, any entry whose stored v field does not match
+   * is treated as stale and evicted, preventing silent misreads of old formats.
+   */
+  const ORG_NAME_CACHE_SCHEMA_VERSION = 1;
   const ENTITY_TYPES = new Set([
     "facility",
     "network",
@@ -420,7 +426,13 @@
       const parsed = JSON.parse(raw);
       const cachedName = String(parsed?.name || "").trim();
       const expiresAt = Number(parsed?.expiresAt || 0);
-      if (!cachedName || !Number.isFinite(expiresAt) || expiresAt <= now) {
+      const schemaVersion = Number(parsed?.v ?? -1);
+      if (
+        !cachedName ||
+        !Number.isFinite(expiresAt) ||
+        expiresAt <= now ||
+        schemaVersion !== ORG_NAME_CACHE_SCHEMA_VERSION
+      ) {
         window.sessionStorage?.removeItem(storageKey);
         return null;
       }
@@ -451,7 +463,7 @@
     try {
       window.sessionStorage?.setItem(
         storageKey,
-        JSON.stringify({ name: normalizedName, expiresAt }),
+        JSON.stringify({ v: ORG_NAME_CACHE_SCHEMA_VERSION, name: normalizedName, expiresAt }),
       );
     } catch (_error) {
       // sessionStorage may be unavailable; memory cache still provides benefit.
