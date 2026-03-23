@@ -8,6 +8,7 @@
 // @icon         https://icons.duckduckgo.com/ip2/peeringdb.com.ico
 // @grant        GM_xmlhttpRequest
 // @grant        GM_notification
+// @grant        GM_registerMenuCommand
 // @run-at       document-end
 // @connect      data.iana.org
 // @connect      rdap.arin.net

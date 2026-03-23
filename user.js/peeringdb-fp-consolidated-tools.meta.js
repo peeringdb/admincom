@@ -7,7 +7,8 @@
 // @match        https://www.peeringdb.com/*
 // @exclude      https://www.peeringdb.com/cp/*
 // @icon         https://icons.duckduckgo.com/ip2/peeringdb.com.ico
-// @grant        none
+// @grant        GM_registerMenuCommand
+// @run-at       document-end
 // @updateURL    https://raw.githubusercontent.com/peeringdb/admincom/master/user.js/peeringdb-fp-consolidated-tools.meta.js
 // @downloadURL  https://raw.githubusercontent.com/peeringdb/admincom/master/user.js/peeringdb-fp-consolidated-tools.user.js
 // @supportURL   https://github.com/peeringdb/admincom/issues

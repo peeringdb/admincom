@@ -7,7 +7,7 @@
 // @match        https://www.peeringdb.com/*
 // @exclude      https://www.peeringdb.com/cp/*
 // @icon         https://icons.duckduckgo.com/ip2/peeringdb.com.ico
-// @grant        none
+// @grant        GM_registerMenuCommand
 // @run-at       document-end
 // @updateURL    https://raw.githubusercontent.com/peeringdb/admincom/master/user.js/peeringdb-fp-consolidated-tools.meta.js
 // @downloadURL  https://raw.githubusercontent.com/peeringdb/admincom/master/user.js/peeringdb-fp-consolidated-tools.user.js
@@ -1026,6 +1026,35 @@
    * Sets isInitRunning flag to prevent duplicate initialization during mutations.
    */
   let isInitRunning = false;
+  let fpMenuCommandsRegistered = false;
+
+  /**
+   * Registers one-time Tampermonkey menu commands for common FP actions.
+   * Purpose: Provide quick action access via extension menu for frequent workflows.
+   * Necessity: Supports keyboard-driven usage and declutters reliance on toolbar clicks.
+   */
+  function registerFpMenuCommands() {
+    if (fpMenuCommandsRegistered) return;
+    if (typeof GM_registerMenuCommand !== "function") return;
+    fpMenuCommandsRegistered = true;
+
+    GM_registerMenuCommand("FP: Copy URL", () => {
+      qs('a[data-pdb-fp-action="copy-url"]')?.click();
+    });
+
+    GM_registerMenuCommand("FP: Copy AS<N>", () => {
+      qs('a[data-pdb-fp-action="copy-asn"]')?.click();
+    });
+
+    GM_registerMenuCommand("FP: Open Admin Console", () => {
+      const adminLink = qs('a[data-pdb-fp-action="admin-console"]');
+      if (!adminLink) return;
+      const href = String(adminLink.getAttribute("href") || "").trim();
+      if (!href) return;
+      window.open(href, "_blank", "noopener");
+    });
+  }
+
   let consolidatedObserver = null;
   let observerDisconnectTimer = 0;
 
@@ -1112,6 +1141,7 @@
     try {
       dispatchModules(ctx);
       enforceTopRightButtonOrder();
+      registerFpMenuCommands();
     } finally {
       isInitRunning = false;
       scheduleObserverDisconnect();

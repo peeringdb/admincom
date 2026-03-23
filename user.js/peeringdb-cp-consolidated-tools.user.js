@@ -8,6 +8,7 @@
 // @icon         https://icons.duckduckgo.com/ip2/peeringdb.com.ico
 // @grant        GM_xmlhttpRequest
 // @grant        GM_notification
+// @grant        GM_registerMenuCommand
 // @run-at       document-end
 // @connect      data.iana.org
 // @connect      rdap.arin.net
@@ -2100,6 +2101,35 @@
    * Purpose: Parse route, dispatch modules, and enforce button order on current page.
    * Necessity: Single entry point for all initialization logic; ensures modules run before layout.
    */
+  let cpMenuCommandsRegistered = false;
+
+  /**
+   * Registers one-time Tampermonkey menu commands for common CP actions.
+   * Purpose: Provide keyboard/popup access to frequent actions without toolbar clicks.
+   * Necessity: Power users benefit from script actions in the Tampermonkey command menu.
+   */
+  function registerCpMenuCommands() {
+    if (cpMenuCommandsRegistered) return;
+    if (typeof GM_registerMenuCommand !== "function") return;
+    cpMenuCommandsRegistered = true;
+
+    GM_registerMenuCommand("CP: Update Name", () => {
+      qs(`#${MODULE_PREFIX}UpdateEntityName`)?.click();
+    });
+
+    GM_registerMenuCommand("CP: Copy Entity URL", () => {
+      qs(`#${MODULE_PREFIX}CopyEntityUrl`)?.click();
+    });
+
+    GM_registerMenuCommand("CP: Copy Org URL", () => {
+      qs(`#${MODULE_PREFIX}CopyOrganizationUrl`)?.click();
+    });
+
+    GM_registerMenuCommand("CP: Reset Information", () => {
+      qs(`#${MODULE_PREFIX}ResetNetworkInformation`)?.click();
+    });
+  }
+
   function runConsolidatedInit() {
     const ctx = getRouteContext();
 
@@ -2110,6 +2140,7 @@
     cleanupLegacyPrimaryActionRow();
     dispatchModules(ctx);
     enforceToolbarButtonOrder(ctx);
+    registerCpMenuCommands();
   }
 
   if (document.readyState === "loading") {
