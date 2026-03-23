@@ -616,6 +616,36 @@
     return `/${slug}/${ctx.entityId}`;
   }
 
+  /**
+   * Resolves PeeringDB API resource slug for a CP entity type.
+   * Purpose: Build direct JSON API links for the current entity page.
+   * Necessity: CP workflows often require quick access to canonical API payloads.
+   */
+  function getEntityApiResourceByEntity(entity) {
+    const apiResourceByEntity = {
+      facility: "fac",
+      network: "net",
+      organization: "org",
+      carrier: "carrier",
+      internetexchange: "ix",
+      campus: "campus",
+    };
+
+    return apiResourceByEntity[entity] || "";
+  }
+
+  /**
+   * Builds full API JSON URL for the current CP entity context.
+   * Purpose: Provide one-click navigation to the matching API record.
+   * Necessity: Avoid manual URL crafting when validating backend/source-of-truth data.
+   */
+  function getEntityApiJsonUrl(ctx) {
+    const resource = getEntityApiResourceByEntity(ctx?.entity);
+    const entityId = String(ctx?.entityId || "").trim();
+    if (!resource || !entityId) return "";
+    return `https://www.peeringdb.com/api/${resource}/${entityId}`;
+  }
+
   function getEntityCopyLabel(entity) {
     const labelByEntity = {
       facility: "Copy Facility URL",
@@ -1057,6 +1087,7 @@
       reorderChildrenByPriority(secondaryRow, [
         'li[data-pdb-cp-secondary-action="pdbCpConsolidatedUpdateEntityName"]',
         'li[data-pdb-cp-secondary-action="pdbCpConsolidatedMapsDropdown"]',
+        'li[data-pdb-cp-secondary-action="pdbCpConsolidatedCopyEntityId"]',
         'li[data-pdb-cp-secondary-action="pdbCpConsolidatedCopyEntityUrl"]',
         'li[data-pdb-cp-secondary-action="pdbCpConsolidatedCopyOrganizationUrl"]',
       ]);
@@ -1822,6 +1853,27 @@
       match: (ctx) => ctx.isEntityChangePage,
       preconditions: () => Boolean(getToolbarList()),
       run: (ctx) => {
+        addSecondaryActionButton({
+          id: `${MODULE_PREFIX}CopyEntityId`,
+          label: `Copy ID ${ctx.entityId}`,
+          onClick: async (event) => {
+            const copied = await copyToClipboard(String(ctx.entityId || ""));
+            if (copied) {
+              pulseToolbarButton(event?.target, "Copied ID");
+            }
+          },
+        });
+
+        const apiJsonUrl = getEntityApiJsonUrl(ctx);
+        if (apiJsonUrl) {
+          addToolbarAction({
+            id: `${MODULE_PREFIX}ApiJson`,
+            label: "API JSON",
+            href: apiJsonUrl,
+            target: "_new",
+          });
+        }
+
         const entityPath = getEntityFrontendPath(ctx);
         if (entityPath) {
           addSecondaryActionButton({
