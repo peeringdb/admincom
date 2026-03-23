@@ -30,6 +30,7 @@
     "localhost",
   ];
   const DEFAULT_REQUEST_USER_AGENT = "PeeringDB-Admincom-FP-Consolidated";
+  const OBSERVER_IDLE_DISCONNECT_MS = 2000;
 
   /**
    * Retrieves the set of disabled module IDs from localStorage.
@@ -1025,6 +1026,86 @@
    * Sets isInitRunning flag to prevent duplicate initialization during mutations.
    */
   let isInitRunning = false;
+  let consolidatedObserver = null;
+  let observerDisconnectTimer = 0;
+
+  /**
+   * Determines the best DOM root to observe for FP dynamic updates.
+   * Purpose: Minimize observer workload by avoiding full-body observation when possible.
+   * Necessity: Broad body/subtree observation can trigger excessive callbacks on busy pages.
+   */
+  function getObserverRootNode() {
+    return (
+      getTopRightToolbarContainer() ||
+      qs("#content") ||
+      qs("#view") ||
+      document.body
+    );
+  }
+
+  /**
+   * Disconnects the shared MutationObserver and clears pending disconnect timers.
+   * Purpose: Stop observation after page stabilizes to reduce long-lived callback overhead.
+   * Necessity: Observer is only needed during dynamic render bursts and route transitions.
+   */
+  function disconnectConsolidatedObserver() {
+    if (observerDisconnectTimer) {
+      window.clearTimeout(observerDisconnectTimer);
+      observerDisconnectTimer = 0;
+    }
+
+    if (consolidatedObserver) {
+      consolidatedObserver.disconnect();
+      consolidatedObserver = null;
+    }
+  }
+
+  /**
+   * Schedules observer shutdown after a short idle period.
+   * Purpose: Keep observer active during render bursts, then detach automatically.
+   * Necessity: Balances responsiveness with lower steady-state CPU usage.
+   */
+  function scheduleObserverDisconnect() {
+    if (observerDisconnectTimer) {
+      window.clearTimeout(observerDisconnectTimer);
+    }
+
+    observerDisconnectTimer = window.setTimeout(() => {
+      disconnectConsolidatedObserver();
+    }, OBSERVER_IDLE_DISCONNECT_MS);
+  }
+
+  /**
+   * Ensures a single shared MutationObserver is connected for dynamic page updates.
+   * Purpose: Re-attach observer only when needed, using scoped root + filtered callback.
+   * Necessity: SPA-like updates on FP pages require temporary observation for toolbar rebuild.
+   */
+  function ensureConsolidatedObserver() {
+    if (consolidatedObserver || !document.body) return;
+
+    const rootNode = getObserverRootNode();
+    if (!rootNode) return;
+
+    consolidatedObserver = new MutationObserver((mutations) => {
+      if (isInitRunning) return;
+
+      const hasStructuralChange = mutations.some(
+        (mutation) =>
+          mutation.type === "childList" &&
+          ((mutation.addedNodes && mutation.addedNodes.length > 0) ||
+            (mutation.removedNodes && mutation.removedNodes.length > 0)),
+      );
+
+      if (!hasStructuralChange) return;
+
+      scheduleConsolidatedInit();
+      scheduleObserverDisconnect();
+    });
+
+    consolidatedObserver.observe(rootNode, { childList: true, subtree: true });
+    scheduleObserverDisconnect();
+  }
+
   function runConsolidatedInit() {
     const ctx = getRouteContext();
     isInitRunning = true;
@@ -1033,6 +1114,7 @@
       enforceTopRightButtonOrder();
     } finally {
       isInitRunning = false;
+      scheduleObserverDisconnect();
     }
   }
 
@@ -1062,20 +1144,15 @@
    */
   function bootstrapConsolidatedInit() {
     scheduleConsolidatedInit();
+    ensureConsolidatedObserver();
 
-    window.addEventListener("popstate", scheduleConsolidatedInit);
-    window.addEventListener("hashchange", scheduleConsolidatedInit);
+    const onRouteChange = () => {
+      ensureConsolidatedObserver();
+      scheduleConsolidatedInit();
+    };
 
-    if (document.body) {
-      const observer = new MutationObserver(() => {
-        // Only allow re-init triggered by MutationObserver if not already running
-        if (!isInitRunning) {
-          scheduleConsolidatedInit();
-        }
-      });
-
-      observer.observe(document.body, { childList: true, subtree: true });
-    }
+    window.addEventListener("popstate", onRouteChange);
+    window.addEventListener("hashchange", onRouteChange);
   }
 
   if (document.readyState === "loading") {
