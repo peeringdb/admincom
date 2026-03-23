@@ -3248,6 +3248,80 @@
       },
     },
     {
+      id: "carrierfac-approve-reject",
+      match: (ctx) => ctx.isEntityChangePage && ctx.entity === "carrierfacility",
+      preconditions: () => Boolean(getToolbarList()),
+      run: (ctx) => {
+        const handleCarrierfacAction = async (action, event) => {
+          const actionLockKey = `${MODULE_PREFIX}.carrierfacAction.${action}.${ctx.entityId}`;
+          if (!tryBeginActionLock(actionLockKey)) {
+            notifyUser({
+              title: "PeeringDB CP",
+              text: `Carrier Facility ${action} is already running.`,
+            });
+            return;
+          }
+
+          try {
+            const button = event.target;
+            button.textContent = `${action}ing...`;
+            button.style.opacity = "0.7";
+            button.style.pointerEvents = "none";
+
+            const endpoint = `${PEERINGDB_API_BASE_URL}/carrierfac/${ctx.entityId}/${action.toLowerCase()}`;
+            const result = await pdbPost(endpoint, "POST", {});
+
+            if (result.status >= 200 && result.status < 300) {
+              notifyUser({
+                title: "PeeringDB CP",
+                text: `Carrier Facility ${action} succeeded.`,
+              });
+            } else {
+              notifyUser({
+                title: "PeeringDB CP",
+                text: `Carrier Facility ${action} failed (HTTP ${result.status}).`,
+              });
+            }
+          } catch (error) {
+            console.error(`[${MODULE_PREFIX}] Carrier Facility ${action} failed`, error);
+            notifyUser({
+              title: "PeeringDB CP",
+              text: `Carrier Facility ${action} failed. See console for details.`,
+            });
+          } finally {
+            const button = event?.target;
+            if (button) {
+              const origLabel = button.dataset.pdbCpOrigLabel || "Action";
+              button.textContent = origLabel;
+              button.style.opacity = "";
+              button.style.pointerEvents = "";
+            }
+            endActionLock(actionLockKey);
+          }
+        };
+
+        addToolbarAction({
+          id: `${MODULE_PREFIX}CarrierfacApprove`,
+          label: "Approve",
+          insertLeft: true,
+          onClick: (event) => {
+            event.target.dataset.pdbCpOrigLabel = "Approve";
+            handleCarrierfacAction("Approve", event);
+          },
+        });
+
+        addToolbarAction({
+          id: `${MODULE_PREFIX}CarrierfacReject`,
+          label: "Reject",
+          insertLeft: true,
+          onClick: (event) => {
+            event.target.dataset.pdbCpOrigLabel = "Reject";
+            handleCarrierfacAction("Reject", event);
+          },
+        });
+      },
+    },
+    {
       id: "request-ixf-import",
       match: (ctx) => ctx.isEntityChangePage && ctx.entity === "internetexchange",
       preconditions: () => Boolean(getToolbarList()),
