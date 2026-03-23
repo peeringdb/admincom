@@ -3275,6 +3275,27 @@
           if (titleArea) {
             titleArea.appendChild(badge);
           }
+
+          // Append IRR AS-SET badge using the already-fetched network data.
+          // Purpose: Surface the IRR route-object set identifier without a second API call.
+          const irrAsSet = String(netData?.irr_as_set || "").trim();
+          if (irrAsSet && titleArea) {
+            const irrBadge = document.createElement("span");
+            irrBadge.style.cssText = `
+              display: inline-block;
+              padding: 2px 8px;
+              margin-left: 6px;
+              background-color: #607d8b;
+              color: white;
+              border-radius: 3px;
+              font-size: 12px;
+              font-weight: bold;
+              white-space: nowrap;
+            `;
+            irrBadge.textContent = `IRR: ${irrAsSet}`;
+            irrBadge.title = `IRR AS-SET: ${irrAsSet}`;
+            titleArea.appendChild(irrBadge);
+          }
         } catch (_error) {
           // Gracefully ignore API errors for status badge
         }
