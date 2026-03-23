@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.0.20260323
+// @version      2.0.1.20260323
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
@@ -25,7 +25,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.0.20260323";
+  const SCRIPT_VERSION = "2.0.1.20260323";
   const DUMMY_ORG_ID = 20525;
   const DISABLED_MODULES_STORAGE_KEY = `${MODULE_PREFIX}.disabledModules`;
   const USER_AGENT_STORAGE_KEY = `${MODULE_PREFIX}.userAgent`;
@@ -46,6 +46,8 @@
   const ORG_NAME_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.orgNameCache.`;
   const NETWORK_NAME_SCAN_CACHE_KEY = `${MODULE_PREFIX}.networkNameScanCache.v8`;
   const NETWORK_NAME_SCAN_CACHE_TTL_MS = CACHE_TTL_MS;
+  const NETWORK_UPDATE_NAME_RETRY_STORAGE_PREFIX = `${MODULE_PREFIX}.networkUpdateNameRetry.`;
+  const NETWORK_UPDATE_NAME_RETRY_TTL_MS = 15 * 60 * 1000;
   const NETWORK_NAME_SCAN_PAGE_SIZE = 2000;
   const NETWORK_NAME_SCAN_TARGET_COUNT = 0;
   const NETWORK_NAME_SCAN_MAX_REQUESTS = 40;
@@ -485,21 +487,33 @@
   /**
    * Returns storage for domain-scoped cache entries.
    * Purpose: Share short-lived cache payloads across tabs on the same origin.
-   * Necessity: sessionStorage is tab-scoped; localStorage enables cross-tab reuse.
-   * Falls back to sessionStorage when localStorage is unavailable.
-   * @returns {Storage|null} localStorage (preferred), sessionStorage (fallback), or null.
+   * Necessity: tab-scoped storage breaks cross-tab consistency; localStorage enables cross-tab reuse.
+   * @returns {Storage|null} localStorage instance, or null when unavailable.
    */
   function getDomainCacheStorage() {
     try {
       if (window.localStorage) return window.localStorage;
     } catch (_error) {
-      // Fall through to sessionStorage fallback.
+      // Ignore; cache persistence will be unavailable.
     }
 
+    return null;
+  }
+
+  /**
+   * Returns storage for tab-scoped transient state.
+   * Purpose: Isolate ephemeral per-tab state (e.g. one-shot retry payloads) from
+   * domain-wide localStorage cache so cross-tab reads cannot accidentally replay
+   * a retry that belongs to a different browser context.
+   * Necessity: sessionStorage is cleared when the tab closes, preventing stale
+   * retry state from resurecting in a future session on the same origin.
+   * @returns {Storage|null} sessionStorage instance, or null when unavailable.
+   */
+  function getTabSessionStorage() {
     try {
       if (window.sessionStorage) return window.sessionStorage;
     } catch (_error) {
-      // Ignore; cache persistence will be unavailable.
+      // Ignore; tab-session persistence will be unavailable.
     }
 
     return null;
@@ -696,16 +710,17 @@
    * Generates or retrieves a persistent session UUID for the browser session.
    * Purpose: Provides a unique identifier for correlating requests within a session.
    * Necessity: Enables server-side analytics and request tracking without exposing device fingerprint.
-   * UUID persists across page reloads but is cleared when tab/session closes.
+   * UUID persists across page reloads and tabs on the same origin.
    * @returns {string} Session UUID string (generated once per browser session).
    */
   function getSessionUuid() {
     const sessionKey = SESSION_UUID_STORAGE_KEY;
-    let uuid = window.sessionStorage?.getItem(sessionKey);
+    const storage = getDomainCacheStorage();
+    let uuid = storage?.getItem(sessionKey);
     if (!uuid) {
       uuid = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-      if (window.sessionStorage) {
-        window.sessionStorage.setItem(sessionKey, uuid);
+      if (storage) {
+        storage.setItem(sessionKey, uuid);
       }
     }
     return uuid;
@@ -2974,6 +2989,226 @@
   }
 
   /**
+   * Builds storage key for persisted one-time network update-name retry state.
+   * Purpose: Keep retry metadata isolated per network record.
+   * Necessity: Enables safe post-submit retry on the next page load.
+   * @param {string|number} networkId - CP network record ID.
+   * @returns {string} Namespaced storage key.
+   */
+  function getNetworkUpdateNameRetryStorageKey(networkId) {
+    const normalizedNetworkId = String(networkId || "").trim();
+    if (!normalizedNetworkId) return "";
+    return `${NETWORK_UPDATE_NAME_RETRY_STORAGE_PREFIX}${normalizedNetworkId}`;
+  }
+
+  /**
+   * Extracts ASN digits from user/API values.
+   * Purpose: Normalize ASN for deterministic retry suffixes.
+   * Necessity: ASN values can include spaces or optional AS prefixes.
+   * @param {string|number} asnInput - Raw ASN value.
+   * @returns {string} Numeric ASN text, or empty string when invalid.
+   */
+  function normalizeAsnForNameSuffix(asnInput) {
+    const cleaned = String(asnInput || "").replace(/^AS\s*/i, "").trim();
+    const parsed = Number.parseInt(cleaned, 10);
+    if (!Number.isInteger(parsed) || parsed <= 0) return "";
+    return String(parsed);
+  }
+
+  /**
+   * Builds one retry variant by appending ` (AS<asn>)` when possible.
+   * Purpose: Resolve duplicate-name validation conflicts deterministically.
+   * Necessity: Some names collide only after submit-side uniqueness checks.
+   * @param {string} name - Candidate network name.
+   * @param {string|number} asnInput - ASN source value.
+   * @returns {string} Retry candidate name, or empty string when unavailable.
+   */
+  function buildNetworkNameAsnRetryVariant(name, asnInput) {
+    const baseName = String(name || "").trim();
+    if (!baseName) return "";
+
+    const normalizedAsn = normalizeAsnForNameSuffix(asnInput);
+    if (!normalizedAsn) return "";
+
+    const retrySuffix = ` (AS${normalizedAsn})`;
+    if (baseName.endsWith(retrySuffix)) return baseName;
+    return `${baseName}${retrySuffix}`;
+  }
+
+  /**
+   * Persists one-time retry metadata for network Update Name submit flow.
+   * Purpose: Bridge state across page reload after first save attempt.
+   * Necessity: Duplicate-name validation appears only after form submit.
+   * @param {{
+   *   networkId: string|number,
+   *   originalName: string,
+   *   retryName: string,
+   *   attempts?: number,
+   * }} payload - Retry metadata payload.
+   */
+  function setPendingNetworkUpdateNameRetry(payload) {
+    const networkId = String(payload?.networkId || "").trim();
+    const originalName = String(payload?.originalName || "").trim();
+    const retryName = String(payload?.retryName || "").trim();
+    const attempts = Number(payload?.attempts || 0);
+    if (!networkId || !originalName || !retryName) return;
+
+    const storageKey = getNetworkUpdateNameRetryStorageKey(networkId);
+    if (!storageKey) return;
+
+    try {
+      const storage = getTabSessionStorage();
+      storage?.setItem(
+        storageKey,
+        JSON.stringify({
+          networkId,
+          originalName,
+          retryName,
+          attempts,
+          expiresAt: Date.now() + NETWORK_UPDATE_NAME_RETRY_TTL_MS,
+        }),
+      );
+    } catch (_error) {
+      // Ignore storage errors; retry remains best-effort.
+    }
+  }
+
+  /**
+   * Reads pending network update-name retry metadata when still valid.
+   * Purpose: Resume one-time retry workflow after save-triggered page reload.
+   * Necessity: Expired/stale payloads must be ignored to prevent unintended edits.
+   * @param {string|number} networkId - CP network record ID.
+   * @returns {{networkId: string, originalName: string, retryName: string, attempts: number}|null}
+   */
+  function getPendingNetworkUpdateNameRetry(networkId) {
+    const storageKey = getNetworkUpdateNameRetryStorageKey(networkId);
+    if (!storageKey) return null;
+
+    try {
+      const storage = getTabSessionStorage();
+      const raw = storage?.getItem(storageKey);
+      if (!raw) return null;
+
+      const parsed = JSON.parse(raw);
+      const expiresAt = Number(parsed?.expiresAt || 0);
+      if (!Number.isFinite(expiresAt) || Date.now() >= expiresAt) {
+        storage?.removeItem(storageKey);
+        return null;
+      }
+
+      const originalName = String(parsed?.originalName || "").trim();
+      const retryName = String(parsed?.retryName || "").trim();
+      if (!originalName || !retryName) {
+        storage?.removeItem(storageKey);
+        return null;
+      }
+
+      return {
+        networkId: String(parsed?.networkId || "").trim(),
+        originalName,
+        retryName,
+        attempts: Math.max(0, Number.parseInt(String(parsed?.attempts ?? 0), 10) || 0),
+      };
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  /**
+   * Clears pending network update-name retry metadata.
+   * Purpose: Stop retry loop once success/failure outcome is known.
+   * Necessity: Prevents stale retries from affecting later manual edits.
+   * @param {string|number} networkId - CP network record ID.
+   */
+  function clearPendingNetworkUpdateNameRetry(networkId) {
+    const storageKey = getNetworkUpdateNameRetryStorageKey(networkId);
+    if (!storageKey) return;
+
+    try {
+      const storage = getTabSessionStorage();
+      storage?.removeItem(storageKey);
+    } catch (_error) {
+      // Ignore storage cleanup errors.
+    }
+  }
+
+  /**
+   * Detects duplicate network-name validation errors on the current form.
+   * Purpose: Trigger retry only for the specific uniqueness validation failure.
+   * Necessity: Avoids overriding names for unrelated form errors.
+   * @returns {boolean} True when duplicate-name validation is present.
+   */
+  function hasDuplicateNetworkNameValidationError() {
+    const errorRows = qsa("#id_name_error li, .name .errorlist li");
+    if (!errorRows.length) return false;
+
+    return errorRows.some((item) =>
+      /name is already in use by another network/i.test(String(item?.textContent || "").trim()),
+    );
+  }
+
+  /**
+   * Applies one automatic retry for Update Name when duplicate-name error appears.
+   * Purpose: Retry with ` (AS<asn>)` suffix after server-side uniqueness rejection.
+   * Necessity: Duplicate validation is only known after submit, requiring reload-time retry.
+   * @param {{ entity: string, entityId: string, isEntityChangePage: boolean }} ctx - Route context.
+   * @returns {boolean} True when retry save was triggered.
+   */
+  function maybeRetryNetworkUpdateNameAfterDuplicate(ctx) {
+    if (!ctx?.isEntityChangePage || ctx.entity !== "network") return false;
+
+    const pending = getPendingNetworkUpdateNameRetry(ctx.entityId);
+    if (!pending) return false;
+
+    const currentName = getInputValue("#id_name");
+    const hasDuplicateError = hasDuplicateNetworkNameValidationError();
+
+    if (!hasDuplicateError) {
+      clearPendingNetworkUpdateNameRetry(ctx.entityId);
+      return false;
+    }
+
+    if (currentName === pending.retryName) {
+      clearPendingNetworkUpdateNameRetry(ctx.entityId);
+      notifyUser({
+        title: "PeeringDB CP",
+        text: "Update Name retry also failed (duplicate). Please set a unique name manually.",
+      });
+      return false;
+    }
+
+    if (currentName !== pending.originalName) {
+      clearPendingNetworkUpdateNameRetry(ctx.entityId);
+      return false;
+    }
+
+    if (pending.attempts >= 1) {
+      clearPendingNetworkUpdateNameRetry(ctx.entityId);
+      return false;
+    }
+
+    setInputValue("#id_name", pending.retryName);
+    setPendingNetworkUpdateNameRetry({
+      networkId: ctx.entityId,
+      originalName: pending.originalName,
+      retryName: pending.retryName,
+      attempts: pending.attempts + 1,
+    });
+
+    const triggered = clickSaveAndContinue();
+    if (!triggered) {
+      clearPendingNetworkUpdateNameRetry(ctx.entityId);
+      return false;
+    }
+
+    notifyUser({
+      title: "PeeringDB CP",
+      text: `Update Name retry: attempting '${pending.retryName}'.`,
+    });
+    return true;
+  }
+
+  /**
    * Reads a readonly field value from a form row by its visible label text.
    * Purpose: Prefer values already rendered on the change form over stale API payloads.
    * Necessity: Some readonly values can differ from API fetch timing/state on page load.
@@ -3782,6 +4017,14 @@
       },
     },
     {
+      id: "network-update-name-retry-on-duplicate",
+      match: (ctx) => ctx.isEntityChangePage && ctx.entity === "network",
+      preconditions: () => Boolean(qs("#id_name") && qs("form")),
+      run: (ctx) => {
+        maybeRetryNetworkUpdateNameAfterDuplicate(ctx);
+      },
+    },
+    {
       id: "set-entity-name-equal-org-name",
       match: (ctx) =>
         ctx.isEntityChangePage && ENTITY_TYPES.has(ctx.entity),
@@ -3852,12 +4095,41 @@
                 return;
               }
 
+              let queuedRetryName = "";
+              if (ctx.entity === "network") {
+                queuedRetryName = buildNetworkNameAsnRetryVariant(nextName, getInputValue("#id_asn"));
+                if (queuedRetryName && queuedRetryName !== nextName) {
+                  setPendingNetworkUpdateNameRetry({
+                    networkId: ctx.entityId,
+                    originalName: nextName,
+                    retryName: queuedRetryName,
+                    attempts: 0,
+                  });
+                } else {
+                  clearPendingNetworkUpdateNameRetry(ctx.entityId);
+                }
+              }
+
               markDeletedNetworkInlinesForDeletion();
               setInputValue("#id_name", nextName);
-              clickSaveAndContinue();
+              const didSubmit = clickSaveAndContinue();
+              if (!didSubmit) {
+                if (ctx.entity === "network") {
+                  clearPendingNetworkUpdateNameRetry(ctx.entityId);
+                }
+                notifyUser({
+                  title: "PeeringDB CP",
+                  text: "Update Name: failed to trigger save action.",
+                });
+                return;
+              }
+
               notifyUser({
                 title: "PeeringDB CP",
-                text: `Update Name: saved '${nextName}'.`,
+                text:
+                  ctx.entity === "network" && queuedRetryName
+                    ? `Update Name: saved '${nextName}'. Auto-retry is armed for duplicate-name errors.`
+                    : `Update Name: saved '${nextName}'.`,
               });
             } finally {
               endActionLock(actionLockKey);
