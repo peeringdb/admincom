@@ -3211,7 +3211,14 @@
 
               const nextName = `${baseName}${appendName}`;
               const currentName = getInputValue("#id_name");
-              if (nextName === currentName) return;
+              if (nextName === currentName) {
+                pulseToolbarButton(event?.target, "No-op");
+                notifyUser({
+                  title: "PeeringDB CP",
+                  text: `Update Name: no changes required for '${nextName}'.`,
+                });
+                return;
+              }
 
               markDeletedNetworkInlinesForDeletion();
               setInputValue("#id_name", nextName);
