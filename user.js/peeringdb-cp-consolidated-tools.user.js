@@ -29,6 +29,7 @@
   const DISABLED_MODULES_STORAGE_KEY = `${MODULE_PREFIX}.disabledModules`;
   const USER_AGENT_STORAGE_KEY = `${MODULE_PREFIX}.userAgent`;
   const SESSION_UUID_STORAGE_KEY = `${MODULE_PREFIX}.sessionUuid`;
+  const DIAGNOSTICS_STORAGE_KEY = `${MODULE_PREFIX}.debug`;
   const TRUSTED_DOMAINS_FOR_UA = [
     "peeringdb.com",
     "*.peeringdb.com",
@@ -373,6 +374,30 @@
     const normalizedKey = String(lockKey || "").trim();
     if (!normalizedKey) return;
     activeActionLocks.delete(normalizedKey);
+  }
+
+  /**
+   * Returns true when diagnostics/debug mode is enabled via localStorage.
+   * Purpose: Gate verbose console output behind an opt-in flag so normal
+   * production use is silent.
+   * Toggle with: localStorage.setItem('pdbCpConsolidated.debug', '1')
+   *   or via the Tampermonkey menu command "CP: Toggle Debug Mode".
+   */
+  function isDebugEnabled() {
+    return window.localStorage?.getItem(DIAGNOSTICS_STORAGE_KEY) === "1";
+  }
+
+  /**
+   * Structured debug logger — no-ops unless debug mode is active.
+   * Purpose: Provide consistent prefixed console output for module and
+   * bus diagnostics without polluting normal page console output.
+   * @param {string} tag  - short subsystem label shown in brackets.
+   * @param {string} msg  - human-readable message.
+   * @param {...*}   rest - optional extra values forwarded to console.debug.
+   */
+  function dbg(tag, msg, ...rest) {
+    if (!isDebugEnabled()) return;
+    console.debug(`[${MODULE_PREFIX}:${tag}]`, msg, ...rest);
   }
 
   /**
@@ -2531,22 +2556,35 @@
    */
   function dispatchModules(ctx) {
     const disabledModules = getDisabledModules();
+    dbg("dispatch", "running", { entity: ctx.entity, entityId: ctx.entityId });
 
     modules.forEach((module) => {
       try {
-        if (!isModuleEnabled(module.id, disabledModules)) return;
-        if (!module.match(ctx)) return;
-        if (typeof module.preconditions === "function" && !module.preconditions(ctx)) return;
+        if (!isModuleEnabled(module.id, disabledModules)) {
+          dbg("dispatch", `skip (disabled) ${module.id}`);
+          return;
+        }
+        if (!module.match(ctx)) {
+          dbg("dispatch", `skip (no match) ${module.id}`);
+          return;
+        }
+        if (typeof module.preconditions === "function" && !module.preconditions(ctx)) {
+          dbg("dispatch", `skip (preconditions) ${module.id}`);
+          return;
+        }
 
         const existingDispose = moduleDisposers.get(module.id);
         if (typeof existingDispose === "function") {
+          dbg("dispatch", `dispose ${module.id}`);
           try { existingDispose(); } catch (_err) { /* ignore dispose errors */ }
           moduleDisposers.delete(module.id);
         }
 
+        dbg("dispatch", `run ${module.id}`);
         const result = module.run(ctx);
         if (typeof result === "function") {
           moduleDisposers.set(module.id, result);
+          dbg("dispatch", `disposer stored ${module.id}`);
         }
       } catch (error) {
         console.warn(`[${MODULE_PREFIX}] module failed: ${module.id}`, error);
@@ -2600,6 +2638,19 @@
       notifyUser({
         title: "PeeringDB CP",
         text: "RDAP caches cleared.",
+      });
+    });
+
+    GM_registerMenuCommand("CP: Toggle Debug Mode", () => {
+      const next = isDebugEnabled() ? null : "1";
+      if (next) {
+        window.localStorage?.setItem(DIAGNOSTICS_STORAGE_KEY, next);
+      } else {
+        window.localStorage?.removeItem(DIAGNOSTICS_STORAGE_KEY);
+      }
+      notifyUser({
+        title: "PeeringDB CP",
+        text: `Debug mode ${next ? "enabled" : "disabled"}.`,
       });
     });
   }
