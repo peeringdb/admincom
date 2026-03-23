@@ -221,43 +221,30 @@
   }
 
   /**
-   * Binds reactive listeners to keep entity-state backgrounds in sync with form edits.
-   * Purpose: Refresh state highlighting immediately when status/org values are changed by admins.
-   * Necessity: Without listeners, styling updates only on initial page load.
-   * Returns a dispose function that removes all registered listeners (lifecycle support).
+   * Subscribes to pdbBus status/org events to keep entity-state visuals in sync.
+   * Purpose: Refresh state highlighting when admins change status or org while editing.
+   * Necessity: Without listeners, styling only reflects the state at initial page load.
+   * Returns a dispose function that unsubscribes from the bus (lifecycle support).
    */
   function bindEntityStateBackgroundReactivity(ctx) {
     const statusSelect = qs("#id_status");
     if (!statusSelect || statusSelect.hasAttribute("data-pdb-cp-state-bg-bound")) return null;
-
     statusSelect.setAttribute("data-pdb-cp-state-bg-bound", "1");
 
-    const apply = () => {
+    const refresh = () => {
       scheduleDomUpdate("entity-state-visuals", () => {
         applyEntityStateBackgroundClass(ctx);
         syncEntityStateTitleMarkers(ctx);
       });
     };
 
-    statusSelect.addEventListener("change", apply);
-    statusSelect.addEventListener("input", apply);
-
-    const orgInput = qs("#id_org");
-    if (orgInput && !orgInput.hasAttribute("data-pdb-cp-state-bg-bound")) {
-      orgInput.setAttribute("data-pdb-cp-state-bg-bound", "1");
-      orgInput.addEventListener("change", apply);
-      orgInput.addEventListener("input", apply);
-    }
+    pdbBus.on("statusChanged", refresh);
+    pdbBus.on("orgChanged", refresh);
 
     return () => {
-      statusSelect.removeEventListener("change", apply);
-      statusSelect.removeEventListener("input", apply);
-      statusSelect.removeAttribute("data-pdb-cp-state-bg-bound");
-      if (orgInput) {
-        orgInput.removeEventListener("change", apply);
-        orgInput.removeEventListener("input", apply);
-        orgInput.removeAttribute("data-pdb-cp-state-bg-bound");
-      }
+      pdbBus.off("statusChanged", refresh);
+      pdbBus.off("orgChanged", refresh);
+      qs("#id_status")?.removeAttribute("data-pdb-cp-state-bg-bound");
     };
   }
 
@@ -662,6 +649,57 @@
       pendingDomUpdates.delete(key);
       if (typeof pending === "function") pending();
     });
+  }
+
+  /**
+   * Minimal internal publish/subscribe event bus for intra-script communication.
+   * Purpose: Decouple DOM event sources (status/org field changes) from feature
+   * subscribers so future modules attach to named events rather than raw DOM fields.
+   * Necessity: Prevents N-modules × 2-fields listener explosion; one DOM binding
+   * per field emits to all interested subscribers through the bus.
+   */
+  const pdbBus = (() => {
+    const listeners = new Map();
+    return {
+      on(event, handler) {
+        if (!listeners.has(event)) listeners.set(event, new Set());
+        listeners.get(event).add(handler);
+      },
+      off(event, handler) {
+        listeners.get(event)?.delete(handler);
+      },
+      emit(event, data) {
+        listeners.get(event)?.forEach((fn) => {
+          try { fn(data); } catch (_err) { /* subscriber errors must not break other subscribers */ }
+        });
+      },
+    };
+  })();
+
+  /**
+   * Attaches one-time DOM listeners on #id_status and #id_org, translating native
+   * change/input events into named pdbBus events (statusChanged, orgChanged).
+   * Purpose: Centralise the raw DOM fan-out so every subscriber avoids its own
+   * addEventListener call on the same elements.
+   * Necessity: Single DOM listener per field, many bus subscribers — O(1) DOM cost.
+   * Guarded by data-pdb-cp-bus-bound so safe to call from multiple modules.
+   */
+  function bindFormFieldBus() {
+    const statusSelect = qs("#id_status");
+    if (statusSelect && !statusSelect.hasAttribute("data-pdb-cp-bus-bound")) {
+      statusSelect.setAttribute("data-pdb-cp-bus-bound", "1");
+      const emitStatus = () => pdbBus.emit("statusChanged", { value: getSelectedStatus() });
+      statusSelect.addEventListener("change", emitStatus);
+      statusSelect.addEventListener("input", emitStatus);
+    }
+
+    const orgInput = qs("#id_org");
+    if (orgInput && !orgInput.hasAttribute("data-pdb-cp-bus-bound")) {
+      orgInput.setAttribute("data-pdb-cp-bus-bound", "1");
+      const emitOrg = () => pdbBus.emit("orgChanged", { value: getInputValue("#id_org") });
+      orgInput.addEventListener("change", emitOrg);
+      orgInput.addEventListener("input", emitOrg);
+    }
   }
 
   /**
@@ -2159,6 +2197,7 @@
       run: (ctx) => {
         applyEntityStateBackgroundClass(ctx);
         syncEntityStateTitleMarkers(ctx);
+        bindFormFieldBus();
         return bindEntityStateBackgroundReactivity(ctx);
       },
     },
