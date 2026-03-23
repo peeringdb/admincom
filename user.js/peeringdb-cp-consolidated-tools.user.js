@@ -105,7 +105,7 @@
 
   /**
    * Unified entity slug mapping for frontend URLs and API resource paths.
-   * Both getFrontendSlugByEntity and getEntityApiResourceByEntity delegate to this map.
+   * getFrontendSlugByEntity delegates to this map.
    */
   const ENTITY_SLUG_MAP = {
     facility: "fac",
@@ -114,6 +114,21 @@
     carrier: "carrier",
     internetexchange: "ix",
     campus: "campus",
+  };
+
+  /**
+   * API resource mapping by CP entity type.
+   * Includes additional CP object types exposed by PeeringDB OpenAPI endpoints.
+   */
+  const ENTITY_API_RESOURCE_MAP = {
+    ...ENTITY_SLUG_MAP,
+    networkcontact: "poc",
+    networkfacility: "netfac",
+    networkixlan: "netixlan",
+    internetexchangefacility: "ixfac",
+    ixlan: "ixlan",
+    ixlanprefix: "ixpfx",
+    carrierfacility: "carrierfac",
   };
 
   /**
@@ -951,7 +966,7 @@
    * Necessity: CP workflows often require quick access to canonical API payloads.
    */
   function getEntityApiResourceByEntity(entity) {
-    return ENTITY_SLUG_MAP[entity] || "";
+    return ENTITY_API_RESOURCE_MAP[entity] || "";
   }
 
   /**
@@ -1852,8 +1867,24 @@
    * Necessity: Used to add " #deleted" suffix to entity names for deleted records.
    */
   function getSelectedStatus() {
-    const option = qs("#id_status > option:checked") || qs("#id_status > option[selected]");
-    return option ? String(option.getAttribute("value") || "") : "";
+    const statusSelect = qs("#id_status");
+    if (statusSelect) {
+      const option = qs("option:checked", statusSelect) || qs("option[selected]", statusSelect);
+      const value =
+        (option && String(option.getAttribute("value") || "").trim()) ||
+        String(statusSelect.value || "").trim();
+      if (value) return value;
+    }
+
+    const statusRow = qsa(".form-row").find((row) => {
+      const label = normalizeRenderedCopyText(
+        (qs(".c-1 label", row) || qs(".c-1", row))?.textContent || "",
+      ).toLowerCase();
+      return label === "status";
+    });
+
+    const readonlyStatus = normalizeRenderedCopyText(qs(".grp-readonly", statusRow)?.textContent || "");
+    return String(readonlyStatus || "").toLowerCase();
   }
 
   function getNameSuffixForDeletedEntity(entityId) {
@@ -2327,7 +2358,7 @@
     },
     {
       id: "entity-state-visuals",
-      match: (ctx) => ctx.isEntityChangePage && ENTITY_TYPES.has(ctx.entity),
+      match: (ctx) => ctx.isEntityChangePage,
       preconditions: () => Boolean(qs("#grp-content")),
       run: (ctx) => {
         applyEntityStateBackgroundClass(ctx);
