@@ -2175,12 +2175,18 @@
     });
 
     eachInForm('select[name*="info"]', (item) => {
+      if (item.multiple) {
+        Array.from(item.options).forEach((opt) => { opt.selected = false; });
+      }
       const firstOption = qs("option:first-child", item);
       if (firstOption) {
         firstOption.selected = true;
       }
     });
     eachInForm('select[name*="policy"]', (item) => {
+      if (item.multiple) {
+        Array.from(item.options).forEach((opt) => { opt.selected = false; });
+      }
       const firstOption = qs("option:first-child", item);
       if (firstOption) {
         firstOption.selected = true;
