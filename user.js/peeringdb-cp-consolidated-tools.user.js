@@ -89,6 +89,34 @@
   let dropdownGlobalCloseListenerBound = false;
 
   /**
+   * Computes a single EntityVisualState model for the current page context.
+   * Purpose: Provide one authoritative source of truth for all state-driven visuals.
+   * Necessity: Background, title markers, and future features derive from the same
+   * state data. Computing it once prevents drift and redundant DOM/field reads.
+   * @param {object} ctx - Route context from getRouteContext().
+   * @returns {{ state: string, entity: string, status: string,
+   *             isDummyChildFacility: boolean }}
+   */
+  function resolveEntityVisualState(ctx) {
+    const entity = String(ctx?.entity || "").trim().toLowerCase();
+    const status = String(getSelectedStatus() || "").trim().toLowerCase();
+    const orgId = Number.parseInt(getInputValue("#id_org"), 10);
+    const isDummyChildFacility =
+      entity === "facility" && Number.isFinite(orgId) && orgId === DUMMY_ORG_ID;
+
+    let state = "normal";
+    if (isDummyChildFacility) {
+      state = "dummy-child";
+    } else if (status === "pending") {
+      state = "pending";
+    } else if (status === "deleted") {
+      state = "deleted";
+    }
+
+    return { state, entity, status, isDummyChildFacility };
+  }
+
+  /**
    * Ensures CSS classes for entity-state background highlighting are available.
    * Purpose: Centralize state background colors in one style block instead of inline colors.
    * Necessity: Keeps state precedence predictable and easy to maintain across modules.
@@ -133,25 +161,17 @@
       bgContainer.classList.remove(className);
     });
 
-    const entity = String(ctx?.entity || "").trim().toLowerCase();
-    const status = String(getSelectedStatus() || "").trim().toLowerCase();
+    const { state } = resolveEntityVisualState(ctx);
 
-    const orgId = Number.parseInt(getInputValue("#id_org"), 10);
-    const isDummyChildFacility =
-      entity === "facility" && Number.isFinite(orgId) && orgId === DUMMY_ORG_ID;
+    const classMap = {
+      "dummy-child": `${MODULE_PREFIX}StateDummyChild`,
+      "pending":     `${MODULE_PREFIX}StatePending`,
+      "deleted":     `${MODULE_PREFIX}StateDeleted`,
+    };
 
-    if (isDummyChildFacility) {
-      bgContainer.classList.add(`${MODULE_PREFIX}StateDummyChild`);
-      return;
-    }
-
-    if (status === "pending") {
-      bgContainer.classList.add(`${MODULE_PREFIX}StatePending`);
-      return;
-    }
-
-    if (status === "deleted") {
-      bgContainer.classList.add(`${MODULE_PREFIX}StateDeleted`);
+    const targetClass = classMap[state];
+    if (targetClass) {
+      bgContainer.classList.add(targetClass);
     }
   }
 
@@ -164,17 +184,13 @@
     const title = qs("#grp-content-title h1");
     if (!title) return;
 
-    const entity = String(ctx?.entity || "").trim().toLowerCase();
-    const status = String(getSelectedStatus() || "").trim().toLowerCase();
-    const orgId = Number.parseInt(getInputValue("#id_org"), 10);
-    const isDummyChildFacility =
-      entity === "facility" && Number.isFinite(orgId) && orgId === DUMMY_ORG_ID;
+    const { state } = resolveEntityVisualState(ctx);
 
     const dummyMarkerClass = "pdb-dummy-org-child-marker";
     const deletedBadgeClass = "pdb-deleted-badge";
 
     const existingDummyMarker = qs(`.${dummyMarkerClass}`, title);
-    if (isDummyChildFacility) {
+    if (state === "dummy-child") {
       if (!existingDummyMarker) {
         const marker = document.createElement("span");
         marker.className = dummyMarkerClass;
@@ -188,7 +204,7 @@
     }
 
     const existingDeletedBadge = qs(`.${deletedBadgeClass}`, title);
-    if (status === "deleted") {
+    if (state === "deleted") {
       if (!existingDeletedBadge) {
         const badge = document.createElement("span");
         badge.className = deletedBadgeClass;
