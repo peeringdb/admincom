@@ -3248,6 +3248,64 @@
       },
     },
     {
+      id: "request-ixf-import",
+      match: (ctx) => ctx.isEntityChangePage && ctx.entity === "internetexchange",
+      preconditions: () => Boolean(getToolbarList()),
+      run: (ctx) => {
+        addToolbarAction({
+          id: `${MODULE_PREFIX}RequestIxfImport`,
+          label: "Request IXF Import",
+          insertLeft: true,
+          onClick: async (event) => {
+            const actionLockKey = `${MODULE_PREFIX}.requestIxfImport.${ctx.entityId}`;
+            if (!tryBeginActionLock(actionLockKey)) {
+              notifyUser({
+                title: "PeeringDB CP",
+                text: "Request IXF Import is already running.",
+              });
+              return;
+            }
+
+            try {
+              const button = event.target;
+              button.textContent = "Requesting...";
+              button.style.opacity = "0.7";
+              button.style.pointerEvents = "none";
+
+              const endpoint = `${PEERINGDB_API_BASE_URL}/ix/${ctx.entityId}/request_ixf_import`;
+              const result = await pdbPost(endpoint, "POST", {});
+
+              if (result.status >= 200 && result.status < 300) {
+                notifyUser({
+                  title: "PeeringDB CP",
+                  text: "IXF import request submitted successfully.",
+                });
+              } else {
+                notifyUser({
+                  title: "PeeringDB CP",
+                  text: `IXF import request failed (HTTP ${result.status}).`,
+                });
+              }
+            } catch (error) {
+              console.error(`[${MODULE_PREFIX}] Request IXF Import failed`, error);
+              notifyUser({
+                title: "PeeringDB CP",
+                text: "Request IXF Import failed. See console for details.",
+              });
+            } finally {
+              const button = event?.target;
+              if (button) {
+                button.textContent = "Request IXF Import";
+                button.style.opacity = "";
+                button.style.pointerEvents = "";
+              }
+              endActionLock(actionLockKey);
+            }
+          },
+        });
+      },
+    },
+    {
       id: "ixf-import-status-badge",
       match: (ctx) => ctx.isEntityChangePage && ctx.entity === "internetexchange",
       preconditions: () => Boolean(qs("#grp-content-title")),
