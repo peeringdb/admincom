@@ -36,6 +36,8 @@
     "localhost",
   ];
   const DEFAULT_REQUEST_USER_AGENT = "PeeringDB-Admincom-CP-Consolidated";
+  const ORG_NAME_CACHE_TTL_MS = 15 * 60 * 1000;
+  const ORG_NAME_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.orgNameCache.`;
   const ENTITY_TYPES = new Set([
     "facility",
     "network",
@@ -74,6 +76,96 @@
     "policy email",
     "sales email",
   ]);
+  const orgNameMemoryCache = new Map();
+
+  /**
+   * Normalizes organization ID into a stable cache key suffix.
+   * Purpose: Ensure cache keys are deterministic across string/number ID inputs.
+   * Necessity: Different call sites may pass IDs with whitespace or mixed types.
+   */
+  function normalizeOrgIdForCache(orgId) {
+    return String(orgId || "").trim();
+  }
+
+  /**
+   * Builds sessionStorage key used for persisted org-name cache entries.
+   * Purpose: Keep all org-name cache keys namespaced under module prefix.
+   * Necessity: Avoid collisions with other userscripts and local app storage keys.
+   */
+  function getOrgNameCacheStorageKey(orgId) {
+    const normalizedOrgId = normalizeOrgIdForCache(orgId);
+    if (!normalizedOrgId) return "";
+    return `${ORG_NAME_CACHE_STORAGE_PREFIX}${normalizedOrgId}`;
+  }
+
+  /**
+   * Reads a valid organization-name cache entry from in-memory or session storage.
+   * Purpose: Reuse recent org-name lookups to reduce repeated API requests.
+   * Necessity: Update Name and Reset Information may request the same org repeatedly.
+   * Returns null when cache is absent, malformed, or expired.
+   */
+  function getCachedOrganizationName(orgId) {
+    const normalizedOrgId = normalizeOrgIdForCache(orgId);
+    if (!normalizedOrgId) return null;
+
+    const now = Date.now();
+
+    const memoryEntry = orgNameMemoryCache.get(normalizedOrgId);
+    if (memoryEntry && memoryEntry.expiresAt > now && memoryEntry.name) {
+      return memoryEntry.name;
+    }
+
+    if (memoryEntry && memoryEntry.expiresAt <= now) {
+      orgNameMemoryCache.delete(normalizedOrgId);
+    }
+
+    const storageKey = getOrgNameCacheStorageKey(normalizedOrgId);
+    if (!storageKey) return null;
+
+    try {
+      const raw = window.sessionStorage?.getItem(storageKey);
+      if (!raw) return null;
+
+      const parsed = JSON.parse(raw);
+      const cachedName = String(parsed?.name || "").trim();
+      const expiresAt = Number(parsed?.expiresAt || 0);
+      if (!cachedName || !Number.isFinite(expiresAt) || expiresAt <= now) {
+        window.sessionStorage?.removeItem(storageKey);
+        return null;
+      }
+
+      orgNameMemoryCache.set(normalizedOrgId, { name: cachedName, expiresAt });
+      return cachedName;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  /**
+   * Stores organization-name cache entry in memory and session storage.
+   * Purpose: Persist successful org-name lookups for current tab lifecycle.
+   * Necessity: Avoid duplicate network requests for frequently used org IDs.
+   */
+  function setCachedOrganizationName(orgId, name) {
+    const normalizedOrgId = normalizeOrgIdForCache(orgId);
+    const normalizedName = String(name || "").trim();
+    if (!normalizedOrgId || !normalizedName) return;
+
+    const expiresAt = Date.now() + ORG_NAME_CACHE_TTL_MS;
+    orgNameMemoryCache.set(normalizedOrgId, { name: normalizedName, expiresAt });
+
+    const storageKey = getOrgNameCacheStorageKey(normalizedOrgId);
+    if (!storageKey) return;
+
+    try {
+      window.sessionStorage?.setItem(
+        storageKey,
+        JSON.stringify({ name: normalizedName, expiresAt }),
+      );
+    } catch (_error) {
+      // sessionStorage may be unavailable; memory cache still provides benefit.
+    }
+  }
 
   /**
    * Retrieves the set of disabled module IDs from localStorage.
@@ -867,14 +959,22 @@
    * Returns null on network error or missing data (graceful degradation).
    */
   async function getOrganizationName(orgId) {
-    if (!orgId) return null;
+    const normalizedOrgId = normalizeOrgIdForCache(orgId);
+    if (!normalizedOrgId) return null;
+
+    const cached = getCachedOrganizationName(normalizedOrgId);
+    if (cached) return cached;
 
     try {
-      const response = await fetch(`https://www.peeringdb.com/api/org/${orgId}`);
+      const response = await fetch(`https://www.peeringdb.com/api/org/${normalizedOrgId}`);
       if (!response.ok) return null;
 
       const payload = await response.json();
-      return payload?.data?.[0]?.name || null;
+      const resolved = String(payload?.data?.[0]?.name || "").trim();
+      if (!resolved) return null;
+
+      setCachedOrganizationName(normalizedOrgId, resolved);
+      return resolved;
     } catch (_error) {
       return null;
     }
