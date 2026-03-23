@@ -81,7 +81,153 @@
   const orgNameMemoryCache = new Map();
   const activeActionLocks = new Set();
   const openDropdownActionItems = new Set();
+  const ENTITY_STATE_BACKGROUND_CLASS_NAMES = [
+    `${MODULE_PREFIX}StateDummyChild`,
+    `${MODULE_PREFIX}StatePending`,
+    `${MODULE_PREFIX}StateDeleted`,
+  ];
   let dropdownGlobalCloseListenerBound = false;
+
+  /**
+   * Ensures CSS classes for entity-state background highlighting are available.
+   * Purpose: Centralize state background colors in one style block instead of inline colors.
+   * Necessity: Keeps state precedence predictable and easy to maintain across modules.
+   */
+  function ensureEntityStateBackgroundStyles() {
+    const styleId = `${MODULE_PREFIX}EntityStateBackgroundStyle`;
+    if (document.getElementById(styleId)) return;
+
+    const style = document.createElement("style");
+    style.id = styleId;
+    style.textContent = `
+      #grp-content.${MODULE_PREFIX}StateDummyChild {
+        background-color: rgba(255, 235, 59, 0.22);
+      }
+
+      #grp-content.${MODULE_PREFIX}StatePending {
+        background-color: rgba(255, 152, 0, 0.16);
+      }
+
+      #grp-content.${MODULE_PREFIX}StateDeleted {
+        background-color: rgba(200, 30, 30, 0.1);
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  /**
+   * Applies entity background-state class using explicit priority and entity scope.
+   * Priority (first match wins):
+   * 1) CHILD OF DUMMY ORGANIZATION (facility only)
+   * 2) pending (all entities)
+   * 3) deleted (all entities)
+   * Purpose: Align visual background behavior with policy-defined ordering.
+   * Necessity: Inline per-module background changes can conflict and obscure precedence.
+   */
+  function applyEntityStateBackgroundClass(ctx) {
+    const bgContainer = qs("#grp-content");
+    if (!bgContainer) return;
+
+    ensureEntityStateBackgroundStyles();
+    ENTITY_STATE_BACKGROUND_CLASS_NAMES.forEach((className) => {
+      bgContainer.classList.remove(className);
+    });
+
+    const entity = String(ctx?.entity || "").trim().toLowerCase();
+    const status = String(getSelectedStatus() || "").trim().toLowerCase();
+
+    const orgId = Number.parseInt(getInputValue("#id_org"), 10);
+    const isDummyChildFacility =
+      entity === "facility" && Number.isFinite(orgId) && orgId === DUMMY_ORG_ID;
+
+    if (isDummyChildFacility) {
+      bgContainer.classList.add(`${MODULE_PREFIX}StateDummyChild`);
+      return;
+    }
+
+    if (status === "pending") {
+      bgContainer.classList.add(`${MODULE_PREFIX}StatePending`);
+      return;
+    }
+
+    if (status === "deleted") {
+      bgContainer.classList.add(`${MODULE_PREFIX}StateDeleted`);
+    }
+  }
+
+  /**
+   * Synchronizes title markers for dummy-facility and deleted states.
+   * Purpose: Keep heading markers accurate as admins edit status/org fields in-place.
+   * Necessity: Marker rendering previously relied on module-local one-time insertions.
+   */
+  function syncEntityStateTitleMarkers(ctx) {
+    const title = qs("#grp-content-title h1");
+    if (!title) return;
+
+    const entity = String(ctx?.entity || "").trim().toLowerCase();
+    const status = String(getSelectedStatus() || "").trim().toLowerCase();
+    const orgId = Number.parseInt(getInputValue("#id_org"), 10);
+    const isDummyChildFacility =
+      entity === "facility" && Number.isFinite(orgId) && orgId === DUMMY_ORG_ID;
+
+    const dummyMarkerClass = "pdb-dummy-org-child-marker";
+    const deletedBadgeClass = "pdb-deleted-badge";
+
+    const existingDummyMarker = qs(`.${dummyMarkerClass}`, title);
+    if (isDummyChildFacility) {
+      if (!existingDummyMarker) {
+        const marker = document.createElement("span");
+        marker.className = dummyMarkerClass;
+        marker.style.cssText =
+          "margin-left:10px;color:red;font-weight:bold;font-size:0.8em;letter-spacing:0.02em;vertical-align:middle;";
+        marker.textContent = "CHILD OF DUMMY ORGANIZATION";
+        title.appendChild(marker);
+      }
+    } else if (existingDummyMarker) {
+      existingDummyMarker.remove();
+    }
+
+    const existingDeletedBadge = qs(`.${deletedBadgeClass}`, title);
+    if (status === "deleted") {
+      if (!existingDeletedBadge) {
+        const badge = document.createElement("span");
+        badge.className = deletedBadgeClass;
+        badge.style.cssText =
+          "margin-left:10px;color:#c0392b;font-weight:bold;font-size:0.8em;letter-spacing:0.05em;vertical-align:middle;";
+        badge.textContent = "DELETED";
+        title.appendChild(badge);
+      }
+    } else if (existingDeletedBadge) {
+      existingDeletedBadge.remove();
+    }
+  }
+
+  /**
+   * Binds one-time reactive listeners to keep entity-state backgrounds in sync with form edits.
+   * Purpose: Refresh state highlighting immediately when status/org values are changed by admins.
+   * Necessity: Without listeners, styling updates only on initial page load.
+   */
+  function bindEntityStateBackgroundReactivity(ctx) {
+    const statusSelect = qs("#id_status");
+    if (!statusSelect || statusSelect.hasAttribute("data-pdb-cp-state-bg-bound")) return;
+
+    statusSelect.setAttribute("data-pdb-cp-state-bg-bound", "1");
+
+    const apply = () => {
+      applyEntityStateBackgroundClass(ctx);
+      syncEntityStateTitleMarkers(ctx);
+    };
+
+    statusSelect.addEventListener("change", apply);
+    statusSelect.addEventListener("input", apply);
+
+    const orgInput = qs("#id_org");
+    if (orgInput && !orgInput.hasAttribute("data-pdb-cp-state-bg-bound")) {
+      orgInput.setAttribute("data-pdb-cp-state-bg-bound", "1");
+      orgInput.addEventListener("change", apply);
+      orgInput.addEventListener("input", apply);
+    }
+  }
 
   /**
    * Closes a single dropdown action item and resets its toggle accessibility state.
@@ -942,7 +1088,7 @@
    * Purpose: Add custom actions to secondary row with consistent styling.
    * Necessity: Secondary row actions need inline-block styling and spacing different from primary toolbar.
    */
-  function addSecondaryActionButton({ id, label, onClick }) {
+  function addSecondaryActionButton({ id, label, href = "#", title = "", onClick }) {
     const row = getOrCreateSecondaryActionRow();
     if (!row || !id) return null;
 
@@ -962,9 +1108,12 @@
 
     const button = document.createElement("a");
     button.id = id;
-    button.href = "#";
+    button.href = href || "#";
     button.textContent = label;
     button.style.cursor = "pointer";
+    if (title) {
+      button.title = title;
+    }
 
     if (typeof onClick === "function") {
       button.addEventListener("click", (event) => {
@@ -1087,7 +1236,6 @@
       reorderChildrenByPriority(secondaryRow, [
         'li[data-pdb-cp-secondary-action="pdbCpConsolidatedUpdateEntityName"]',
         'li[data-pdb-cp-secondary-action="pdbCpConsolidatedMapsDropdown"]',
-        'li[data-pdb-cp-secondary-action="pdbCpConsolidatedCopyEntityId"]',
         'li[data-pdb-cp-secondary-action="pdbCpConsolidatedCopyEntityUrl"]',
         'li[data-pdb-cp-secondary-action="pdbCpConsolidatedCopyOrganizationUrl"]',
       ]);
@@ -1853,16 +2001,8 @@
       match: (ctx) => ctx.isEntityChangePage,
       preconditions: () => Boolean(getToolbarList()),
       run: (ctx) => {
-        addSecondaryActionButton({
-          id: `${MODULE_PREFIX}CopyEntityId`,
-          label: `Copy ID ${ctx.entityId}`,
-          onClick: async (event) => {
-            const copied = await copyToClipboard(String(ctx.entityId || ""));
-            if (copied) {
-              pulseToolbarButton(event?.target, "Copied ID");
-            }
-          },
-        });
+        const entityPath = getEntityFrontendPath(ctx);
+        const entityUrl = entityPath ? `https://www.peeringdb.com${entityPath}` : "";
 
         const apiJsonUrl = getEntityApiJsonUrl(ctx);
         if (apiJsonUrl) {
@@ -1871,17 +2011,28 @@
             label: "API JSON",
             href: apiJsonUrl,
             target: "_new",
+            onClick: (event) => {
+              const status = String(getSelectedStatus() || "").trim().toLowerCase();
+              if (status !== "ok") {
+                pulseToolbarButton(event?.target, `No-op (${status || "unknown"})`);
+                return;
+              }
+
+              const resolvedUrl = new URL(apiJsonUrl, window.location.origin).toString();
+              window.open(resolvedUrl, "_blank", "noopener");
+            },
           });
         }
 
-        const entityPath = getEntityFrontendPath(ctx);
-        if (entityPath) {
+        if (entityUrl) {
+          const entityCopyLabel = `${getEntityCopyLabel(ctx.entity)} #${ctx.entityId}`;
           addSecondaryActionButton({
             id: `${MODULE_PREFIX}CopyEntityUrl`,
-            label: getEntityCopyLabel(ctx.entity),
+            label: entityCopyLabel,
+            href: entityUrl,
+            title: entityUrl,
             onClick: async (event) => {
-              const url = `https://www.peeringdb.com${entityPath}`;
-              const copied = await copyToClipboard(url);
+              const copied = await copyToClipboard(entityUrl);
               if (copied) {
                 pulseToolbarButton(event?.target, "Copied URL");
               }
@@ -1892,12 +2043,15 @@
         const orgId = ctx.entity === "organization" ? "" : getInputValue("#id_org");
         if (!orgId) return;
 
+        const orgUrl = `https://www.peeringdb.com/org/${orgId}`;
+
         addSecondaryActionButton({
           id: `${MODULE_PREFIX}CopyOrganizationUrl`,
-          label: "Copy Org URL",
+          label: `Copy Org URL #${orgId}`,
+          href: orgUrl,
+          title: orgUrl,
           onClick: async (event) => {
-            const url = `https://www.peeringdb.com/org/${orgId}`;
-            const copied = await copyToClipboard(url);
+            const copied = await copyToClipboard(orgUrl);
             if (copied) {
               pulseToolbarButton(event?.target, "Copied Org URL");
             }
@@ -1946,24 +2100,13 @@
       },
     },
     {
-      id: "highlight-dummy-org-child",
-      match: (ctx) => ctx.isEntityChangePage && ctx.entity === "facility",
-      preconditions: () => Boolean(qs("#id_org") && qs("#grp-content-title h1") && qs("#grp-content")),
-      run: () => {
-        const orgId = parseInt(getInputValue("#id_org"), 10);
-        if (!Number.isFinite(orgId) || orgId !== DUMMY_ORG_ID) return;
-
-        const title = qs("#grp-content-title h1");
-        const bgContainer = qs("#grp-content");
-
-        if (title && !title.textContent.includes("CHILD OF DUMMY ORGANIZATION")) {
-          title.innerHTML +=
-            '<span style="text-align:center;color:red;font-weight:bold;"> CHILD OF DUMMY ORGANIZATION</span>';
-        }
-
-        if (bgContainer) {
-          bgContainer.style.backgroundColor = "rgba(255, 255, 0, 0.5)";
-        }
+      id: "entity-state-visuals",
+      match: (ctx) => ctx.isEntityChangePage && ENTITY_TYPES.has(ctx.entity),
+      preconditions: () => Boolean(qs("#grp-content")),
+      run: (ctx) => {
+        applyEntityStateBackgroundClass(ctx);
+        syncEntityStateTitleMarkers(ctx);
+        bindEntityStateBackgroundReactivity(ctx);
       },
     },
     {
@@ -2193,29 +2336,6 @@
             }
           },
         });
-      },
-    },
-    {
-      id: "deleted-entity-highlight",
-      match: (ctx) => ctx.isEntityChangePage && ENTITY_TYPES.has(ctx.entity),
-      preconditions: () => Boolean(qs("#id_status") && qs("#grp-content")),
-      run: () => {
-        if (getSelectedStatus() !== "deleted") return;
-
-        const bgContainer = qs("#grp-content");
-        if (bgContainer) {
-          bgContainer.style.backgroundColor = "rgba(200, 30, 30, 0.07)";
-        }
-
-        const title = qs("#grp-content-title h1");
-        if (title && !qs(".pdb-deleted-badge", title)) {
-          const badge = document.createElement("span");
-          badge.className = "pdb-deleted-badge";
-          badge.style.cssText =
-            "margin-left:10px;color:#c0392b;font-weight:bold;font-size:0.8em;letter-spacing:0.05em;vertical-align:middle;";
-          badge.textContent = "DELETED";
-          title.appendChild(badge);
-        }
       },
     },
     {
