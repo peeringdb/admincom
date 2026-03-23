@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.2.20260323
+// @version      2.0.3.20260323
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
@@ -25,7 +25,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.2.20260323";
+  const SCRIPT_VERSION = "2.0.3.20260323";
   const DUMMY_ORG_ID = 20525;
   const DISABLED_MODULES_STORAGE_KEY = `${MODULE_PREFIX}.disabledModules`;
   const USER_AGENT_STORAGE_KEY = `${MODULE_PREFIX}.userAgent`;
@@ -1073,6 +1073,122 @@
     input.dispatchEvent(new Event("input", { bubbles: true }));
     input.dispatchEvent(new Event("change", { bubbles: true }));
     return true;
+  }
+
+  /**
+   * Resolves editable long-name input element for network forms.
+   * Purpose: Keep Long Name reads/writes resilient to minor template/id changes.
+   * Necessity: CP forms may render this field with different IDs depending on
+   * model/version, so lookup must support both ID and label-based discovery.
+   * @returns {HTMLInputElement|HTMLTextAreaElement|null} Long Name input element.
+   */
+  function getNetworkLongNameInputElement() {
+    const idCandidates = ["#id_name_long", "#id_long_name", "#id_aka"];
+    for (const selector of idCandidates) {
+      const element = qs(selector);
+      if (element) return element;
+    }
+
+    const row = qsa(".form-row").find((item) => {
+      const label = normalizeRenderedCopyText(
+        (qs(".c-1 label", item) || qs(".c-1", item))?.textContent || "",
+      ).toLowerCase();
+      return label === "long name";
+    });
+    if (!row) return null;
+
+    return (
+      qs(".c-2 input[type='text']", row) ||
+      qs(".c-2 textarea", row) ||
+      qs("input[type='text']", row) ||
+      qs("textarea", row) ||
+      null
+    );
+  }
+
+  /**
+   * Reads current Long Name field value for network change forms.
+   * @returns {string} Trimmed long-name value, or empty string when unavailable.
+   */
+  function getNetworkLongNameValue() {
+    const input = getNetworkLongNameInputElement();
+    if (!input) return "";
+    return String(input.value || "").trim();
+  }
+
+  /**
+   * Sets Long Name field value with change/input events.
+   * @param {string} value - Value to set in Long Name.
+   * @returns {boolean} True when Long Name field was found and updated.
+   */
+  function setNetworkLongNameValue(value) {
+    const input = getNetworkLongNameInputElement();
+    if (!input) return false;
+
+    const normalized = String(value || "").trim();
+    input.value = normalized;
+    if ("defaultValue" in input) {
+      input.defaultValue = normalized;
+    }
+    input.setAttribute("value", normalized);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  }
+
+  /**
+   * Strips trailing legal company-type suffixes from a name.
+   * Purpose: Keep network short Name concise while preserving full legal form
+   * in Long Name.
+   * Necessity: Organizations frequently include legal suffixes (e.g. LTDA, SAS)
+   * that are better suited for Long Name than short Name.
+   * @param {string} name - Full organization name.
+   * @returns {string} Name without trailing company-type suffix tokens.
+   */
+  function stripCompanyTypeSuffix(name) {
+    const original = String(name || "").trim().replace(/\s+/g, " ");
+    if (!original) return "";
+
+    const legalSuffixPatterns = [
+      "S\\.?\\s*A\\.?\\s*S\\.?", // SAS / S.A.S.
+      "S\\.?\\s*C\\.?\\s*C\\.?", // SCC / S.C.C.
+      "L\\.?\\s*T\\.?\\s*D\\.?\\s*A\\.?", // LTDA / L.T.D.A.
+      "LTD\\.?",
+      "LLC",
+      "LLP",
+      "INC\\.?",
+      "CORP\\.?",
+      "S\\.?\\s*A\\.?", // SA / S.A.
+      "C\\.?\\s*A\\.?", // CA / C.A.
+      "S\\.?\\s*R\\.?\\s*L\\.?", // SRL / S.R.L.
+      "S\\.?\\s*R\\.?\\s*O\\.?", // SRO / S.R.O.
+      "S\\.?\\s*A\\.?\\s*R\\.?\\s*L\\.?", // SARL / S.A.R.L.
+      "S\\.?\\s*P\\.?\\s*A\\.?", // SPA / S.P.A.
+      "G\\.?\\s*M\\.?\\s*B\\.?\\s*H\\.?", // GmbH / G.m.b.H.
+      "G\\.?\\s*M\\.?\\s*B\\.?\\s*H\\.?\\s*&\\s*CO\\.?\\s*KG\\.?", // GmbH & Co. KG
+      "AG",
+      "BV",
+      "B\\.?\\s*V\\.?", // BV / B.V.
+      "NV",
+      "PTE\\.?",
+      "PTY\\.?",
+      "PLC",
+      "EIRELI",
+      "MEI",
+    ];
+    const suffixRegex = new RegExp(
+      `(?:[\\s,.-]+)(?:${legalSuffixPatterns.join("|")})\\.?[\\s,.-]*$`,
+      "i",
+    );
+
+    let candidate = original;
+    let previous = "";
+    while (candidate && candidate !== previous && suffixRegex.test(candidate)) {
+      previous = candidate;
+      candidate = candidate.replace(suffixRegex, "").trim().replace(/[\s,.-]+$/g, "").trim();
+    }
+
+    return candidate || original;
   }
 
   /**
@@ -4108,12 +4224,25 @@
                 }
               }
 
+              const fullName = String(baseName || "").trim();
+              let nextLongName = "";
               let nextName = `${baseName}${appendName}`;
-              if (ctx.entity === "network" && shouldForceNetworkNameAsnSuffix(nextName)) {
-                nextName = buildNetworkNameAsnRetryVariant(nextName, getInputValue("#id_asn")) || nextName;
+
+              if (ctx.entity === "network") {
+                const compactNameBase = stripCompanyTypeSuffix(fullName) || fullName;
+                const detectedCompanySuffix = compactNameBase !== fullName;
+                nextLongName = detectedCompanySuffix ? fullName : "";
+                nextName = `${compactNameBase}${appendName}`;
+                if (shouldForceNetworkNameAsnSuffix(nextName)) {
+                  nextName = buildNetworkNameAsnRetryVariant(nextName, getInputValue("#id_asn")) || nextName;
+                }
               }
               const currentName = getInputValue("#id_name");
-              if (nextName === currentName) {
+              const currentLongName = ctx.entity === "network" ? getNetworkLongNameValue() : "";
+              const shouldUpdateLongName =
+                ctx.entity === "network" && nextLongName && nextLongName !== currentLongName;
+
+              if (nextName === currentName && !shouldUpdateLongName) {
                 pulseToolbarButton(event?.target, "No-op");
                 notifyUser({
                   title: "PeeringDB CP",
@@ -4138,6 +4267,9 @@
               }
 
               markDeletedNetworkInlinesForDeletion();
+              if (ctx.entity === "network" && nextLongName) {
+                setNetworkLongNameValue(nextLongName);
+              }
               setInputValue("#id_name", nextName);
               const didSubmit = clickSaveAndContinue();
               if (!didSubmit) {
