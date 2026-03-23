@@ -2711,17 +2711,25 @@
         try {
           const statusPayload = await pdbFetch(`https://www.peeringdb.com/api/ix/${ctx.entityId}`);
           const ixData = statusPayload?.data?.[0];
-          if (!ixData || !ixData.ixf_import_request_status) return;
+          const formIxfStatus = String(
+            getReadonlyFieldValueByLabel("Manual IX-F import status") ||
+            getReadonlyFieldValueByLabel("IX-F import request status") ||
+            getReadonlyFieldValueByLabel("IXF import request status") ||
+            "",
+          ).trim().toLowerCase();
+          const apiIxfStatus = String(ixData?.ixf_import_request_status || "").trim().toLowerCase();
+          const status = formIxfStatus || apiIxfStatus;
+          if (!status) return;
 
-          const status = String(ixData.ixf_import_request_status || "").trim().toLowerCase();
           const statusColors = {
             queued: "#ff9800",
             importing: "#2196f3",
             finished: "#4caf50",
             error: "#f44336",
+            pending: "#ff9800",
           };
           const color = statusColors[status] || "#999";
-          const lastImport = ixData.ixf_last_import ? new Date(ixData.ixf_last_import).toLocaleDateString() : "never";
+          const lastImport = ixData?.ixf_last_import ? new Date(ixData.ixf_last_import).toLocaleDateString() : "never";
 
           const badge = document.createElement("span");
           badge.style.cssText = `
