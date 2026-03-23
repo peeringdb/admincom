@@ -25,6 +25,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
+  const SCRIPT_VERSION = "1.0.50.20260323";
   const DUMMY_ORG_ID = 20525;
   const DISABLED_MODULES_STORAGE_KEY = `${MODULE_PREFIX}.disabledModules`;
   const USER_AGENT_STORAGE_KEY = `${MODULE_PREFIX}.userAgent`;
@@ -2713,6 +2714,7 @@
     }
 
     runSelfCheck(ctx);
+    dbg("init", `v${SCRIPT_VERSION}`, { entity: ctx.entity, entityId: ctx.entityId });
     cleanupLegacyPrimaryActionRow();
     dispatchModules(ctx);
     enforceToolbarButtonOrder(ctx);
