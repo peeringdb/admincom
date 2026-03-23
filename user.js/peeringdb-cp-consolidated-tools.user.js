@@ -1720,7 +1720,7 @@
         addSecondaryActionButton({
           id: `${MODULE_PREFIX}UpdateEntityName`,
           label: "Update Name",
-          onClick: async () => {
+          onClick: async (event) => {
             const appendName = getNameSuffixForDeletedEntity(ctx.entityId);
             let baseName;
             if (["organization", "facility", "internetexchange"].includes(ctx.entity)) {
@@ -1730,8 +1730,19 @@
                 ? rawName.slice(0, -existingSuffix.length)
                 : rawName;
             } else {
+              const anchor = event?.target;
+              if (anchor) {
+                anchor.textContent = "Updating...";
+                anchor.style.opacity = "0.7";
+                anchor.style.pointerEvents = "none";
+              }
               const orgId = getOrganizationIdForNameUpdate(ctx);
               baseName = await getOrganizationName(orgId);
+              if (anchor) {
+                anchor.textContent = "Update Name";
+                anchor.style.opacity = "";
+                anchor.style.pointerEvents = "";
+              }
               if (!baseName) return;
             }
 
@@ -1811,6 +1822,29 @@
             }
           },
         });
+      },
+    },
+    {
+      id: "deleted-entity-highlight",
+      match: (ctx) => ctx.isEntityChangePage && ENTITY_TYPES.has(ctx.entity),
+      preconditions: () => Boolean(qs("#id_status") && qs("#grp-content")),
+      run: () => {
+        if (getSelectedStatus() !== "deleted") return;
+
+        const bgContainer = qs("#grp-content");
+        if (bgContainer) {
+          bgContainer.style.backgroundColor = "rgba(200, 30, 30, 0.07)";
+        }
+
+        const title = qs("#grp-content-title h1");
+        if (title && !qs(".pdb-deleted-badge", title)) {
+          const badge = document.createElement("span");
+          badge.className = "pdb-deleted-badge";
+          badge.style.cssText =
+            "margin-left:10px;color:#c0392b;font-weight:bold;font-size:0.8em;letter-spacing:0.05em;vertical-align:middle;";
+          badge.textContent = "DELETED";
+          title.appendChild(badge);
+        }
       },
     },
     {

@@ -8,6 +8,7 @@
 // @exclude      https://www.peeringdb.com/cp/*
 // @icon         https://icons.duckduckgo.com/ip2/peeringdb.com.ico
 // @grant        none
+// @run-at       document-end
 // @updateURL    https://raw.githubusercontent.com/peeringdb/admincom/master/user.js/peeringdb-fp-consolidated-tools.meta.js
 // @downloadURL  https://raw.githubusercontent.com/peeringdb/admincom/master/user.js/peeringdb-fp-consolidated-tools.user.js
 // @supportURL   https://github.com/peeringdb/admincom/issues
@@ -561,6 +562,7 @@
     const copyUrlButton = qs('a[data-pdb-fp-action="copy-url"]', parent);
     const bgpToolsButton = qs('a[data-pdb-fp-action="bgp-tools"]', parent);
     const bgpHeNetButton = qs('a[data-pdb-fp-action="bgp-he-net"]', parent);
+    const copyAsnButton = qs('a[data-pdb-fp-action="copy-asn"]', parent);
     const moreToolsButton = qs('[data-pdb-fp-action="network-tools-overflow"]', parent);
 
     // Route deterministic first-row actions.
@@ -569,7 +571,7 @@
     });
 
     // Route deterministic second-row actions.
-    [bgpToolsButton, bgpHeNetButton, moreToolsButton].forEach((item) => {
+    [bgpToolsButton, bgpHeNetButton, copyAsnButton, moreToolsButton].forEach((item) => {
       if (item) row2.appendChild(item);
     });
 
@@ -677,6 +679,7 @@
       'a[data-pdb-fp-action="copy-url"]',
       'a[data-pdb-fp-action="bgp-tools"]',
       'a[data-pdb-fp-action="bgp-he-net"]',
+      'a[data-pdb-fp-action="copy-asn"]',
       '[data-pdb-fp-action="network-tools-overflow"]',
     ]);
 
@@ -825,6 +828,18 @@
               });
             });
 
+            createTopRightAction({
+              actionId: "copy-asn",
+              label: `Copy AS${asn}`,
+              onClick: (e) => {
+                copyToClipboard(`AS${asn}`);
+                const btn = e.target;
+                const orig = btn.innerText;
+                btn.innerText = "Copied!";
+                setTimeout(() => { btn.innerText = orig; }, 1000);
+              },
+            });
+
             createTopRightOverflowMenu({
               actionId: "network-tools-overflow",
               label: "More Tools",
@@ -835,6 +850,7 @@
                 { label: "IPinfo", url: `https://ipinfo.io/AS${asn}` },
                 { label: "CF Radar", url: `https://radar.cloudflare.com/as${asn}` },
                 { label: "RouteViews", url: "https://routeviews.org/" },
+                { label: "PDB API", url: `https://www.peeringdb.com/api/net/${cpId}` },
               ],
             });
           }
