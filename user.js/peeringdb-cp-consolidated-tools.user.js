@@ -1358,6 +1358,65 @@
   }
 
   /**
+   * Unified JSON fetch helper for all script-initiated HTTP requests.
+   * Purpose: Single network abstraction with timeout, retry, and error normalisation
+   * for both same-origin (PeeringDB API via fetch) and cross-origin (RDAP via
+   * GM_xmlhttpRequest) call sites.
+   * Necessity: Prevents N ad-hoc GM_xmlhttpRequest patterns from diverging on
+   * timeout handling or header construction.
+   * @param {string} url - Absolute URL to fetch.
+   * @param {{ headers?: object, timeout?: number, retries?: number }} [options]
+   * @returns {Promise<object|null>} Parsed JSON or null on any failure.
+   */
+  async function pdbFetch(url, { headers = {}, timeout = 12000, retries = 1 } = {}) {
+    const fullHeaders = buildTampermonkeyRequestHeaders(headers);
+    let hostname = "";
+    try { hostname = new URL(url).hostname; } catch (_err) { /* keep empty hostname */ }
+    const isSameOrigin = hostname === window.location.hostname;
+
+    if (isSameOrigin) {
+      for (let attempt = 0; attempt < retries; attempt += 1) {
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), timeout);
+          const response = await fetch(url, { headers: fullHeaders, signal: controller.signal });
+          clearTimeout(timer);
+          if (response.ok) return await response.json();
+        } catch (_err) {
+          if (attempt + 1 >= retries) return null;
+        }
+      }
+      return null;
+    }
+
+    return new Promise((resolve) => {
+      let attempts = 0;
+      function attempt() {
+        attempts += 1;
+        GM_xmlhttpRequest({
+          method: "GET",
+          url,
+          headers: fullHeaders,
+          timeout,
+          onload: (response) => {
+            if (response.status >= 200 && response.status < 300) {
+              try { resolve(JSON.parse(response.responseText)); }
+              catch (_err) { resolve(null); }
+            } else if (attempts < retries) {
+              attempt();
+            } else {
+              resolve(null);
+            }
+          },
+          onerror: () => { if (attempts < retries) attempt(); else resolve(null); },
+          ontimeout: () => { if (attempts < retries) attempt(); else resolve(null); },
+        });
+      }
+      attempt();
+    });
+  }
+
+  /**
    * Fetches organization name from PeeringDB API by organization ID.
    * Purpose: Resolve human-readable org names for network initialization.
    * Necessity: Network name should match org name; API lookup is more reliable than manual lookup.
@@ -1371,10 +1430,7 @@
     if (cached) return cached;
 
     try {
-      const response = await fetch(`https://www.peeringdb.com/api/org/${normalizedOrgId}`);
-      if (!response.ok) return null;
-
-      const payload = await response.json();
+      const payload = await pdbFetch(`https://www.peeringdb.com/api/org/${normalizedOrgId}`);
       const resolved = String(payload?.data?.[0]?.name || "").trim();
       if (!resolved) return null;
 
@@ -1822,30 +1878,12 @@
     }
 
     /**
-     * Fetches JSON from URL with proper headers and error handling.
-     * Purpose: Unified JSON request helper for RDAP API calls.
-     * Necessity: Uses Tampermonkey's GM_xmlhttpRequest for cross-origin CORS-free requests.
+     * Fetches JSON from URL using the shared pdbFetch client.
+     * Purpose: Delegate cross-origin RDAP requests to the unified network abstraction.
+     * Necessity: Centralises timeout, retry, and User-Agent header construction.
      */
     function requestJson(url) {
-      return new Promise((resolve) => {
-        GM_xmlhttpRequest({
-          method: "GET",
-          url,
-          headers: buildTampermonkeyRequestHeaders({ Accept: RDAP_ACCEPT_HEADER }),
-          onload: (response) => {
-            if (response.status >= 200 && response.status < 300) {
-              try {
-                resolve(JSON.parse(response.responseText));
-              } catch (_err) {
-                resolve(null);
-              }
-            } else {
-              resolve(null);
-            }
-          },
-          onerror: () => resolve(null),
-        });
-      });
+      return pdbFetch(url, { headers: { Accept: RDAP_ACCEPT_HEADER } });
     }
 
     /**
