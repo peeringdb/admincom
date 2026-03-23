@@ -41,8 +41,16 @@
   ];
   const DEFAULT_REQUEST_USER_AGENT = "PeeringDB-Admincom-CP-Consolidated";
   const PEERINGDB_API_BASE_URL = "https://www.peeringdb.com/api";
-  const ORG_NAME_CACHE_TTL_MS = 15 * 60 * 1000;
+  const CACHE_TTL_MS = 7.5 * 60 * 60 * 1000;
+  const ORG_NAME_CACHE_TTL_MS = CACHE_TTL_MS;
   const ORG_NAME_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.orgNameCache.`;
+  const NETWORK_NAME_SCAN_CACHE_KEY = `${MODULE_PREFIX}.networkNameScanCache.v8`;
+  const NETWORK_NAME_SCAN_CACHE_TTL_MS = CACHE_TTL_MS;
+  const NETWORK_NAME_SCAN_PAGE_SIZE = 2000;
+  const NETWORK_NAME_SCAN_TARGET_COUNT = 0;
+  const NETWORK_NAME_SCAN_MAX_REQUESTS = 40;
+  const NETWORK_NAME_SCAN_MIN_SUSPICIOUS_SCORE = 4;
+  const NETWORK_NAME_SCAN_HIGH_CONFIDENCE_MIN_SCORE = 6;
   /**
    * Increment this integer whenever the shape of a stored org-name cache entry changes.
    * On first read after a script update, any entry whose stored v field does not match
@@ -475,6 +483,29 @@
   }
 
   /**
+   * Returns storage for domain-scoped cache entries.
+   * Purpose: Share short-lived cache payloads across tabs on the same origin.
+   * Necessity: sessionStorage is tab-scoped; localStorage enables cross-tab reuse.
+   * Falls back to sessionStorage when localStorage is unavailable.
+   * @returns {Storage|null} localStorage (preferred), sessionStorage (fallback), or null.
+   */
+  function getDomainCacheStorage() {
+    try {
+      if (window.localStorage) return window.localStorage;
+    } catch (_error) {
+      // Fall through to sessionStorage fallback.
+    }
+
+    try {
+      if (window.sessionStorage) return window.sessionStorage;
+    } catch (_error) {
+      // Ignore; cache persistence will be unavailable.
+    }
+
+    return null;
+  }
+
+  /**
    * Normalizes organization ID into a stable cache key suffix.
    * Purpose: Ensure cache keys are deterministic across string/number ID inputs.
    * Necessity: Different call sites may pass IDs with whitespace or mixed types.
@@ -486,11 +517,11 @@
   }
 
   /**
-   * Builds sessionStorage key used for persisted org-name cache entries.
+   * Builds storage key used for persisted org-name cache entries.
    * Purpose: Keep all org-name cache keys namespaced under module prefix.
    * Necessity: Avoid collisions with other userscripts and local app storage keys.
    * @param {string|number} orgId - Organization ID to build the key for.
-   * @returns {string} Namespaced sessionStorage key, or empty string if orgId is invalid.
+   * @returns {string} Namespaced storage key, or empty string if orgId is invalid.
    */
   function getOrgNameCacheStorageKey(orgId) {
     const normalizedOrgId = normalizeOrgIdForCache(orgId);
@@ -499,7 +530,7 @@
   }
 
   /**
-   * Reads a valid organization-name cache entry from in-memory or session storage.
+   * Reads a valid organization-name cache entry from in-memory or domain storage.
    * Purpose: Reuse recent org-name lookups to reduce repeated API requests.
    * Necessity: Update Name and Reset Information may request the same org repeatedly.
    * Returns null when cache is absent, malformed, or expired.
@@ -525,7 +556,8 @@
     if (!storageKey) return null;
 
     try {
-      const raw = window.sessionStorage?.getItem(storageKey);
+      const storage = getDomainCacheStorage();
+      const raw = storage?.getItem(storageKey);
       if (!raw) return null;
 
       const parsed = JSON.parse(raw);
@@ -538,7 +570,7 @@
         expiresAt <= now ||
         schemaVersion !== ORG_NAME_CACHE_SCHEMA_VERSION
       ) {
-        window.sessionStorage?.removeItem(storageKey);
+        storage?.removeItem(storageKey);
         return null;
       }
 
@@ -550,7 +582,7 @@
   }
 
   /**
-   * Stores organization-name cache entry in memory and session storage.
+   * Stores organization-name cache entry in memory and domain storage.
    * Purpose: Persist successful org-name lookups for current tab lifecycle.
    * Necessity: Avoid duplicate network requests for frequently used org IDs.
    * @param {string|number} orgId - Organization ID to cache the name for.
@@ -568,17 +600,18 @@
     if (!storageKey) return;
 
     try {
-      window.sessionStorage?.setItem(
+      const storage = getDomainCacheStorage();
+      storage?.setItem(
         storageKey,
         JSON.stringify({ v: ORG_NAME_CACHE_SCHEMA_VERSION, name: normalizedName, expiresAt }),
       );
     } catch (_error) {
-      // sessionStorage may be unavailable; memory cache still provides benefit.
+      // Storage may be unavailable; memory cache still provides benefit.
     }
   }
 
   /**
-   * Clears all organization-name cache entries from memory and session storage.
+   * Clears all organization-name cache entries from memory and domain storage.
    * Purpose: Provide explicit cache invalidation control for stale org-name lookups.
    * Necessity: Admin workflows occasionally require immediate refresh after org renames.
    */
@@ -586,7 +619,7 @@
     orgNameMemoryCache.clear();
 
     try {
-      const storage = window.sessionStorage;
+      const storage = getDomainCacheStorage();
       if (!storage) return;
 
       const keysToDelete = [];
@@ -2126,6 +2159,502 @@
   }
 
   /**
+   * Builds a PeeringDB list API URL with query parameters.
+   * Purpose: Centralize URL construction for sparse list retrieval calls.
+   * Necessity: Reused by REST fallback and future bulk list scanners.
+   * @param {string} resource - API resource slug (e.g., "net").
+   * @param {Record<string, string|number|boolean|undefined|null>} [params={}] - Query parameter map.
+   * @returns {string} Absolute URL string.
+   */
+  function buildPeeringDbListApiUrl(resource, params = {}) {
+    const normalizedResource = String(resource || "").trim();
+    if (!normalizedResource) return "";
+
+    const url = new URL(`${PEERINGDB_API_BASE_URL}/${normalizedResource}`);
+    Object.entries(params).forEach(([key, value]) => {
+      if (value === undefined || value === null || value === "") return;
+      url.searchParams.set(key, String(value));
+    });
+    return url.toString();
+  }
+
+  /**
+   * Normalizes API row objects into minimal network scan records.
+   * Purpose: Keep name-pattern analysis independent of source transport shape.
+   * Necessity: GraphQL and REST rows can differ slightly in key casing/types.
+   * @param {object} row - Source row object.
+   * @returns {{ id: string, name: string }|null} Normalized record or null.
+   */
+  function normalizeNetworkNameRecord(row) {
+    if (!row || typeof row !== "object") return null;
+    const id = String(row.id || row.pk || "").trim();
+    const name = String(row.name || "").trim();
+    if (!id || !name) return null;
+    return { id, name };
+  }
+
+  /**
+   * Parses GraphQL response payload into normalized network records.
+   * Purpose: Support multiple plausible GraphQL response envelopes safely.
+   * Necessity: GraphQL schema details can vary; parser must be tolerant.
+   * @param {object|null} payload - GraphQL response payload.
+   * @returns {{ id: string, name: string }[]} Parsed records.
+   */
+  function parseGraphQlNetworkRows(payload) {
+    const data = payload && typeof payload === "object" ? payload.data : null;
+    if (!data || typeof data !== "object") return [];
+
+    const candidateContainers = [
+      data.networks,
+      data.network,
+      data.networksConnection,
+      data.net,
+    ].filter(Boolean);
+
+    const extractedRows = [];
+
+    candidateContainers.forEach((container) => {
+      if (Array.isArray(container)) {
+        extractedRows.push(...container);
+        return;
+      }
+
+      if (Array.isArray(container?.edges)) {
+        container.edges.forEach((edge) => {
+          if (edge?.node) extractedRows.push(edge.node);
+        });
+      }
+
+      if (Array.isArray(container?.items)) {
+        extractedRows.push(...container.items);
+      }
+
+      if (Array.isArray(container?.nodes)) {
+        extractedRows.push(...container.nodes);
+      }
+    });
+
+    return extractedRows
+      .map((row) => normalizeNetworkNameRecord(row))
+      .filter(Boolean);
+  }
+
+  /**
+   * Executes one GraphQL network-name batch query via GET.
+   * Purpose: Retrieve only id/name fields with schema-driven sparse selection.
+   * Necessity: Keeps payload minimal and reusable for future GraphQL extensions.
+   * @param {{ offset: number, limit: number }} opts - Pagination options.
+   * @returns {Promise<{ id: string, name: string }[]|null>} Parsed rows or null when unavailable.
+   */
+  async function fetchGraphQlNetworkNameBatch({ offset, limit }) {
+    const endpoint = `${window.location.origin}/api/graphql`;
+    const query = `query NetworkNameBatch($first: Int!, $offset: Int!) {\n  networks(first: $first, offset: $offset, status: \"ok\") {\n    edges {\n      node {\n        id\n        name\n      }\n    }\n  }\n}`;
+    const variables = { first: limit, offset };
+
+    const url = `${endpoint}?query=${encodeURIComponent(query)}&variables=${encodeURIComponent(JSON.stringify(variables))}`;
+    const payload = await pdbFetch(url, {
+      headers: {
+        Accept: "application/json",
+      },
+      timeout: 15000,
+      retries: 1,
+    });
+    if (!payload) return null;
+    if (payload.errors && Array.isArray(payload.errors) && payload.errors.length > 0) return null;
+
+    const rows = parseGraphQlNetworkRows(payload);
+    return rows.length ? rows : null;
+  }
+
+  /**
+   * Executes one REST network-name batch query with sparse fields.
+   * Purpose: Reliable fallback when GraphQL endpoint is unavailable.
+   * Necessity: Guarantees completion under strict request budgets.
+   * @param {{ offset: number, limit: number }} opts - Pagination options.
+   * @returns {Promise<{ id: string, name: string }[]>} Parsed rows.
+   */
+  async function fetchRestNetworkNameBatch({ offset, limit }) {
+    const url = buildPeeringDbListApiUrl("net", {
+      status: "ok",
+      limit,
+      skip: offset,
+      depth: 0,
+      fields: "id,name",
+    });
+    if (!url) return [];
+
+    const payload = await pdbFetch(url, {
+      headers: {
+        Accept: "application/json",
+      },
+      timeout: 15000,
+      retries: 1,
+    });
+
+    const rows = Array.isArray(payload?.data) ? payload.data : [];
+    return rows
+      .map((row) => normalizeNetworkNameRecord(row))
+      .filter(Boolean);
+  }
+
+  /**
+   * Retrieves recent network names in fixed-size batches with minimal request count.
+   * Purpose: Fetch up to 3000 names in 6 requests (500 each) under strict rate limits.
+   * Necessity: Supports CP-side operational audits without backend tooling.
+   * GraphQL is attempted once first; automatic REST fallback is used thereafter.
+   * @param {{
+   *   targetCount?: number,
+   *   pageSize?: number,
+   *   requestLimit?: number,
+   *   onProgress?: Function,
+   * }} [opts]
+   * @returns {Promise<{
+   *   records: Array<{id: string, name: string}>,
+   *   requestCount: number,
+   *   transport: string,
+   *   graphQlAttempted: boolean,
+   * }>} Retrieval result.
+   */
+  async function fetchRecentNetworkNamesBatched(opts = {}) {
+    const requestedTargetCount = Number(opts.targetCount ?? NETWORK_NAME_SCAN_TARGET_COUNT);
+    const isTargetUnbounded = !Number.isFinite(requestedTargetCount) || requestedTargetCount <= 0;
+    const targetCount = isTargetUnbounded
+      ? Number.POSITIVE_INFINITY
+      : Math.max(1, Math.floor(requestedTargetCount));
+    const pageSize = Math.max(1, Math.floor(Number(opts.pageSize || NETWORK_NAME_SCAN_PAGE_SIZE)));
+    const requestLimit = Math.max(1, Math.floor(Number(opts.requestLimit || NETWORK_NAME_SCAN_MAX_REQUESTS)));
+    const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
+
+    const totalBatches = Number.isFinite(targetCount) ? Math.ceil(targetCount / pageSize) : null;
+    const records = [];
+    const seenIds = new Set();
+    let requestCount = 0;
+    let graphQlAttempted = false;
+    let graphQlEnabled = true;
+    let transport = "rest";
+    let batchIndex = 0;
+    let offset = 0;
+
+    while (requestCount < requestLimit && records.length < targetCount) {
+      let rows = [];
+
+      if (graphQlEnabled) {
+        graphQlAttempted = true;
+        const graphQlRows = await fetchGraphQlNetworkNameBatch({ offset, limit: pageSize });
+        requestCount += 1;
+        if (Array.isArray(graphQlRows) && graphQlRows.length > 0) {
+          rows = graphQlRows;
+          transport = "graphql";
+        } else {
+          graphQlEnabled = false;
+          if (requestCount >= requestLimit) break;
+          rows = await fetchRestNetworkNameBatch({ offset, limit: pageSize });
+          requestCount += 1;
+          transport = "rest";
+        }
+      } else {
+        rows = await fetchRestNetworkNameBatch({ offset, limit: pageSize });
+        requestCount += 1;
+      }
+
+      rows.forEach((row) => {
+        if (records.length >= targetCount) return;
+        if (seenIds.has(row.id)) return;
+        seenIds.add(row.id);
+        records.push(row);
+      });
+
+      if (onProgress) {
+        onProgress({
+          batchIndex: batchIndex + 1,
+          totalBatches,
+          recordsFetched: records.length,
+          requestCount,
+          transport,
+        });
+      }
+
+      batchIndex += 1;
+      offset += rows.length;
+
+      if (rows.length === 0) break;
+    }
+
+    return { records, requestCount, transport, graphQlAttempted, totalBatches, isTargetUnbounded };
+  }
+
+  /**
+   * Classifies one network name for likely auto-generated patterns.
+   * Purpose: Prioritize names likely requiring manual "Update Name" remediation.
+   * Necessity: Provides deterministic, extensible heuristics for operational triage.
+   * @param {string} name - Network name string.
+   * @returns {{ score: number, reasons: string[] }} Classification result.
+   */
+  function classifyNetworkNamePattern(name) {
+    const normalized = String(name || "").trim();
+    if (!normalized) return { score: 0, reasons: [] };
+
+    const reasons = [];
+    let score = 0;
+    const addReason = (reason, weight) => {
+      reasons.push(reason);
+      score += weight;
+    };
+
+    const letters = (normalized.match(/[A-Za-z]/g) || []).length;
+    const digits = (normalized.match(/\d/g) || []).length;
+    const alphaNumTotal = letters + digits;
+    const digitRatio = alphaNumTotal > 0 ? digits / alphaNumTotal : 0;
+
+    const hasNumericOnly = /^\d{4,}$/.test(normalized);
+    const hasAsnToken = /^(?:AS|ASN)[-_ ]?\d{2,}$/i.test(normalized);
+    const hasOrgToken = /^ORG-[A-Z0-9-]{4,}$/i.test(normalized);
+    const hasGenericPrefixNumber = /^(?:NET|NETWORK|IX|CARRIER|FACILITY|CAMPUS)[-_ ]?\d{2,}$/i.test(normalized);
+    const hasPlaceholderKeyword = /\b(?:test|dummy|temp|example|placeholder)\b/i.test(normalized);
+    const hasDigitHeavy = digitRatio >= 0.60 && normalized.length >= 6;
+    const hasLowAlphaSignal = letters <= 2 && normalized.length >= 7;
+    const hasTokenLike = /^[A-Z0-9_-]{8,}$/.test(normalized) && !/\s/.test(normalized);
+
+    if (hasNumericOnly) addReason("numeric-only", 5);
+    if (hasPlaceholderKeyword) addReason("placeholder-keyword", 5);
+    if (hasAsnToken) addReason("asn-token", 3);
+    if (hasOrgToken) addReason("org-token", 3);
+    if (hasGenericPrefixNumber) addReason("generic-prefix+number", 2);
+    if (hasDigitHeavy) addReason("digit-heavy", 1);
+    if (hasLowAlphaSignal) addReason("low-alpha-signal", 1);
+    if (hasTokenLike) addReason("token-like", 2);
+
+    return { score, reasons };
+  }
+
+  /**
+   * Analyzes network-name records and returns pattern diagnostics.
+   * Purpose: Produce ranked candidate set and aggregate reason counts.
+   * Necessity: Converts raw names into actionable remediation targets.
+   * @param {Array<{id: string, name: string}>} records - Retrieved network records.
+   * @returns {{
+   *   scannedAt: string,
+   *   total: number,
+   *   suspiciousCount: number,
+   *   suspicious: Array<{id: string, name: string, score: number, reasons: string[], changeUrl: string}>,
+   *   reasonCounts: Record<string, number>,
+   * }} Analysis payload.
+   */
+  function analyzeNetworkNamePatterns(records) {
+    const inputRows = Array.isArray(records) ? records : [];
+    const reasonCounts = {};
+    const highConfidence = [];
+    const review = [];
+    const reviewThreshold = NETWORK_NAME_SCAN_MIN_SUSPICIOUS_SCORE;
+    const highConfidenceThreshold = Math.max(
+      reviewThreshold,
+      NETWORK_NAME_SCAN_HIGH_CONFIDENCE_MIN_SCORE,
+    );
+
+    const sortByScoreAndIdDesc = (a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      const aDigits = Number.parseInt(String(a.id), 10);
+      const bDigits = Number.parseInt(String(b.id), 10);
+      if (Number.isFinite(aDigits) && Number.isFinite(bDigits)) {
+        return bDigits - aDigits;
+      }
+      return String(b.id).localeCompare(String(a.id));
+    };
+
+    inputRows.forEach((row) => {
+      const item = normalizeNetworkNameRecord(row);
+      if (!item) return;
+
+      const { score, reasons } = classifyNetworkNamePattern(item.name);
+      reasons.forEach((reason) => {
+        reasonCounts[reason] = (reasonCounts[reason] || 0) + 1;
+      });
+
+      if (score >= highConfidenceThreshold) {
+        highConfidence.push({
+          ...item,
+          tier: "high-confidence",
+          score,
+          reasons,
+          changeUrl: `${window.location.origin}/cp/peeringdb_server/network/${item.id}/change/`,
+        });
+        return;
+      }
+
+      if (score >= reviewThreshold) {
+        review.push({
+          ...item,
+          tier: "review",
+          score,
+          reasons,
+          changeUrl: `${window.location.origin}/cp/peeringdb_server/network/${item.id}/change/`,
+        });
+      }
+    });
+
+    highConfidence.sort(sortByScoreAndIdDesc);
+    review.sort(sortByScoreAndIdDesc);
+
+    const suspicious = [...highConfidence, ...review];
+
+    return {
+      scannedAt: new Date().toISOString(),
+      total: inputRows.length,
+      highConfidenceCount: highConfidence.length,
+      reviewCount: review.length,
+      suspiciousCount: suspicious.length,
+      highConfidence,
+      review,
+      suspicious,
+      reasonCounts,
+    };
+  }
+
+  /**
+   * Returns a compact human-readable summary for notifications/logging.
+   * Purpose: Surface key scan outcomes without requiring table inspection.
+   * Necessity: Enables quick operator feedback after long-running scans.
+   * @param {object} result - Combined retrieval + analysis result.
+   * @returns {string} One-line summary.
+   */
+  function buildNetworkNamePatternSummary(result) {
+    const total = Number(result?.analysis?.total || 0);
+    const highConfidenceCount = Number(result?.analysis?.highConfidenceCount || 0);
+    const reviewCount = Number(result?.analysis?.reviewCount || 0);
+    const suspiciousCount = Number(result?.analysis?.suspiciousCount || 0);
+    const requestCount = Number(result?.requestCount || 0);
+    const transport = String(result?.transport || "rest").toUpperCase();
+    const source = String(result?.source || "fresh").toLowerCase() === "cache" ? "cache" : "fresh fetch";
+    return `Scanned ${total} network names in ${requestCount} request${requestCount === 1 ? "" : "s"} (${transport}, ${source}); flagged ${suspiciousCount} names (${highConfidenceCount} high-confidence, ${reviewCount} review).`;
+  }
+
+  /**
+   * Reads cached network-name scan retrieval payload when still fresh.
+   * Purpose: Reuse previously fetched network rows without re-calling list endpoints.
+   * Necessity: Re-runs should execute analysis heuristics against the same cached row set
+   * while TTL is valid, and refetch only when TTL expires.
+   * @returns {object|null} Cached retrieval payload or null.
+   */
+  function getCachedNetworkNameScanData() {
+    try {
+      const storage = getDomainCacheStorage();
+      const raw = storage?.getItem(NETWORK_NAME_SCAN_CACHE_KEY);
+      if (!raw) return null;
+
+      const parsed = JSON.parse(raw);
+      const expiresAt = Number(parsed?.expiresAt || 0);
+      if (!Number.isFinite(expiresAt) || Date.now() >= expiresAt) {
+        storage?.removeItem(NETWORK_NAME_SCAN_CACHE_KEY);
+        return null;
+      }
+
+      const payload = parsed?.payload;
+      if (!payload || typeof payload !== "object") return null;
+      if (!Array.isArray(payload.records)) return null;
+      return payload;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  /**
+   * Stores network-name scan retrieval payload in short-lived domain cache.
+   * Purpose: Cache full fetched row list once, then reuse for repeated analysis runs.
+   * Necessity: Keeps scan cost low while allowing threshold/heuristic reruns within TTL.
+   * @param {object} payload - Retrieval payload including records + transport metadata.
+   */
+  function setCachedNetworkNameScanData(payload) {
+    try {
+      const storage = getDomainCacheStorage();
+      storage?.setItem(
+        NETWORK_NAME_SCAN_CACHE_KEY,
+        JSON.stringify({
+          expiresAt: Date.now() + NETWORK_NAME_SCAN_CACHE_TTL_MS,
+          payload,
+        }),
+      );
+    } catch (_error) {
+      // Ignore cache-write failures.
+    }
+  }
+
+  /**
+   * Builds TSV text for suspicious network-name candidates.
+   * Purpose: Provide copy-pastable remediation worklist for manual update runs.
+   * Necessity: Operators frequently move candidate sets between browser and spreadsheets.
+   * @param {{ suspicious: Array<{id: string, name: string, reasons: string[], changeUrl: string}> }} analysis - Analysis payload.
+   * @returns {string} TSV output string.
+   */
+  function buildSuspiciousNetworkNameTsv(analysis) {
+    const rows = Array.isArray(analysis?.suspicious) ? analysis.suspicious : [];
+    const header = ["id", "name", "tier", "score", "reasons", "change_url"].join("\t");
+    const lines = rows.map((item) => {
+      const id = String(item?.id || "").trim();
+      const name = String(item?.name || "").trim().replace(/\s+/g, " ");
+      const tier = String(item?.tier || "review").trim();
+      const score = String(item?.score ?? "").trim();
+      const reasons = Array.isArray(item?.reasons) ? item.reasons.join(",") : "";
+      const changeUrl = String(item?.changeUrl || "").trim();
+      return [id, name, tier, score, reasons, changeUrl].join("\t");
+    });
+    return [header, ...lines].join("\n");
+  }
+
+  /**
+   * Emits structured network-name diagnostics to the console.
+   * Purpose: Keep detailed pattern evidence available without cluttering notifications.
+   * Necessity: Manual cleanup planning benefits from sortable tables and reason distributions.
+   * @param {{
+   *   requestCount: number,
+   *   transport: string,
+   *   graphQlAttempted: boolean,
+   *   analysis: object,
+   * }} result - Combined retrieval+analysis result.
+   */
+  function logNetworkNamePatternDiagnostics(result) {
+    const analysis = result?.analysis || {};
+    const suspicious = Array.isArray(analysis.suspicious) ? analysis.suspicious : [];
+    const highConfidenceCount = Number(analysis.highConfidenceCount || 0);
+    const reviewCount = Number(analysis.reviewCount || 0);
+    const reasonCounts = analysis.reasonCounts || {};
+    const reasonRows = Object.entries(reasonCounts)
+      .map(([reason, count]) => ({ reason, count }))
+      .sort((a, b) => b.count - a.count);
+
+    console.group(`[${MODULE_PREFIX}] Network name scan diagnostics`);
+    console.info(buildNetworkNamePatternSummary(result));
+    console.info({
+      scannedAt: analysis.scannedAt,
+      total: analysis.total,
+      highConfidenceCount,
+      reviewCount,
+      suspiciousCount: analysis.suspiciousCount,
+      source: String(result?.source || "fresh"),
+      requestCount: result?.requestCount,
+      transport: result?.transport,
+      graphQlAttempted: Boolean(result?.graphQlAttempted),
+    });
+
+    if (reasonRows.length) {
+      console.table(reasonRows);
+    }
+
+    if (suspicious.length) {
+      const preview = suspicious.slice(0, 200).map((item) => ({
+        id: item.id,
+        name: item.name,
+        tier: item.tier,
+        score: item.score,
+        reasons: item.reasons.join(", "),
+        changeUrl: item.changeUrl,
+      }));
+      console.table(preview);
+    }
+
+    console.groupEnd();
+  }
+
+  /**
    * Shows a non-blocking userscript notification when supported.
    * Purpose: Surface completion/failure status for long-running CP actions.
    * Necessity: Async updates may complete after several network calls and benefit from toasts.
@@ -2904,6 +3433,109 @@
   // (ctx predicate), and run (ctx handler that may return a dispose function).
   // ---------------------------------------------------------------------------
   const modules = [
+    {
+      id: "network-name-pattern-diagnostics",
+      match: (ctx) => ctx.isEntityListPage && ctx.entity === "network",
+      preconditions: () => Boolean(getToolbarList()),
+      run: () => {
+        addToolbarAction({
+          id: `${MODULE_PREFIX}AnalyzeNetworkNames`,
+          label: "Analyze names",
+          insertLeft: true,
+          onClick: async (event) => {
+            const actionLockKey = `${MODULE_PREFIX}.analyzeNetworkNames`;
+            if (!tryBeginActionLock(actionLockKey)) {
+              notifyUser({
+                title: "PeeringDB CP",
+                text: "Network name analysis is already running.",
+              });
+              return;
+            }
+
+            const button = event?.target;
+            const setButtonText = (text) => {
+              if (!button) return;
+              button.textContent = text;
+            };
+            let postRunButtonText = "Analyze names";
+            let postRunButtonDelayMs = 0;
+
+            try {
+              if (button) {
+                button.style.opacity = "0.7";
+                button.style.pointerEvents = "none";
+              }
+
+              let retrieval = getCachedNetworkNameScanData();
+              const usedCache = Boolean(retrieval);
+              if (!retrieval) {
+                setButtonText("Scanning...");
+                retrieval = await fetchRecentNetworkNamesBatched({
+                  targetCount: NETWORK_NAME_SCAN_TARGET_COUNT,
+                  pageSize: NETWORK_NAME_SCAN_PAGE_SIZE,
+                  requestLimit: NETWORK_NAME_SCAN_MAX_REQUESTS,
+                  onProgress: ({ batchIndex, totalBatches, recordsFetched }) => {
+                    if (Number.isFinite(totalBatches)) {
+                      setButtonText(`Scanning ${batchIndex}/${totalBatches}`);
+                      return;
+                    }
+                    setButtonText(`Scanning ${batchIndex} (${recordsFetched})`);
+                  },
+                });
+
+                setCachedNetworkNameScanData(retrieval);
+              }
+
+              setButtonText("Analyzing...");
+              const analysis = analyzeNetworkNamePatterns(retrieval.records);
+              const result = {
+                ...retrieval,
+                source: usedCache ? "cache" : "fresh",
+                analysis,
+              };
+
+              logNetworkNamePatternDiagnostics(result);
+
+              const summary = buildNetworkNamePatternSummary(result);
+              const suspiciousTsv = buildSuspiciousNetworkNameTsv(result.analysis);
+              if (suspiciousTsv) {
+                await copyToClipboard(suspiciousTsv);
+              }
+
+              setButtonText(usedCache ? "Cached" : "Fetched");
+              postRunButtonDelayMs = 900;
+              notifyUser({
+                title: "PeeringDB CP",
+                text: `${summary} Candidate TSV copied to clipboard.`,
+                timeout: 4000,
+              });
+            } catch (error) {
+              console.error(`[${MODULE_PREFIX}] Network name analysis failed`, error);
+              setButtonText("Scan failed");
+              postRunButtonDelayMs = 1200;
+              notifyUser({
+                title: "PeeringDB CP",
+                text: "Network name analysis failed. See console for details.",
+              });
+            } finally {
+              if (button) {
+                button.style.opacity = "";
+                button.style.pointerEvents = "";
+
+                if (postRunButtonDelayMs > 0) {
+                  setTimeout(() => {
+                    button.textContent = postRunButtonText;
+                  }, postRunButtonDelayMs);
+                } else {
+                  button.textContent = postRunButtonText;
+                }
+              }
+              endActionLock(actionLockKey);
+            }
+          },
+        });
+      },
+    },
     {
       id: "copy-overview-change-links",
       match: (ctx) => ctx.isEntityListPage,
