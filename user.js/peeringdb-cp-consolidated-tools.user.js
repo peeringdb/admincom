@@ -1906,6 +1906,25 @@
   }
 
   /**
+   * Reads a readonly field value from a form row by its visible label text.
+   * Purpose: Prefer values already rendered on the change form over stale API payloads.
+   * Necessity: Some readonly values can differ from API fetch timing/state on page load.
+   */
+  function getReadonlyFieldValueByLabel(labelText) {
+    const normalizedLabel = String(labelText || "").trim().toLowerCase();
+    if (!normalizedLabel) return "";
+
+    const row = qsa(".form-row").find((item) => {
+      const label = normalizeRenderedCopyText(
+        (qs(".c-1 label", item) || qs(".c-1", item))?.textContent || "",
+      ).toLowerCase();
+      return label === normalizedLabel;
+    });
+
+    return normalizeRenderedCopyText(qs(".grp-readonly", row)?.textContent || "");
+  }
+
+  /**
    * Marks inline form rows (POCs, netfacs, netixlans) for deletion if status = 'deleted'.
    * Purpose: Clean up stale inline items when network status is deleted.
    * Necessity: Automatic cleanup prevents orphaned POCs/facilities when network is marked deleted.
@@ -2667,12 +2686,15 @@
         try {
           const statusPayload = await pdbFetch(`https://www.peeringdb.com/api/net/${ctx.entityId}`);
           const netData = statusPayload?.data?.[0];
-          if (!netData || !netData.rir_status) return;
+          const formRirStatus = String(getReadonlyFieldValueByLabel("RIR status") || "").trim().toLowerCase();
+          const apiRirStatus = String(netData?.rir_status || "").trim().toLowerCase();
+          const status = formRirStatus || apiRirStatus;
+          if (!status) return;
 
-          const status = String(netData.rir_status || "").trim().toLowerCase();
           const statusColors = {
             ok: "#4caf50",
             invalid: "#f44336",
+            pending: "#ff9800",
             na: "#999",
           };
           const color = statusColors[status] || "#999";
