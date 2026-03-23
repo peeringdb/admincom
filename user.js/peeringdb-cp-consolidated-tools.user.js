@@ -104,6 +104,19 @@
   const ENTITY_TYPES_OWN_NAME = new Set(["organization", "facility", "internetexchange"]);
 
   /**
+   * Unified entity slug mapping for frontend URLs and API resource paths.
+   * Both getFrontendSlugByEntity and getEntityApiResourceByEntity delegate to this map.
+   */
+  const ENTITY_SLUG_MAP = {
+    facility: "fac",
+    network: "net",
+    organization: "org",
+    carrier: "carrier",
+    internetexchange: "ix",
+    campus: "campus",
+  };
+
+  /**
    * Django admin inline-set DOM ID prefixes for network child relations.
    * Used by markDeletedNetworkInlinesForDeletion to iterate all inline sets.
    */
@@ -923,16 +936,7 @@
   }
 
   function getFrontendSlugByEntity(entity) {
-    const slugByEntity = {
-      facility: "fac",
-      network: "net",
-      organization: "org",
-      carrier: "carrier",
-      internetexchange: "ix",
-      campus: "campus",
-    };
-
-    return slugByEntity[entity] || "";
+    return ENTITY_SLUG_MAP[entity] || "";
   }
 
   function getEntityFrontendPath(ctx) {
@@ -947,16 +951,7 @@
    * Necessity: CP workflows often require quick access to canonical API payloads.
    */
   function getEntityApiResourceByEntity(entity) {
-    const apiResourceByEntity = {
-      facility: "fac",
-      network: "net",
-      organization: "org",
-      carrier: "carrier",
-      internetexchange: "ix",
-      campus: "campus",
-    };
-
-    return apiResourceByEntity[entity] || "";
+    return ENTITY_SLUG_MAP[entity] || "";
   }
 
   /**
