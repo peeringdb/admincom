@@ -2614,6 +2614,49 @@
       },
     },
     {
+      id: "network-rir-status-badge",
+      match: (ctx) => ctx.isEntityChangePage && ctx.entity === "network",
+      preconditions: () => Boolean(qs("#grp-content-title")),
+      run: async (ctx) => {
+        try {
+          const statusPayload = await pdbFetch(`https://www.peeringdb.com/api/net/${ctx.entityId}`);
+          const netData = statusPayload?.data?.[0];
+          if (!netData || !netData.rir_status) return;
+
+          const status = String(netData.rir_status || "").trim().toLowerCase();
+          const statusColors = {
+            ok: "#4caf50",
+            invalid: "#f44336",
+            na: "#999",
+          };
+          const color = statusColors[status] || "#999";
+          const updated = netData.rir_status_updated ? new Date(netData.rir_status_updated).toLocaleDateString() : "unknown";
+
+          const badge = document.createElement("span");
+          badge.style.cssText = `
+            display: inline-block;
+            padding: 2px 8px;
+            margin-left: 10px;
+            background-color: ${color};
+            color: white;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+            white-space: nowrap;
+          `;
+          badge.textContent = `RIR: ${status}`;
+          badge.title = `RIR status: ${status}\nLast updated: ${updated}`;
+
+          const titleArea = qs("#grp-content-title h1") || qs("#grp-content-title");
+          if (titleArea) {
+            titleArea.appendChild(badge);
+          }
+        } catch (_error) {
+          // Gracefully ignore API errors for status badge
+        }
+      },
+    },
+    {
       id: "set-window-title",
       match: (ctx) => ctx.isCp && ctx.isEntityChangePage,
       run: (ctx) => {
