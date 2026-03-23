@@ -2655,6 +2655,56 @@
     });
   }
 
+  /**
+   * Runs a lightweight set of DOM precondition checks on page load.
+   * Purpose: Surface missing or renamed Django admin DOM landmarks early so
+   * regressions are caught immediately in the console rather than mid-action.
+   * Necessity: Grappelli admin markup can change between PeeringDB releases;
+   * a self-check surfaces breakage before a user triggers an action.
+   * Always logs to console.warn for any failed check; emits console.debug
+   * details in debug mode. Runs at most once per page load.
+   */
+  function runSelfCheck(ctx) {
+    const checks = [
+      { id: "grp-content",       selector: "#grp-content",             critical: true },
+      { id: "grp-content-title", selector: "#grp-content-title",       critical: true },
+      { id: "toolbar",           selector: () => Boolean(getToolbarList()), critical: false },
+      { id: "id_status",         selector: "#id_status",                critical: false },
+    ];
+
+    const failures = [];
+
+    checks.forEach(({ id, selector, critical }) => {
+      const found =
+        typeof selector === "function"
+          ? selector()
+          : Boolean(qs(selector));
+      dbg("self-check", `${found ? "ok" : "missing"} [${id}]`);
+      if (!found) failures.push({ id, critical });
+    });
+
+    if (failures.length === 0) {
+      dbg("self-check", "all checks passed", { entity: ctx.entity });
+      return;
+    }
+
+    const criticalIds = failures.filter((f) => f.critical).map((f) => f.id);
+    const warnIds    = failures.filter((f) => !f.critical).map((f) => f.id);
+
+    if (criticalIds.length) {
+      console.warn(
+        `[${MODULE_PREFIX}] self-check: critical landmarks missing — ${criticalIds.join(", ")}`,
+        { entity: ctx.entity, path: ctx.pathName },
+      );
+    }
+    if (warnIds.length) {
+      console.warn(
+        `[${MODULE_PREFIX}] self-check: optional landmarks missing — ${warnIds.join(", ")}`,
+        { entity: ctx.entity, path: ctx.pathName },
+      );
+    }
+  }
+
   function runConsolidatedInit() {
     const ctx = getRouteContext();
 
@@ -2662,6 +2712,7 @@
       return;
     }
 
+    runSelfCheck(ctx);
     cleanupLegacyPrimaryActionRow();
     dispatchModules(ctx);
     enforceToolbarButtonOrder(ctx);
