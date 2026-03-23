@@ -3114,21 +3114,22 @@
     if (typeof GM_registerMenuCommand !== "function") return;
     cpMenuCommandsRegistered = true;
 
-    GM_registerMenuCommand("CP: Update Name", () => {
-      qs(`#${MODULE_PREFIX}UpdateEntityName`)?.click();
-    });
+    const registerMenuCommandForButton = (buttonId, fallbackLabel) => {
+      const button = qs(`#${buttonId}`);
+      if (!button) return;
 
-    GM_registerMenuCommand("CP: Copy Entity URL", () => {
-      qs(`#${MODULE_PREFIX}CopyEntityUrl`)?.click();
-    });
+      const label = String(button.textContent || "").trim() || String(fallbackLabel || "").trim();
+      if (!label) return;
 
-    GM_registerMenuCommand("CP: Copy Org URL", () => {
-      qs(`#${MODULE_PREFIX}CopyOrganizationUrl`)?.click();
-    });
+      GM_registerMenuCommand(`CP: ${label}`, () => {
+        qs(`#${buttonId}`)?.click();
+      });
+    };
 
-    GM_registerMenuCommand("CP: Reset Information", () => {
-      qs(`#${MODULE_PREFIX}ResetNetworkInformation`)?.click();
-    });
+    registerMenuCommandForButton(`${MODULE_PREFIX}UpdateEntityName`, "Update Name");
+    registerMenuCommandForButton(`${MODULE_PREFIX}CopyEntityUrl`, "Copy Entity URL");
+    registerMenuCommandForButton(`${MODULE_PREFIX}CopyOrganizationUrl`, "Copy Org URL");
+    registerMenuCommandForButton(`${MODULE_PREFIX}ResetNetworkInformation`, "Reset Information");
 
     GM_registerMenuCommand("CP: Clear Org Name Cache", () => {
       clearOrganizationNameCache();
