@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.3.20260323
+// @version      2.0.4.20260323
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
@@ -25,7 +25,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.3.20260323";
+  const SCRIPT_VERSION = "2.0.4.20260323";
   const DUMMY_ORG_ID = 20525;
   const DISABLED_MODULES_STORAGE_KEY = `${MODULE_PREFIX}.disabledModules`;
   const USER_AGENT_STORAGE_KEY = `${MODULE_PREFIX}.userAgent`;
@@ -2875,6 +2875,115 @@
   }
 
   /**
+   * Ensures CSS styles are available for inline rows marked for deletion.
+   * Purpose: Make pending inline deletions visually obvious before save.
+   * Necessity: Grappelli delete checkboxes can be easy to miss in dense tabular inlines.
+   */
+  function ensureInlineDeleteHighlightStyles() {
+    const styleId = `${MODULE_PREFIX}InlineDeleteHighlightStyle`;
+    if (document.getElementById(styleId)) return;
+
+    const style = document.createElement("style");
+    style.id = styleId;
+    style.textContent = `
+      .${MODULE_PREFIX}InlineMarkedDelete {
+        background: linear-gradient(
+          90deg,
+          rgba(244, 67, 54, 0.28) 0%,
+          rgba(244, 67, 54, 0.16) 100%
+        ) !important;
+        outline: 2px solid rgba(198, 40, 40, 0.9);
+        outline-offset: -2px;
+        box-shadow: inset 0 0 0 9999px rgba(244, 67, 54, 0.12);
+      }
+
+      .${MODULE_PREFIX}InlineMarkedDelete .grp-td {
+        background-color: transparent !important;
+      }
+
+      .${MODULE_PREFIX}InlineMarkedDelete .grp-tools-container {
+        background: rgba(183, 28, 28, 0.2) !important;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  /**
+   * Returns the owning inline row element for a delete control.
+   * @param {Element|null} element - Delete checkbox or delete icon descendant.
+   * @returns {HTMLElement|null} Owning `.form-row.grp-dynamic-form` element.
+   */
+  function getInlineDeleteRowElement(element) {
+    return element?.closest(".form-row.grp-dynamic-form") || null;
+  }
+
+  /**
+   * Applies/removes the marked-for-deletion visual state on an inline row.
+   * @param {HTMLElement|null} row - Inline row element.
+   * @param {boolean} isMarkedForDelete - Whether delete checkbox is active.
+   */
+  function setInlineDeleteRowHighlight(row, isMarkedForDelete) {
+    if (!row) return;
+    row.classList.toggle(`${MODULE_PREFIX}InlineMarkedDelete`, Boolean(isMarkedForDelete));
+  }
+
+  /**
+   * Syncs highlight state for one inline row based on its DELETE checkbox value.
+   * @param {HTMLElement|null} row - Inline row element.
+   */
+  function syncInlineDeleteRowHighlight(row) {
+    if (!row) return;
+    const deleteCheckbox = qs('input[type="checkbox"][name$="-DELETE"]', row);
+    setInlineDeleteRowHighlight(row, Boolean(deleteCheckbox?.checked));
+  }
+
+  /**
+   * Binds delegated listeners that highlight rows when inline delete is toggled.
+   * Purpose: Make delete actions (cross icon/checkbox) highly visible instantly.
+   * Necessity: Inline rows are dynamic; delegated binding covers existing and added rows.
+   * @returns {Function|null} Dispose function that removes listeners.
+   */
+  function bindInlineDeleteHighlightReactivity() {
+    const container = qs("#grp-content-container");
+    if (!container || container.hasAttribute("data-pdb-cp-inline-delete-highlight-bound")) {
+      return null;
+    }
+
+    ensureInlineDeleteHighlightStyles();
+    container.setAttribute("data-pdb-cp-inline-delete-highlight-bound", "1");
+
+    qsa(".form-row.grp-dynamic-form", container).forEach((row) => {
+      syncInlineDeleteRowHighlight(row);
+    });
+
+    const onChange = (event) => {
+      const target = event?.target;
+      if (!target?.matches?.('input[type="checkbox"][name$="-DELETE"]')) return;
+      syncInlineDeleteRowHighlight(getInlineDeleteRowElement(target));
+    };
+
+    const onClick = (event) => {
+      const deleteIcon = event?.target?.closest?.("a.grp-delete-handler");
+      if (!deleteIcon) return;
+
+      const row = getInlineDeleteRowElement(deleteIcon);
+      // Grappelli toggles checkbox in its own click handler; defer one tick.
+      setTimeout(() => {
+        syncInlineDeleteRowHighlight(row);
+      }, 0);
+    };
+
+    container.addEventListener("change", onChange);
+    container.addEventListener("click", onClick);
+
+    return () => {
+      container.removeEventListener("change", onChange);
+      container.removeEventListener("click", onClick);
+      container.removeAttribute("data-pdb-cp-inline-delete-highlight-bound");
+    };
+  }
+
+  /**
    * Normalizes text copied from rendered field contents.
    * Purpose: Remove excessive whitespace while preserving readable one-line output.
    * Necessity: Rendered HTML often contains line breaks and spacing artifacts.
@@ -4028,6 +4137,12 @@
       run: () => {
         addCopyButtonsToRenderedFields();
       },
+    },
+    {
+      id: "inline-delete-row-highlights",
+      match: (ctx) => ctx.isEntityChangePage && ctx.entity === "network",
+      preconditions: () => Boolean(qs("#grp-content-container .inline-group.grp-tabular")),
+      run: () => bindInlineDeleteHighlightReactivity(),
     },
     {
       id: "facility-google-maps",
