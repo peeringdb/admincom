@@ -4,7 +4,7 @@
 // @version      1.0.50.20260323
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
-// @match        https://www.peeringdb.com/cp/peeringdb_server/*/*/change/*
+// @match        https://www.peeringdb.com/cp/peeringdb_server/*
 // @icon         https://icons.duckduckgo.com/ip2/peeringdb.com.ico
 // @grant        GM_xmlhttpRequest
 // @grant        GM_notification
@@ -789,7 +789,7 @@
    * re-parsing the URL each time — centralizing parsing prevents divergent path logic.
    * @returns {{ host: string, path: string[], pathName: string, isCp: boolean,
    *             entity: string, entityId: string, pageKind: string,
-   *             isEntityChangePage: boolean }}
+   *             isEntityChangePage: boolean, isEntityListPage: boolean }}
    */
   function getRouteContext() {
     const path = window.location.pathname.replace(/(^\/|\/$)/g, "").split("/");
@@ -803,6 +803,8 @@
       pageKind: path[4] || "",
       isEntityChangePage:
         path[0] === "cp" && path[1] === "peeringdb_server" && path[4] === "change",
+      isEntityListPage:
+        path[0] === "cp" && path[1] === "peeringdb_server" && Boolean(path[2]) && !path[3],
     };
   }
 
@@ -2083,6 +2085,47 @@
   }
 
   /**
+   * Collects all currently rendered CP object change links from the active overview page.
+   * Purpose: Support one-click copying of every visible change-page URL from a filtered list.
+   * Necessity: Admin overview pages often expose many object rows and copying them manually
+   * is tedious; harvesting current row links preserves the user's active filter/pagination view.
+   * @returns {string[]} Ordered, de-duplicated absolute change URLs currently present in the content area.
+   */
+  function getCurrentOverviewChangeLinks() {
+    const anchors = qsa('#grp-content-container a[href*="/cp/peeringdb_server/"][href*="/change/"]');
+    const seen = new Set();
+
+    return anchors
+      .map((anchor) => {
+        const rawHref = String(anchor.getAttribute("href") || "").trim();
+        if (!rawHref) return "";
+
+        let absoluteUrl = "";
+        try {
+          absoluteUrl = new URL(rawHref, window.location.origin).toString();
+        } catch (_error) {
+          return "";
+        }
+
+        let parsed;
+        try {
+          parsed = new URL(absoluteUrl);
+        } catch (_error) {
+          return "";
+        }
+
+        if (!/^\/cp\/peeringdb_server\/[^/]+\/[^/]+\/change\/?$/i.test(parsed.pathname)) {
+          return "";
+        }
+
+        if (seen.has(absoluteUrl)) return "";
+        seen.add(absoluteUrl);
+        return absoluteUrl;
+      })
+      .filter(Boolean);
+  }
+
+  /**
    * Shows a non-blocking userscript notification when supported.
    * Purpose: Surface completion/failure status for long-running CP actions.
    * Necessity: Async updates may complete after several network calls and benefit from toasts.
@@ -2861,6 +2904,45 @@
   // (ctx predicate), and run (ctx handler that may return a dispose function).
   // ---------------------------------------------------------------------------
   const modules = [
+    {
+      id: "copy-overview-change-links",
+      match: (ctx) => ctx.isEntityListPage,
+      preconditions: () => Boolean(getToolbarList()),
+      run: (ctx) => {
+        addToolbarAction({
+          id: `${MODULE_PREFIX}CopyOverviewChangeLinks`,
+          label: "Copy change links",
+          insertLeft: true,
+          onClick: async (event) => {
+            const links = getCurrentOverviewChangeLinks();
+            if (links.length === 0) {
+              pulseToolbarButton(event?.target, "No links");
+              notifyUser({
+                title: "PeeringDB CP",
+                text: `No change links found on current ${ctx.entity || "overview"} page.`,
+              });
+              return;
+            }
+
+            const copied = await copyToClipboard(links.join("\n"));
+            if (copied) {
+              pulseToolbarButton(event?.target, `Copied ${links.length}`);
+              notifyUser({
+                title: "PeeringDB CP",
+                text: `Copied ${links.length} change link${links.length === 1 ? "" : "s"}.`,
+              });
+              return;
+            }
+
+            pulseToolbarButton(event?.target, "Copy failed");
+            notifyUser({
+              title: "PeeringDB CP",
+              text: "Failed to copy overview change links.",
+            });
+          },
+        });
+      },
+    },
     {
       id: "copy-frontend-urls",
       match: (ctx) => ctx.isEntityChangePage,
@@ -3723,11 +3805,13 @@
   function runConsolidatedInit() {
     const ctx = getRouteContext();
 
-    if (!ctx.isCp || !ctx.isEntityChangePage) {
+    if (!ctx.isCp || (!ctx.isEntityChangePage && !ctx.isEntityListPage)) {
       return;
     }
 
-    runSelfCheck(ctx);
+    if (ctx.isEntityChangePage) {
+      runSelfCheck(ctx);
+    }
     dbg("init", `v${SCRIPT_VERSION}`, { entity: ctx.entity, entityId: ctx.entityId });
     cleanupLegacyPrimaryActionRow();
     dispatchModules(ctx);
