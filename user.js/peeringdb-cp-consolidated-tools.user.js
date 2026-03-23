@@ -79,6 +79,7 @@
     "sales email",
   ]);
   const orgNameMemoryCache = new Map();
+  const activeActionLocks = new Set();
   const openDropdownActionItems = new Set();
   let dropdownGlobalCloseListenerBound = false;
 
@@ -141,6 +142,31 @@
       if (event.key !== "Escape") return;
       closeAllDropdownActionItems();
     });
+  }
+
+  /**
+   * Attempts to acquire a named action lock.
+   * Purpose: Prevent duplicate execution for long-running script-driven actions.
+   * Necessity: Double clicks or repeated menu triggers can race and produce duplicate saves.
+   */
+  function tryBeginActionLock(lockKey) {
+    const normalizedKey = String(lockKey || "").trim();
+    if (!normalizedKey) return false;
+    if (activeActionLocks.has(normalizedKey)) return false;
+
+    activeActionLocks.add(normalizedKey);
+    return true;
+  }
+
+  /**
+   * Releases a previously acquired action lock.
+   * Purpose: Re-enable action execution after async work completes.
+   * Necessity: Locks must always be released to avoid permanent action blocking.
+   */
+  function endActionLock(lockKey) {
+    const normalizedKey = String(lockKey || "").trim();
+    if (!normalizedKey) return;
+    activeActionLocks.delete(normalizedKey);
   }
 
   /**
@@ -1956,48 +1982,61 @@
           id: `${MODULE_PREFIX}UpdateEntityName`,
           label: "Update Name",
           onClick: async (event) => {
-            const appendName = getNameSuffixForDeletedEntity(ctx.entityId);
-            let baseName;
-            if (["organization", "facility", "internetexchange"].includes(ctx.entity)) {
-              const rawName = getInputValue("#id_name");
-              const existingSuffix = ` #${ctx.entityId}`;
-              baseName = rawName.endsWith(existingSuffix)
-                ? rawName.slice(0, -existingSuffix.length)
-                : rawName;
-            } else {
-              const anchor = event?.target;
-              if (anchor) {
-                anchor.textContent = "Updating...";
-                anchor.style.opacity = "0.7";
-                anchor.style.pointerEvents = "none";
-              }
-              const orgId = getOrganizationIdForNameUpdate(ctx);
-              baseName = await getOrganizationName(orgId);
-              if (anchor) {
-                anchor.textContent = "Update Name";
-                anchor.style.opacity = "";
-                anchor.style.pointerEvents = "";
-              }
-              if (!baseName) {
-                notifyUser({
-                  title: "PeeringDB CP",
-                  text: "Update Name: failed to resolve organization name.",
-                });
-                return;
-              }
+            const actionLockKey = `${MODULE_PREFIX}.updateEntityName.${ctx.entity}.${ctx.entityId}`;
+            if (!tryBeginActionLock(actionLockKey)) {
+              notifyUser({
+                title: "PeeringDB CP",
+                text: "Update Name is already running.",
+              });
+              return;
             }
 
-            const nextName = `${baseName}${appendName}`;
-            const currentName = getInputValue("#id_name");
-            if (nextName === currentName) return;
+            try {
+              const appendName = getNameSuffixForDeletedEntity(ctx.entityId);
+              let baseName;
+              if (["organization", "facility", "internetexchange"].includes(ctx.entity)) {
+                const rawName = getInputValue("#id_name");
+                const existingSuffix = ` #${ctx.entityId}`;
+                baseName = rawName.endsWith(existingSuffix)
+                  ? rawName.slice(0, -existingSuffix.length)
+                  : rawName;
+              } else {
+                const anchor = event?.target;
+                if (anchor) {
+                  anchor.textContent = "Updating...";
+                  anchor.style.opacity = "0.7";
+                  anchor.style.pointerEvents = "none";
+                }
+                const orgId = getOrganizationIdForNameUpdate(ctx);
+                baseName = await getOrganizationName(orgId);
+                if (anchor) {
+                  anchor.textContent = "Update Name";
+                  anchor.style.opacity = "";
+                  anchor.style.pointerEvents = "";
+                }
+                if (!baseName) {
+                  notifyUser({
+                    title: "PeeringDB CP",
+                    text: "Update Name: failed to resolve organization name.",
+                  });
+                  return;
+                }
+              }
 
-            markDeletedNetworkInlinesForDeletion();
-            setInputValue("#id_name", nextName);
-            clickSaveAndContinue();
-            notifyUser({
-              title: "PeeringDB CP",
-              text: `Update Name: saved '${nextName}'.`,
-            });
+              const nextName = `${baseName}${appendName}`;
+              const currentName = getInputValue("#id_name");
+              if (nextName === currentName) return;
+
+              markDeletedNetworkInlinesForDeletion();
+              setInputValue("#id_name", nextName);
+              clickSaveAndContinue();
+              notifyUser({
+                title: "PeeringDB CP",
+                text: `Update Name: saved '${nextName}'.`,
+              });
+            } finally {
+              endActionLock(actionLockKey);
+            }
           },
         });
       },
@@ -2012,20 +2051,28 @@
           label: "Reset Information",
           insertLeft: true,
           onClick: async (event) => {
-            const asn = getInputValue("#id_asn");
-            const networkName = getInputValue("#id_name");
-
-            if (!confirmDangerousReset(asn, networkName, ctx.entityId)) {
+            const actionLockKey = `${MODULE_PREFIX}.resetNetworkInformation.${ctx.entityId}`;
+            if (!tryBeginActionLock(actionLockKey)) {
+              notifyUser({
+                title: "PeeringDB CP",
+                text: "Reset Information is already running.",
+              });
               return;
             }
 
-            const button = event.target;
-            const originalLabel = button.textContent;
-            button.textContent = "Processing...";
-            button.style.opacity = "0.7";
-            button.style.pointerEvents = "none";
-
             try {
+              const asn = getInputValue("#id_asn");
+              const networkName = getInputValue("#id_name");
+
+              if (!confirmDangerousReset(asn, networkName, ctx.entityId)) {
+                return;
+              }
+
+              const button = event.target;
+              button.textContent = "Processing...";
+              button.style.opacity = "0.7";
+              button.style.pointerEvents = "none";
+
               const orgId = getInputValue("#id_org");
               const appendName = getNameSuffixForDeletedEntity(ctx.entityId);
               let usedRdapFallback = false;
@@ -2077,9 +2124,20 @@
                 title: "PeeringDB CP",
                 text: "Reset Information failed. See console for details.",
               });
-              button.textContent = originalLabel;
-              button.style.opacity = "1";
-              button.style.pointerEvents = "auto";
+              const button = event?.target;
+              if (button) {
+                button.textContent = "Reset Information";
+                button.style.opacity = "1";
+                button.style.pointerEvents = "auto";
+              }
+            } finally {
+              const button = event?.target;
+              if (button) {
+                button.textContent = "Reset Information";
+                button.style.opacity = "";
+                button.style.pointerEvents = "";
+              }
+              endActionLock(actionLockKey);
             }
           },
         });
