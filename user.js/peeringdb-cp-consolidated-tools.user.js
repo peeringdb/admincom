@@ -88,6 +88,41 @@
     `${MODULE_PREFIX}StatePending`,
     `${MODULE_PREFIX}StateDeleted`,
   ];
+
+  /**
+   * Entity types that derive their Update Name value from the current #id_name field
+   * rather than resolving it via the organization API.
+   */
+  const ENTITY_TYPES_OWN_NAME = new Set(["organization", "facility", "internetexchange"]);
+
+  /**
+   * Django admin inline-set DOM ID prefixes for network child relations.
+   * Used by markDeletedNetworkInlinesForDeletion to iterate all inline sets.
+   */
+  const NETWORK_INLINE_SET_PREFIXES = ["poc_set", "netfac_set", "netixlan_set"];
+
+  /**
+   * Deterministic left-to-right priority order for the primary CP toolbar.
+   * Items not matched by any entry are left in their original relative order.
+   */
+  const TOOLBAR_PRIMARY_ORDER = [
+    `li[data-pdb-cp-action="${MODULE_PREFIX}ResetNetworkInformation"]`,
+    `li[data-pdb-cp-action="${MODULE_PREFIX}Frontend"]`,
+    `li[data-pdb-cp-action="${MODULE_PREFIX}OrganizationFrontend"]`,
+    `li[data-pdb-cp-action="${MODULE_PREFIX}OrganizationCp"]`,
+    isHistoryToolbarItem,
+  ];
+
+  /**
+   * Deterministic left-to-right priority order for the secondary action row.
+   * Items not matched by any entry are left in their original relative order.
+   */
+  const TOOLBAR_SECONDARY_ORDER = [
+    `li[data-pdb-cp-secondary-action="${MODULE_PREFIX}UpdateEntityName"]`,
+    `li[data-pdb-cp-secondary-action="${MODULE_PREFIX}MapsDropdown"]`,
+    `li[data-pdb-cp-secondary-action="${MODULE_PREFIX}CopyEntityUrl"]`,
+    `li[data-pdb-cp-secondary-action="${MODULE_PREFIX}CopyOrganizationUrl"]`,
+  ];
   let dropdownGlobalCloseListenerBound = false;
 
   /**
@@ -1313,23 +1348,12 @@
 
     const primaryToolbar = getToolbarList();
     if (primaryToolbar) {
-      reorderChildrenByPriority(primaryToolbar, [
-        'li[data-pdb-cp-action="pdbCpConsolidatedResetNetworkInformation"]',
-        'li[data-pdb-cp-action="pdbCpConsolidatedFrontend"]',
-        'li[data-pdb-cp-action="pdbCpConsolidatedOrganizationFrontend"]',
-        'li[data-pdb-cp-action="pdbCpConsolidatedOrganizationCp"]',
-        isHistoryToolbarItem,
-      ]);
+      reorderChildrenByPriority(primaryToolbar, TOOLBAR_PRIMARY_ORDER);
     }
 
     const secondaryRow = qs(`#${MODULE_PREFIX}SecondaryActionRow`);
     if (secondaryRow) {
-      reorderChildrenByPriority(secondaryRow, [
-        'li[data-pdb-cp-secondary-action="pdbCpConsolidatedUpdateEntityName"]',
-        'li[data-pdb-cp-secondary-action="pdbCpConsolidatedMapsDropdown"]',
-        'li[data-pdb-cp-secondary-action="pdbCpConsolidatedCopyEntityUrl"]',
-        'li[data-pdb-cp-secondary-action="pdbCpConsolidatedCopyOrganizationUrl"]',
-      ]);
+      reorderChildrenByPriority(secondaryRow, TOOLBAR_SECONDARY_ORDER);
     }
   }
 
@@ -1754,9 +1778,7 @@
    * Necessity: Ensures consistent cleanup of deleted network members across all relation types.
    */
   function markDeletedNetworkInlinesForDeletion() {
-    clickDeleteHandlersForInlineSet("poc_set");
-    clickDeleteHandlersForInlineSet("netfac_set");
-    clickDeleteHandlersForInlineSet("netixlan_set");
+    NETWORK_INLINE_SET_PREFIXES.forEach((prefix) => clickDeleteHandlersForInlineSet(prefix));
   }
 
   // RDAP client module (fully isolated from feature modules)
@@ -2256,8 +2278,7 @@
     {
       id: "set-entity-name-equal-org-name",
       match: (ctx) =>
-        ctx.isEntityChangePage &&
-        ["network", "facility", "internetexchange", "organization", "carrier", "campus"].includes(ctx.entity),
+        ctx.isEntityChangePage && ENTITY_TYPES.has(ctx.entity),
       preconditions: (ctx) =>
         Boolean(
           getToolbarList() &&
@@ -2281,7 +2302,7 @@
             try {
               const appendName = getNameSuffixForDeletedEntity(ctx.entityId);
               let baseName;
-              if (["organization", "facility", "internetexchange"].includes(ctx.entity)) {
+              if (ENTITY_TYPES_OWN_NAME.has(ctx.entity)) {
                 const rawName = getInputValue("#id_name");
                 const existingSuffix = ` #${ctx.entityId}`;
                 baseName = rawName.endsWith(existingSuffix)
