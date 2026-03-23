@@ -1039,6 +1039,35 @@
     return `${fallback || "Entity"} Website`;
   }
 
+  /**
+   * Returns human-friendly frontend label for a CP entity.
+   * Purpose: Make the main frontend action explicit about the destination entity type.
+   * Necessity: Replaces generic "Frontend" text with entity-specific naming.
+   */
+  function getEntityFrontendLabel(entity) {
+    const frontendLabelByEntity = {
+      internetexchange: "IX (front-end)",
+      network: "Network (front-end)",
+      facility: "Facility (front-end)",
+      organization: "Org (front-end)",
+      carrier: "Carrier (front-end)",
+      campus: "Campus (front-end)",
+    };
+
+    if (frontendLabelByEntity[entity]) {
+      return frontendLabelByEntity[entity];
+    }
+
+    const fallback = String(entity || "")
+      .trim()
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .toLowerCase()
+      .replace(/\b\w/g, (char) => char.toUpperCase());
+
+    return `${fallback || "Entity"} (front-end)`;
+  }
+
   function getOrganizationIdForNameUpdate(ctx) {
     if (!ctx?.isEntityChangePage) return "";
     if (ctx.entity === "organization") return String(ctx.entityId || "").trim();
@@ -2587,7 +2616,7 @@
 
         addToolbarAction({
           id: `${MODULE_PREFIX}Frontend`,
-          label: "Frontend",
+          label: getEntityFrontendLabel(ctx.entity),
           href: `/${goto}/${ctx.entityId}`,
           target: "_new",
         });
