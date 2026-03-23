@@ -81,6 +81,7 @@
   const orgNameMemoryCache = new Map();
   const activeActionLocks = new Set();
   const openDropdownActionItems = new Set();
+  const moduleDisposers = new Map();
   const ENTITY_STATE_BACKGROUND_CLASS_NAMES = [
     `${MODULE_PREFIX}StateDummyChild`,
     `${MODULE_PREFIX}StatePending`,
@@ -219,13 +220,14 @@
   }
 
   /**
-   * Binds one-time reactive listeners to keep entity-state backgrounds in sync with form edits.
+   * Binds reactive listeners to keep entity-state backgrounds in sync with form edits.
    * Purpose: Refresh state highlighting immediately when status/org values are changed by admins.
    * Necessity: Without listeners, styling updates only on initial page load.
+   * Returns a dispose function that removes all registered listeners (lifecycle support).
    */
   function bindEntityStateBackgroundReactivity(ctx) {
     const statusSelect = qs("#id_status");
-    if (!statusSelect || statusSelect.hasAttribute("data-pdb-cp-state-bg-bound")) return;
+    if (!statusSelect || statusSelect.hasAttribute("data-pdb-cp-state-bg-bound")) return null;
 
     statusSelect.setAttribute("data-pdb-cp-state-bg-bound", "1");
 
@@ -243,6 +245,17 @@
       orgInput.addEventListener("change", apply);
       orgInput.addEventListener("input", apply);
     }
+
+    return () => {
+      statusSelect.removeEventListener("change", apply);
+      statusSelect.removeEventListener("input", apply);
+      statusSelect.removeAttribute("data-pdb-cp-state-bg-bound");
+      if (orgInput) {
+        orgInput.removeEventListener("change", apply);
+        orgInput.removeEventListener("input", apply);
+        orgInput.removeAttribute("data-pdb-cp-state-bg-bound");
+      }
+    };
   }
 
   /**
@@ -2122,7 +2135,7 @@
       run: (ctx) => {
         applyEntityStateBackgroundClass(ctx);
         syncEntityStateTitleMarkers(ctx);
-        bindEntityStateBackgroundReactivity(ctx);
+        return bindEntityStateBackgroundReactivity(ctx);
       },
     },
     {
@@ -2390,7 +2403,17 @@
         if (!isModuleEnabled(module.id, disabledModules)) return;
         if (!module.match(ctx)) return;
         if (typeof module.preconditions === "function" && !module.preconditions(ctx)) return;
-        module.run(ctx);
+
+        const existingDispose = moduleDisposers.get(module.id);
+        if (typeof existingDispose === "function") {
+          try { existingDispose(); } catch (_err) { /* ignore dispose errors */ }
+          moduleDisposers.delete(module.id);
+        }
+
+        const result = module.run(ctx);
+        if (typeof result === "function") {
+          moduleDisposers.set(module.id, result);
+        }
       } catch (error) {
         console.warn(`[${MODULE_PREFIX}] module failed: ${module.id}`, error);
       }
