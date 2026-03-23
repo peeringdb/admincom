@@ -1010,6 +1010,35 @@
     return labelByEntity[entity] || "Copy URL";
   }
 
+  /**
+   * Returns human-friendly website label for the current object type.
+   * Purpose: Keep header website action labels concise and entity-specific.
+   * Necessity: Replaces generic "ObjType Website" text with context-aware naming.
+   */
+  function getEntityWebsiteLabel(entity) {
+    const websiteLabelByEntity = {
+      internetexchange: "IX Website",
+      network: "Network Website",
+      facility: "Facility Website",
+      organization: "Org Website",
+      carrier: "Carrier Website",
+      campus: "Campus Website",
+    };
+
+    if (websiteLabelByEntity[entity]) {
+      return websiteLabelByEntity[entity];
+    }
+
+    const fallback = String(entity || "")
+      .trim()
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .toLowerCase()
+      .replace(/\b\w/g, (char) => char.toUpperCase());
+
+    return `${fallback || "Entity"} Website`;
+  }
+
   function getOrganizationIdForNameUpdate(ctx) {
     if (!ctx?.isEntityChangePage) return "";
     if (ctx.entity === "organization") return String(ctx.entityId || "").trim();
@@ -2498,7 +2527,7 @@
         if (/^https?:\/\//i.test(objTypeWebsiteUrl)) {
           addToolbarAction({
             id: `${MODULE_PREFIX}ObjTypeWebsite`,
-            label: "ObjType Website",
+            label: getEntityWebsiteLabel(ctx.entity),
             href: objTypeWebsiteUrl,
             target: `pdb_${grainyIdentity}_objtype_website`,
             insertLeft: true,
@@ -2509,7 +2538,7 @@
         if (/^https?:\/\//i.test(objOrgWebsiteUrl)) {
           addToolbarAction({
             id: `${MODULE_PREFIX}ObjOrgWebsite`,
-            label: "ObjOrg Website",
+            label: "Org Website",
             href: objOrgWebsiteUrl,
             target: `pdb_${grainyIdentity}_objorg_website`,
             insertLeft: true,
