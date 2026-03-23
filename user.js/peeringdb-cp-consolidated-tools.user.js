@@ -232,6 +232,7 @@
     const { state } = resolveEntityVisualState(ctx);
 
     const dummyMarkerClass = "pdb-dummy-org-child-marker";
+    const pendingBadgeClass = "pdb-pending-badge";
     const deletedBadgeClass = "pdb-deleted-badge";
 
     const existingDummyMarker = qs(`.${dummyMarkerClass}`, title);
@@ -246,6 +247,20 @@
       }
     } else if (existingDummyMarker) {
       existingDummyMarker.remove();
+    }
+
+    const existingPendingBadge = qs(`.${pendingBadgeClass}`, title);
+    if (state === "pending") {
+      if (!existingPendingBadge) {
+        const badge = document.createElement("span");
+        badge.className = pendingBadgeClass;
+        badge.style.cssText =
+          "margin-left:10px;color:#e65c00;font-weight:bold;font-size:0.8em;letter-spacing:0.05em;vertical-align:middle;";
+        badge.textContent = "PENDING";
+        title.appendChild(badge);
+      }
+    } else if (existingPendingBadge) {
+      existingPendingBadge.remove();
     }
 
     const existingDeletedBadge = qs(`.${deletedBadgeClass}`, title);
