@@ -77,6 +77,69 @@
     "sales email",
   ]);
   const orgNameMemoryCache = new Map();
+  const openDropdownActionItems = new Set();
+  let dropdownGlobalCloseListenerBound = false;
+
+  /**
+   * Closes a single dropdown action item and resets its toggle accessibility state.
+   * Purpose: Provide centralized close behavior for toolbar and secondary-row dropdowns.
+   * Necessity: Shared close logic prevents duplicated listener code per dropdown instance.
+   */
+  function closeDropdownActionItem(listItem) {
+    if (!listItem) return;
+
+    const toggle = qs("a[id]", listItem);
+    const menu = qs(":scope > div", listItem);
+    if (menu) {
+      menu.style.display = "none";
+    }
+
+    if (toggle) {
+      toggle.setAttribute("aria-expanded", "false");
+    }
+
+    listItem.removeAttribute("data-open");
+    listItem.style.zIndex = "";
+    openDropdownActionItems.delete(listItem);
+  }
+
+  /**
+   * Closes all open dropdowns except an optional exempt item.
+   * Purpose: Enforce single-open-dropdown behavior across custom CP action menus.
+   * Necessity: Simplifies global click/escape handling and keeps UI predictable.
+   */
+  function closeAllDropdownActionItems(exemptItem = null) {
+    Array.from(openDropdownActionItems).forEach((listItem) => {
+      if (exemptItem && listItem === exemptItem) return;
+      closeDropdownActionItem(listItem);
+    });
+  }
+
+  /**
+   * Registers one global listener pair for dropdown close behavior.
+   * Purpose: Replace per-dropdown document listeners with one shared close handler.
+   * Necessity: Reduces global event listener count and improves maintainability.
+   */
+  function ensureDropdownGlobalCloseListener() {
+    if (dropdownGlobalCloseListenerBound) return;
+    dropdownGlobalCloseListenerBound = true;
+
+    document.addEventListener("click", (event) => {
+      const target = event?.target;
+      const activeItems = Array.from(openDropdownActionItems);
+      if (!activeItems.length) return;
+
+      const clickedInsideAnyOpenItem = activeItems.some((listItem) => listItem.contains(target));
+      if (!clickedInsideAnyOpenItem) {
+        closeAllDropdownActionItems();
+      }
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      closeAllDropdownActionItems();
+    });
+  }
 
   /**
    * Normalizes organization ID into a stable cache key suffix.
@@ -632,6 +695,7 @@
 
   function createDropdownActionListItem({ id, label, items }) {
     if (!id || !Array.isArray(items) || items.length === 0) return null;
+    ensureDropdownGlobalCloseListener();
 
     const li = document.createElement("li");
     li.style.position = "relative";
@@ -668,44 +732,35 @@
       link.style.display = "block";
       link.style.whiteSpace = "nowrap";
       link.style.padding = "2px 4px";
+      link.addEventListener("click", () => {
+        closeDropdownActionItem(li);
+      });
       menu.appendChild(link);
     });
 
     const closeMenu = () => {
-      menu.style.display = "none";
-      toggle.setAttribute("aria-expanded", "false");
-      li.removeAttribute("data-open");
-      li.style.zIndex = "";
+      closeDropdownActionItem(li);
     };
 
     toggle.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
       const isOpen = li.getAttribute("data-open") === "1";
       if (isOpen) {
         closeMenu();
         return;
       }
 
+      closeAllDropdownActionItems(li);
       menu.style.display = "flex";
       toggle.setAttribute("aria-expanded", "true");
       li.setAttribute("data-open", "1");
       li.style.zIndex = "1001";
+      openDropdownActionItems.add(li);
     });
 
     menu.addEventListener("click", (event) => {
       event.stopPropagation();
-    });
-
-    toggle.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") {
-        closeMenu();
-      }
-    });
-
-    document.addEventListener("click", (event) => {
-      if (li.getAttribute("data-open") !== "1") return;
-      if (!li.contains(event.target)) {
-        closeMenu();
-      }
     });
 
     li.appendChild(toggle);
