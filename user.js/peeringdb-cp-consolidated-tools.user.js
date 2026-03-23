@@ -233,6 +233,34 @@
   }
 
   /**
+   * Clears all organization-name cache entries from memory and session storage.
+   * Purpose: Provide explicit cache invalidation control for stale org-name lookups.
+   * Necessity: Admin workflows occasionally require immediate refresh after org renames.
+   */
+  function clearOrganizationNameCache() {
+    orgNameMemoryCache.clear();
+
+    try {
+      const storage = window.sessionStorage;
+      if (!storage) return;
+
+      const keysToDelete = [];
+      for (let index = 0; index < storage.length; index += 1) {
+        const key = storage.key(index);
+        if (key && key.startsWith(ORG_NAME_CACHE_STORAGE_PREFIX)) {
+          keysToDelete.push(key);
+        }
+      }
+
+      keysToDelete.forEach((key) => {
+        storage.removeItem(key);
+      });
+    } catch (_error) {
+      // Ignore storage failures; in-memory cache is still cleared.
+    }
+  }
+
+  /**
    * Retrieves the set of disabled module IDs from localStorage.
    * Purpose: Allows individual modules to be toggled on/off without code changes.
    * Necessity: Provides user-level module control for the modular architecture.
@@ -1451,6 +1479,8 @@
       ttlMs: 6 * 60 * 60 * 1000,
       payload: null,
     };
+    const resolvedOrgNameCacheByAsn = new Map();
+    const resolvedOrgNameCacheTtlMs = 15 * 60 * 1000;
 
     /**
      * Parses and validates ASN from string input.
@@ -1650,6 +1680,15 @@
       const asn = parseAsn(asnInput);
       if (!asn) return null;
 
+      const cached = resolvedOrgNameCacheByAsn.get(asn);
+      if (cached && cached.expiresAt > Date.now() && cached.name) {
+        return cached.name;
+      }
+
+      if (cached && cached.expiresAt <= Date.now()) {
+        resolvedOrgNameCacheByAsn.delete(asn);
+      }
+
       console.log(`[rdapAutnumClient] Requesting RDAP for AS${asn}...`);
 
       try {
@@ -1659,6 +1698,10 @@
         const name = resolveOrganizationNameFromAutnumPayload(payload);
         if (name) {
           console.log(`[rdapAutnumClient] Successfully resolved AS${asn}: ${name}`);
+          resolvedOrgNameCacheByAsn.set(asn, {
+            name,
+            expiresAt: Date.now() + resolvedOrgNameCacheTtlMs,
+          });
         }
         return name;
       } catch (_error) {
@@ -1667,8 +1710,20 @@
       }
     }
 
+    /**
+     * Clears RDAP bootstrap and resolved-name caches.
+     * Purpose: Allow explicit invalidation from user commands after external data changes.
+     * Necessity: Manual cache reset is useful for debugging and immediate refresh scenarios.
+     */
+    function clearCache() {
+      bootstrapCache.loadedAt = 0;
+      bootstrapCache.payload = null;
+      resolvedOrgNameCacheByAsn.clear();
+    }
+
     return {
       resolveOrganizationNameByAsn,
+      clearCache,
     };
   })();
 
@@ -2127,6 +2182,22 @@
 
     GM_registerMenuCommand("CP: Reset Information", () => {
       qs(`#${MODULE_PREFIX}ResetNetworkInformation`)?.click();
+    });
+
+    GM_registerMenuCommand("CP: Clear Org Name Cache", () => {
+      clearOrganizationNameCache();
+      notifyUser({
+        title: "PeeringDB CP",
+        text: "Organization-name cache cleared.",
+      });
+    });
+
+    GM_registerMenuCommand("CP: Clear RDAP Cache", () => {
+      rdapAutnumClient.clearCache();
+      notifyUser({
+        title: "PeeringDB CP",
+        text: "RDAP caches cleared.",
+      });
     });
   }
 
