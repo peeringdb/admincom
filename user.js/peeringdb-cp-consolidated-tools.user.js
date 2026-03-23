@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.1.20260323
+// @version      2.0.2.20260323
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
@@ -25,7 +25,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.1.20260323";
+  const SCRIPT_VERSION = "2.0.2.20260323";
   const DUMMY_ORG_ID = 20525;
   const DISABLED_MODULES_STORAGE_KEY = `${MODULE_PREFIX}.disabledModules`;
   const USER_AGENT_STORAGE_KEY = `${MODULE_PREFIX}.userAgent`;
@@ -3036,6 +3036,30 @@
   }
 
   /**
+   * Determines whether network Update Name should force-append ` (AS<asn>)`.
+   * Purpose: Apply deterministic disambiguation for known risky name patterns
+   * during the first Update Name submit, not only after duplicate retries.
+   * Necessity: Certain names (for example IPv4-leading labels) are likely to
+   * collide operationally and benefit from explicit ASN suffixing immediately.
+   * @param {string} name - Candidate network name before forced suffixing.
+   * @returns {boolean} True when ASN suffix should be forced.
+   */
+  function shouldForceNetworkNameAsnSuffix(name) {
+    const normalized = String(name || "").trim();
+    if (!normalized) return false;
+
+    const ipv4LeadingMatch = normalized.match(/^\s*(\d{1,3}(?:\.\d{1,3}){3})(?=\s|\b|$|[-–—:])/);
+    if (!ipv4LeadingMatch) return false;
+
+    const octets = ipv4LeadingMatch[1].split(".");
+    if (octets.length !== 4) return false;
+    return octets.every((octet) => {
+      const value = Number.parseInt(octet, 10);
+      return Number.isInteger(value) && value >= 0 && value <= 255;
+    });
+  }
+
+  /**
    * Persists one-time retry metadata for network Update Name submit flow.
    * Purpose: Bridge state across page reload after first save attempt.
    * Necessity: Duplicate-name validation appears only after form submit.
@@ -4084,7 +4108,10 @@
                 }
               }
 
-              const nextName = `${baseName}${appendName}`;
+              let nextName = `${baseName}${appendName}`;
+              if (ctx.entity === "network" && shouldForceNetworkNameAsnSuffix(nextName)) {
+                nextName = buildNetworkNameAsnRetryVariant(nextName, getInputValue("#id_asn")) || nextName;
+              }
               const currentName = getInputValue("#id_name");
               if (nextName === currentName) {
                 pulseToolbarButton(event?.target, "No-op");
