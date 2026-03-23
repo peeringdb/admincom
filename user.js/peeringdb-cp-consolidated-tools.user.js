@@ -3226,6 +3226,30 @@
           if (titleArea) {
             titleArea.appendChild(badge);
           }
+
+          // Append clickable link to IXF member list URL if available.
+          // Purpose: Direct access to the exchange member list without extra navigation.
+          const memberListUrl = String(ixData?.ixf_ixp_member_list_url || "").trim();
+          if (memberListUrl && titleArea) {
+            const linkSpan = document.createElement("span");
+            linkSpan.style.cssText = `
+              display: inline-block;
+              margin-left: 8px;
+            `;
+            const link = document.createElement("a");
+            link.href = memberListUrl;
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            link.textContent = "Members";
+            link.style.cssText = `
+              color: #2196f3;
+              text-decoration: none;
+              font-size: 12px;
+              font-weight: bold;
+            `;
+            linkSpan.appendChild(link);
+            titleArea.appendChild(linkSpan);
+          }
         } catch (_error) {
           // Gracefully ignore API errors for status badge
         }
