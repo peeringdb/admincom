@@ -1448,6 +1448,7 @@
    * @returns {{ li: HTMLLIElement, toggle: HTMLAnchorElement }|null}
    */
   function createDropdownActionListItem({ id, label, items, resolveItemTarget = null }) {
+    if (!id || !Array.isArray(items) || items.length === 0) return null;
     ensureDropdownGlobalCloseListener();
 
     const li = document.createElement("li");
@@ -1538,6 +1539,7 @@
    * @returns {HTMLAnchorElement|null} The dropdown toggle anchor element, or null on failure.
    */
   function addToolbarDropdownAction({ id, label, items, insertLeft = false }) {
+    if (!id || !Array.isArray(items) || items.length === 0) return null;
 
     const existing = qs(`#${id}`);
     if (existing) {
@@ -3470,6 +3472,7 @@
    * regardless of DOMContentLoaded timing or future module additions.
    */
   function runConsolidatedInit() {
+    const ctx = getRouteContext();
 
     if (!ctx.isCp || !ctx.isEntityChangePage) {
       return;
