@@ -2164,7 +2164,7 @@
 
     const socialMedia = qs("textarea#id_social_media", formArea);
     if (socialMedia) {
-      socialMedia.value = "{}";
+      socialMedia.value = "[]";
     }
 
     eachInForm('input[type="checkbox"]', (item) => {
