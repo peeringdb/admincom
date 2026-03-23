@@ -142,6 +142,7 @@
    * Items not matched by any entry are left in their original relative order.
    */
   const TOOLBAR_PRIMARY_ORDER = [
+    `li[data-pdb-cp-action="${MODULE_PREFIX}ApiJson"]`,
     `li[data-pdb-cp-action="${MODULE_PREFIX}ResetNetworkInformation"]`,
     `li[data-pdb-cp-action="${MODULE_PREFIX}Frontend"]`,
     `li[data-pdb-cp-action="${MODULE_PREFIX}OrganizationFrontend"]`,
@@ -979,6 +980,19 @@
     const entityId = String(ctx?.entityId || "").trim();
     if (!resource || !entityId) return "";
     return `https://www.peeringdb.com/api/${resource}/${entityId}`;
+  }
+
+  /**
+   * Determines whether the API JSON action should be visible for current context.
+   * Purpose: Avoid showing the button when action policy does not allow opening.
+   * Necessity: Prevent no-op UI affordances for non-OK entities.
+   */
+  function shouldShowApiJsonAction(ctx) {
+    const apiJsonUrl = getEntityApiJsonUrl(ctx);
+    if (!apiJsonUrl) return false;
+
+    const status = String(getSelectedStatus() || "").trim().toLowerCase();
+    return status === "ok";
   }
 
   function getEntityCopyLabel(entity) {
@@ -2262,12 +2276,13 @@
         const entityUrl = entityPath ? `https://www.peeringdb.com${entityPath}` : "";
 
         const apiJsonUrl = getEntityApiJsonUrl(ctx);
-        if (apiJsonUrl) {
+        if (shouldShowApiJsonAction(ctx) && apiJsonUrl) {
           addToolbarAction({
             id: `${MODULE_PREFIX}ApiJson`,
             label: "API JSON",
             href: apiJsonUrl,
             target: "_new",
+            insertLeft: true,
             onClick: (event) => {
               const status = String(getSelectedStatus() || "").trim().toLowerCase();
               if (status !== "ok") {
