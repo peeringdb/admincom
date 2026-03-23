@@ -2569,6 +2569,51 @@
       },
     },
     {
+      id: "ixf-import-status-badge",
+      match: (ctx) => ctx.isEntityChangePage && ctx.entity === "internetexchange",
+      preconditions: () => Boolean(qs("#grp-content-title")),
+      run: async (ctx) => {
+        try {
+          const statusPayload = await pdbFetch(`https://www.peeringdb.com/api/ix/${ctx.entityId}`);
+          const ixData = statusPayload?.data?.[0];
+          if (!ixData || !ixData.ixf_import_request_status) return;
+
+          const status = String(ixData.ixf_import_request_status || "").trim().toLowerCase();
+          const statusColors = {
+            queued: "#ff9800",
+            importing: "#2196f3",
+            finished: "#4caf50",
+            error: "#f44336",
+          };
+          const color = statusColors[status] || "#999";
+          const lastImport = ixData.ixf_last_import ? new Date(ixData.ixf_last_import).toLocaleDateString() : "never";
+
+          const badge = document.createElement("span");
+          badge.style.cssText = `
+            display: inline-block;
+            padding: 2px 8px;
+            margin-left: 10px;
+            background-color: ${color};
+            color: white;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+            white-space: nowrap;
+            title: "Last import: ${lastImport}";
+          `;
+          badge.textContent = `IXF: ${status}`;
+          badge.title = `IXF import status: ${status}\nLast import: ${lastImport}`;
+
+          const titleArea = qs("#grp-content-title h1") || qs("#grp-content-title");
+          if (titleArea) {
+            titleArea.appendChild(badge);
+          }
+        } catch (_error) {
+          // Gracefully ignore API errors for status badge
+        }
+      },
+    },
+    {
       id: "set-window-title",
       match: (ctx) => ctx.isCp && ctx.isEntityChangePage,
       run: (ctx) => {
