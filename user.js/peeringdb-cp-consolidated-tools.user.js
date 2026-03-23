@@ -82,6 +82,7 @@
   const activeActionLocks = new Set();
   const openDropdownActionItems = new Set();
   const moduleDisposers = new Map();
+  const pendingDomUpdates = new Map();
   const ENTITY_STATE_BACKGROUND_CLASS_NAMES = [
     `${MODULE_PREFIX}StateDummyChild`,
     `${MODULE_PREFIX}StatePending`,
@@ -232,8 +233,10 @@
     statusSelect.setAttribute("data-pdb-cp-state-bg-bound", "1");
 
     const apply = () => {
-      applyEntityStateBackgroundClass(ctx);
-      syncEntityStateTitleMarkers(ctx);
+      scheduleDomUpdate("entity-state-visuals", () => {
+        applyEntityStateBackgroundClass(ctx);
+        syncEntityStateTitleMarkers(ctx);
+      });
     };
 
     statusSelect.addEventListener("change", apply);
@@ -638,6 +641,27 @@
       isEntityChangePage:
         path[0] === "cp" && path[1] === "peeringdb_server" && path[4] === "change",
     };
+  }
+
+  /**
+   * Schedules a keyed DOM write callback via requestAnimationFrame with deduplication.
+   * Purpose: Coalesce rapid event-driven DOM updates (e.g. typing in status/org) into a
+   * single paint frame, preventing redundant reflows per keypress.
+   * Necessity: Reactive listeners can fire dozens of times per second; batching keeps
+   * visual updates smooth without debounce latency.
+   * If a callback is already pending for the same key, the new fn replaces it.
+   */
+  function scheduleDomUpdate(key, fn) {
+    if (pendingDomUpdates.has(key)) {
+      pendingDomUpdates.set(key, fn);
+      return;
+    }
+    pendingDomUpdates.set(key, fn);
+    requestAnimationFrame(() => {
+      const pending = pendingDomUpdates.get(key);
+      pendingDomUpdates.delete(key);
+      if (typeof pending === "function") pending();
+    });
   }
 
   /**
