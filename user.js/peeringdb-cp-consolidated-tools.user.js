@@ -1872,6 +1872,78 @@
   }
 
   /**
+   * Executes HTTP POST/PUT/PATCH/DELETE request to PeeringDB API.
+   * Purpose: Enable state-changing API operations (IXF import, carrierfac actions, etc.).
+   * Necessity: pdbFetch supports only GET; this handles mutations with method/body.
+   * Supports same-origin fetch and cross-origin GM_xmlhttpRequest delegation.
+   * Returns { status, data } on success (2xx), { status } on client/server error.
+   * @param {string} url - API endpoint URL.
+   * @param {string} method - HTTP method (POST, PUT, PATCH, DELETE).
+   * @param {string|object} body - Request body (string or JSON object).
+   * @param {{ headers?: object, contentType?: string, timeout?: number, retries?: number }} options
+   * @returns {Promise<{ status: number, data?: object|null }>} Response with status and optional parsed data.
+   */
+  async function pdbPost(url, method = "POST", body = "", { headers = {}, contentType = "application/json", timeout = 12000, retries = 1 } = {}) {
+    const fullMethod = String(method || "POST").toUpperCase();
+    const bodyString = typeof body === "string" ? body : JSON.stringify(body);
+    const fullHeaders = buildTampermonkeyRequestHeaders({ ...headers, "content-type": contentType });
+    let hostname = "";
+    try { hostname = new URL(url).hostname; } catch (_err) { /* keep empty hostname */ }
+    const isSameOrigin = hostname === window.location.hostname;
+
+    if (isSameOrigin) {
+      for (let attempt = 0; attempt < retries; attempt += 1) {
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), timeout);
+          const response = await fetch(url, {
+            method: fullMethod,
+            headers: fullHeaders,
+            body: bodyString,
+            signal: controller.signal,
+          });
+          clearTimeout(timer);
+          let data = null;
+          try { data = await response.json(); } catch (_err) { /* ignore parse error */ }
+          if (response.ok) return { status: response.status, data };
+          return { status: response.status, data };
+        } catch (_err) {
+          if (attempt + 1 >= retries) return { status: 0, data: null };
+        }
+      }
+      return { status: 0, data: null };
+    }
+
+    return new Promise((resolve) => {
+      let attempts = 0;
+      function attempt() {
+        attempts += 1;
+        GM_xmlhttpRequest({
+          method: fullMethod,
+          url,
+          headers: fullHeaders,
+          data: bodyString,
+          timeout,
+          onload: (response) => {
+            let data = null;
+            try { data = JSON.parse(response.responseText); } catch (_err) { /* ignore parse error */ }
+            if (response.status >= 200 && response.status < 300) {
+              resolve({ status: response.status, data });
+            } else if (attempts < retries) {
+              attempt();
+            } else {
+              resolve({ status: response.status, data });
+            }
+          },
+          onerror: () => { if (attempts < retries) attempt(); else resolve({ status: 0, data: null }); },
+          ontimeout: () => { if (attempts < retries) attempt(); else resolve({ status: 0, data: null }); },
+        });
+      }
+      attempt();
+    });
+  }
+
+  /**
    * Fetches organization name for an entity from its API response.
    * Purpose: Optimize carrier/campus Update Name by reading org_name directly
    * from the entity response instead of making a separate /api/org/{id} call.
