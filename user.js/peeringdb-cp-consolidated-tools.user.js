@@ -92,6 +92,7 @@
   const openDropdownActionItems = new Set();
   const moduleDisposers = new Map();
   const pendingDomUpdates = new Map();
+  const malformedApiPayloadWarnings = new Set();
   const ENTITY_STATE_BACKGROUND_CLASS_NAMES = [
     `${MODULE_PREFIX}StateDummyChild`,
     `${MODULE_PREFIX}StatePending`,
@@ -131,6 +132,21 @@
     ixlanprefix: "ixpfx",
     carrierfacility: "carrierfac",
   };
+  const OPENAPI_KNOWN_RESOURCE_SLUGS = new Set([
+    "org",
+    "fac",
+    "net",
+    "ix",
+    "carrier",
+    "campus",
+    "poc",
+    "netfac",
+    "netixlan",
+    "ixfac",
+    "ixlan",
+    "ixpfx",
+    "carrierfac",
+  ]);
 
   /**
    * Django admin inline-set DOM ID prefixes for network child relations.
@@ -1002,9 +1018,47 @@
    * Purpose: Standardize extraction of the first `data` row from API payloads.
    * Necessity: Reduces repeated optional-chaining logic and malformed-shape edge cases.
    */
-  function getFirstApiDataItem(payload) {
-    const rows = Array.isArray(payload?.data) ? payload.data : [];
+  function warnMalformedApiPayloadOnce(source, payload) {
+    if (!isDebugEnabled()) return;
+
+    const warningKey = String(source || "unknown").trim() || "unknown";
+    if (malformedApiPayloadWarnings.has(warningKey)) return;
+    malformedApiPayloadWarnings.add(warningKey);
+
+    console.warn(`[${MODULE_PREFIX}] Unexpected API payload shape at '${warningKey}'`, payload);
+  }
+
+  function getFirstApiDataItem(payload, source = "unknown") {
+    if (!payload || typeof payload !== "object") {
+      warnMalformedApiPayloadOnce(source, payload);
+      return null;
+    }
+
+    if (!Array.isArray(payload.data)) {
+      warnMalformedApiPayloadOnce(source, payload);
+      return null;
+    }
+
+    const rows = payload.data;
     return rows.length > 0 ? rows[0] : null;
+  }
+
+  /**
+   * Returns a reason code when API JSON action should be blocked.
+   * Purpose: Keep visibility and click-policy checks consistent.
+   * Necessity: Some entities may not expose status reliably; block only when policy-relevant.
+   */
+  function getApiJsonActionBlockReason(ctx) {
+    const apiJsonUrl = getEntityApiJsonUrl(ctx);
+    if (!apiJsonUrl) return "missing-endpoint";
+
+    const entity = String(ctx?.entity || "").trim().toLowerCase();
+    if (!ENTITY_TYPES.has(entity)) return "";
+
+    const status = String(getSelectedStatus() || "").trim().toLowerCase();
+    if (!status) return "";
+    if (status !== "ok") return `status:${status}`;
+    return "";
   }
 
   /**
@@ -1013,11 +1067,31 @@
    * Necessity: Prevent no-op UI affordances for non-OK entities.
    */
   function shouldShowApiJsonAction(ctx) {
-    const apiJsonUrl = getEntityApiJsonUrl(ctx);
-    if (!apiJsonUrl) return false;
+    return !getApiJsonActionBlockReason(ctx);
+  }
 
-    const status = String(getSelectedStatus() || "").trim().toLowerCase();
-    return status === "ok";
+  /**
+   * Debug-only OpenAPI coverage check for mapped CP API resources.
+   * Purpose: Catch accidental resource-slug typos or drift early in diagnostics mode.
+   * Necessity: ENTITY_API_RESOURCE_MAP is a critical integration point for API links/fetches.
+   */
+  function runApiResourceCoverageCheck() {
+    if (!isDebugEnabled()) return;
+
+    const mappedResources = Object.values(ENTITY_API_RESOURCE_MAP)
+      .map((slug) => String(slug || "").trim())
+      .filter(Boolean);
+
+    const unknownResources = mappedResources.filter((slug) => !OPENAPI_KNOWN_RESOURCE_SLUGS.has(slug));
+    if (unknownResources.length > 0) {
+      console.warn(
+        `[${MODULE_PREFIX}] self-check: unmapped OpenAPI resource slug(s) detected`,
+        unknownResources,
+      );
+      return;
+    }
+
+    dbg("self-check", "api resource coverage ok", { count: mappedResources.length });
   }
 
   function getEntityCopyLabel(entity) {
@@ -1619,7 +1693,7 @@
       if (!endpoint) return null;
 
       const payload = await pdbFetch(endpoint);
-      const entityData = getFirstApiDataItem(payload);
+      const entityData = getFirstApiDataItem(payload, endpoint);
       const resolved = String(entityData?.org_name || "").trim();
       if (!resolved) return null;
       return resolved;
@@ -1646,7 +1720,7 @@
       if (!endpoint) return null;
 
       const payload = await pdbFetch(endpoint);
-      const organizationData = getFirstApiDataItem(payload);
+      const organizationData = getFirstApiDataItem(payload, endpoint);
       const resolved = String(organizationData?.name || "").trim();
       if (!resolved) return null;
 
@@ -2483,9 +2557,12 @@
             target: "_new",
             insertLeft: true,
             onClick: (event) => {
-              const status = String(getSelectedStatus() || "").trim().toLowerCase();
-              if (status !== "ok") {
-                pulseToolbarButton(event?.target, `No-op (${status || "unknown"})`);
+              const blockReason = getApiJsonActionBlockReason(ctx);
+              if (blockReason) {
+                const label = blockReason.startsWith("status:")
+                  ? blockReason.slice("status:".length)
+                  : blockReason;
+                pulseToolbarButton(event?.target, `No-op (${label || "unknown"})`);
                 return;
               }
 
@@ -2859,7 +2936,7 @@
           if (!endpoint) return;
 
           const statusPayload = await pdbFetch(endpoint);
-          const ixData = getFirstApiDataItem(statusPayload);
+          const ixData = getFirstApiDataItem(statusPayload, endpoint);
           const formIxfStatus = String(
             getReadonlyFieldValueByLabel("Manual IX-F import status") ||
             getReadonlyFieldValueByLabel("IX-F import request status") ||
@@ -2915,7 +2992,7 @@
           if (!endpoint) return;
 
           const statusPayload = await pdbFetch(endpoint);
-          const netData = getFirstApiDataItem(statusPayload);
+          const netData = getFirstApiDataItem(statusPayload, endpoint);
           const formRirStatus = String(getReadonlyFieldValueByLabel("RIR status") || "").trim().toLowerCase();
           const apiRirStatus = String(netData?.rir_status || "").trim().toLowerCase();
           const status = formRirStatus || apiRirStatus;
@@ -3093,6 +3170,8 @@
    * details in debug mode. Runs at most once per page load.
    */
   function runSelfCheck(ctx) {
+    runApiResourceCoverageCheck();
+
     const checks = [
       { id: "grp-content",       selector: "#grp-content",             critical: true },
       { id: "grp-content-title", selector: "#grp-content-title",       critical: true },
