@@ -1465,6 +1465,27 @@
   }
 
   /**
+   * Fetches organization name for an entity from its API response.
+   * Purpose: Optimize carrier/campus Update Name by reading org_name directly
+   * from the entity response instead of making a separate /api/org/{id} call.
+   * Necessity: Carrier and Campus schemas include org_name as a readOnly field.
+   * Returns null on network error or missing data (graceful degradation).
+   */
+  async function getOrganizationNameFromEntityApi(entity, entityId) {
+    const resource = getEntityApiResourceByEntity(entity);
+    if (!resource || !entityId) return null;
+
+    try {
+      const payload = await pdbFetch(`https://www.peeringdb.com/api/${resource}/${entityId}`);
+      const resolved = String(payload?.data?.[0]?.org_name || "").trim();
+      if (!resolved) return null;
+      return resolved;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  /**
    * Fetches organization name from PeeringDB API by organization ID.
    * Purpose: Resolve human-readable org names for network initialization.
    * Necessity: Network name should match org name; API lookup is more reliable than manual lookup.
@@ -2407,8 +2428,12 @@
                   anchor.style.opacity = "0.7";
                   anchor.style.pointerEvents = "none";
                 }
-                const orgId = getOrganizationIdForNameUpdate(ctx);
-                baseName = await getOrganizationName(orgId);
+                if (ctx.entity === "carrier" || ctx.entity === "campus") {
+                  baseName = await getOrganizationNameFromEntityApi(ctx.entity, ctx.entityId);
+                } else {
+                  const orgId = getOrganizationIdForNameUpdate(ctx);
+                  baseName = await getOrganizationName(orgId);
+                }
                 if (anchor) {
                   anchor.textContent = "Update Name";
                   anchor.style.opacity = "";
