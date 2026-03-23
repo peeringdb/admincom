@@ -40,6 +40,7 @@
     "localhost",
   ];
   const DEFAULT_REQUEST_USER_AGENT = "PeeringDB-Admincom-CP-Consolidated";
+  const PEERINGDB_API_BASE_URL = "https://www.peeringdb.com/api";
   const ORG_NAME_CACHE_TTL_MS = 15 * 60 * 1000;
   const ORG_NAME_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.orgNameCache.`;
   /**
@@ -981,7 +982,29 @@
     const resource = getEntityApiResourceByEntity(ctx?.entity);
     const entityId = String(ctx?.entityId || "").trim();
     if (!resource || !entityId) return "";
-    return `https://www.peeringdb.com/api/${resource}/${entityId}`;
+    return `${PEERINGDB_API_BASE_URL}/${resource}/${entityId}`;
+  }
+
+  /**
+   * Builds a canonical PeeringDB API object URL for resource/id pairs.
+   * Purpose: Keep API endpoint construction centralized and consistent.
+   * Necessity: Avoids hardcoded URL drift across modules.
+   */
+  function getPeeringDbApiObjectUrl(resource, entityId) {
+    const normalizedResource = String(resource || "").trim();
+    const normalizedEntityId = String(entityId || "").trim();
+    if (!normalizedResource || !normalizedEntityId) return "";
+    return `${PEERINGDB_API_BASE_URL}/${normalizedResource}/${normalizedEntityId}`;
+  }
+
+  /**
+   * Safely returns the first object in PeeringDB list responses.
+   * Purpose: Standardize extraction of the first `data` row from API payloads.
+   * Necessity: Reduces repeated optional-chaining logic and malformed-shape edge cases.
+   */
+  function getFirstApiDataItem(payload) {
+    const rows = Array.isArray(payload?.data) ? payload.data : [];
+    return rows.length > 0 ? rows[0] : null;
   }
 
   /**
@@ -1592,8 +1615,12 @@
     if (!resource || !entityId) return null;
 
     try {
-      const payload = await pdbFetch(`https://www.peeringdb.com/api/${resource}/${entityId}`);
-      const resolved = String(payload?.data?.[0]?.org_name || "").trim();
+      const endpoint = getPeeringDbApiObjectUrl(resource, entityId);
+      if (!endpoint) return null;
+
+      const payload = await pdbFetch(endpoint);
+      const entityData = getFirstApiDataItem(payload);
+      const resolved = String(entityData?.org_name || "").trim();
       if (!resolved) return null;
       return resolved;
     } catch (_error) {
@@ -1615,8 +1642,12 @@
     if (cached) return cached;
 
     try {
-      const payload = await pdbFetch(`https://www.peeringdb.com/api/org/${normalizedOrgId}`);
-      const resolved = String(payload?.data?.[0]?.name || "").trim();
+      const endpoint = getPeeringDbApiObjectUrl("org", normalizedOrgId);
+      if (!endpoint) return null;
+
+      const payload = await pdbFetch(endpoint);
+      const organizationData = getFirstApiDataItem(payload);
+      const resolved = String(organizationData?.name || "").trim();
       if (!resolved) return null;
 
       setCachedOrganizationName(normalizedOrgId, resolved);
@@ -2824,8 +2855,11 @@
       preconditions: () => Boolean(qs("#grp-content-title")),
       run: async (ctx) => {
         try {
-          const statusPayload = await pdbFetch(`https://www.peeringdb.com/api/ix/${ctx.entityId}`);
-          const ixData = statusPayload?.data?.[0];
+          const endpoint = getPeeringDbApiObjectUrl("ix", ctx.entityId);
+          if (!endpoint) return;
+
+          const statusPayload = await pdbFetch(endpoint);
+          const ixData = getFirstApiDataItem(statusPayload);
           const formIxfStatus = String(
             getReadonlyFieldValueByLabel("Manual IX-F import status") ||
             getReadonlyFieldValueByLabel("IX-F import request status") ||
@@ -2877,8 +2911,11 @@
       preconditions: () => Boolean(qs("#grp-content-title")),
       run: async (ctx) => {
         try {
-          const statusPayload = await pdbFetch(`https://www.peeringdb.com/api/net/${ctx.entityId}`);
-          const netData = statusPayload?.data?.[0];
+          const endpoint = getPeeringDbApiObjectUrl("net", ctx.entityId);
+          if (!endpoint) return;
+
+          const statusPayload = await pdbFetch(endpoint);
+          const netData = getFirstApiDataItem(statusPayload);
           const formRirStatus = String(getReadonlyFieldValueByLabel("RIR status") || "").trim().toLowerCase();
           const apiRirStatus = String(netData?.rir_status || "").trim().toLowerCase();
           const status = formRirStatus || apiRirStatus;
