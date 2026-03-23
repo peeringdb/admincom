@@ -1086,8 +1086,16 @@
     a.textContent = label;
     a.style.cursor = "pointer";
 
-    if (target) {
-      a.target = target;
+    const normalizedTarget = String(target || "").trim();
+    const requiresStableTarget =
+      Boolean(href && href !== "#") &&
+      (!normalizedTarget || normalizedTarget === "_new" || normalizedTarget === "_blank");
+    const effectiveTarget = requiresStableTarget
+      ? getStableToolbarLinkTarget(id)
+      : normalizedTarget;
+
+    if (effectiveTarget) {
+      a.target = effectiveTarget;
     }
 
     a.addEventListener("click", (event) => {
@@ -1100,8 +1108,8 @@
       if (href && href !== "#") {
         event.preventDefault();
         const resolvedUrl = new URL(href, window.location.origin).toString();
-        if (target && target !== "_self") {
-          window.open(resolvedUrl, target, "noopener");
+        if (effectiveTarget && effectiveTarget !== "_self") {
+          window.open(resolvedUrl, effectiveTarget, "noopener");
         } else {
           window.location.href = resolvedUrl;
         }
@@ -1130,7 +1138,7 @@
     return a;
   }
 
-  function createDropdownActionListItem({ id, label, items }) {
+  function createDropdownActionListItem({ id, label, items, resolveItemTarget = null }) {
     if (!id || !Array.isArray(items) || items.length === 0) return null;
     ensureDropdownGlobalCloseListener();
 
@@ -1160,11 +1168,17 @@
     menu.style.zIndex = "1000";
     menu.style.minWidth = "140px";
 
-    items.forEach((item) => {
+    items.forEach((item, index) => {
       const link = document.createElement("a");
       link.href = item.href;
       link.textContent = item.label;
-      link.target = item.target || "_blank";
+
+      const explicitTarget = String(item?.target || "").trim();
+      const computedTarget =
+        typeof resolveItemTarget === "function"
+          ? String(resolveItemTarget(item, index) || "").trim()
+          : "";
+      link.target = computedTarget || explicitTarget || "_blank";
       link.rel = "noopener noreferrer";
       link.style.display = "block";
       link.style.whiteSpace = "nowrap";
@@ -1217,7 +1231,20 @@
     const toolbar = getToolbarList();
     if (!toolbar) return null;
 
-    const dropdown = createDropdownActionListItem({ id, label, items });
+    const dropdown = createDropdownActionListItem({
+      id,
+      label,
+      items,
+      resolveItemTarget: (item, index) => {
+        const explicitTarget = String(item?.target || "").trim();
+        if (explicitTarget && explicitTarget !== "_new" && explicitTarget !== "_blank") {
+          return explicitTarget;
+        }
+
+        const itemToken = toStableIdentityToken(item?.label || item?.href || `item_${index + 1}`, `item_${index + 1}`);
+        return getStableToolbarLinkTarget(`${id}_${itemToken}`);
+      },
+    });
     if (!dropdown) return null;
 
     const { li, toggle } = dropdown;
@@ -1963,6 +1990,32 @@
   }
 
   /**
+   * Normalizes arbitrary text into a deterministic token usable in window target names.
+   * Purpose: Guarantee stable, safe target segments for toolbar links.
+   * Necessity: Prevents dynamic labels/IDs from creating invalid or inconsistent target names.
+   */
+  function toStableIdentityToken(value, fallback = "item") {
+    const normalized = String(value || "")
+      .trim()
+      .replace(/[^a-z0-9]+/gi, "_")
+      .replace(/^_+|_+$/g, "")
+      .toLowerCase();
+
+    return normalized || String(fallback || "item");
+  }
+
+  /**
+   * Builds deterministic target names for injected primary toolbar links.
+   * Purpose: Ensure all nav-header links open in stable, object-scoped tab identities.
+   * Necessity: Replaces ad-hoc _new/_blank targets with per-object deterministic targets.
+   */
+  function getStableToolbarLinkTarget(actionId, ctx = getRouteContext()) {
+    const grainyIdentity = toStableIdentityToken(getGrainyDerivedLinkIdentity(ctx), "entity");
+    const actionIdentity = toStableIdentityToken(actionId, "action");
+    return `pdb_${grainyIdentity}_${actionIdentity}`;
+  }
+
+  /**
    * Marks inline form rows (POCs, netfacs, netixlans) for deletion if status = 'deleted'.
    * Purpose: Clean up stale inline items when network status is deleted.
    * Necessity: Automatic cleanup prevents orphaned POCs/facilities when network is marked deleted.
@@ -2348,7 +2401,11 @@
               }
 
               const resolvedUrl = new URL(apiJsonUrl, window.location.origin).toString();
-              window.open(resolvedUrl, "_blank", "noopener");
+              const stableTarget =
+                event?.currentTarget?.target ||
+                event?.target?.target ||
+                getStableToolbarLinkTarget(`${MODULE_PREFIX}ApiJson`, ctx);
+              window.open(resolvedUrl, stableTarget, "noopener");
             },
           });
         }
