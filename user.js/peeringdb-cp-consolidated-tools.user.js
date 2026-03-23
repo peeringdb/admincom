@@ -142,6 +142,8 @@
    * Items not matched by any entry are left in their original relative order.
    */
   const TOOLBAR_PRIMARY_ORDER = [
+    `li[data-pdb-cp-action="${MODULE_PREFIX}ObjTypeWebsite"]`,
+    `li[data-pdb-cp-action="${MODULE_PREFIX}ObjOrgWebsite"]`,
     `li[data-pdb-cp-action="${MODULE_PREFIX}ApiJson"]`,
     `li[data-pdb-cp-action="${MODULE_PREFIX}ResetNetworkInformation"]`,
     `li[data-pdb-cp-action="${MODULE_PREFIX}Frontend"]`,
@@ -1925,6 +1927,42 @@
   }
 
   /**
+   * Reads a readonly link href from a form row by its visible label text.
+   * Purpose: Reuse row-level links (e.g. Org website) as header actions.
+   * Necessity: Some URLs are rendered as readonly anchors rather than inputs.
+   */
+  function getReadonlyFieldLinkHrefByLabel(labelText) {
+    const normalizedLabel = String(labelText || "").trim().toLowerCase();
+    if (!normalizedLabel) return "";
+
+    const row = qsa(".form-row").find((item) => {
+      const label = normalizeRenderedCopyText(
+        (qs(".c-1 label", item) || qs(".c-1", item))?.textContent || "",
+      ).toLowerCase();
+      return label === normalizedLabel;
+    });
+
+    return normalizeRenderedCopyText(qs(".c-2 a[href^='http://'], .c-2 a[href^='https://']", row)?.getAttribute("href") || "");
+  }
+
+  /**
+   * Builds a stable link identity derived from Grainy namespace when available.
+   * Purpose: Use deterministic per-object identity in window targets and action semantics.
+   * Necessity: Avoid fragile IDs while preserving object-level context in opened links.
+   */
+  function getGrainyDerivedLinkIdentity(ctx) {
+    const grainyNamespace = getReadonlyFieldValueByLabel("Grainy namespace");
+    const fallbackIdentity = `${String(ctx?.entity || "").trim()}_${String(ctx?.entityId || "").trim()}`;
+    const base = String(grainyNamespace || fallbackIdentity || "").trim();
+
+    return base
+      .replace(/^peeringdb\./i, "")
+      .replace(/[^a-z0-9]+/gi, "_")
+      .replace(/^_+|_+$/g, "")
+      .toLowerCase();
+  }
+
+  /**
    * Marks inline form rows (POCs, netfacs, netixlans) for deletion if status = 'deleted'.
    * Purpose: Clean up stale inline items when network status is deleted.
    * Necessity: Automatic cleanup prevents orphaned POCs/facilities when network is marked deleted.
@@ -2388,6 +2426,38 @@
         if (!website) return;
 
         website.target = `peeringdb_${ctx.entity}_${ctx.entityId}`;
+      },
+    },
+    {
+      id: "entity-website-header-links",
+      match: (ctx) => ctx.isEntityChangePage,
+      preconditions: () => Boolean(getToolbarList()),
+      run: (ctx) => {
+        const grainyIdentity = getGrainyDerivedLinkIdentity(ctx);
+
+        const objTypeWebsiteUrl = String(
+          getInputValue("#id_website") || getReadonlyFieldLinkHrefByLabel("Website") || "",
+        ).trim();
+        if (/^https?:\/\//i.test(objTypeWebsiteUrl)) {
+          addToolbarAction({
+            id: `${MODULE_PREFIX}ObjTypeWebsite`,
+            label: "ObjType Website",
+            href: objTypeWebsiteUrl,
+            target: `pdb_${grainyIdentity}_objtype_website`,
+            insertLeft: true,
+          });
+        }
+
+        const objOrgWebsiteUrl = String(getReadonlyFieldLinkHrefByLabel("Org website") || "").trim();
+        if (/^https?:\/\//i.test(objOrgWebsiteUrl)) {
+          addToolbarAction({
+            id: `${MODULE_PREFIX}ObjOrgWebsite`,
+            label: "ObjOrg Website",
+            href: objOrgWebsiteUrl,
+            target: `pdb_${grainyIdentity}_objorg_website`,
+            insertLeft: true,
+          });
+        }
       },
     },
     {
