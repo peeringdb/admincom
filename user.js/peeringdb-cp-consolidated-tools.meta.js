@@ -7,6 +7,7 @@
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*/*/change/*
 // @icon         https://icons.duckduckgo.com/ip2/peeringdb.com.ico
 // @grant        GM_xmlhttpRequest
+// @grant        GM_notification
 // @run-at       document-end
 // @connect      data.iana.org
 // @connect      rdap.arin.net

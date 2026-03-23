@@ -7,6 +7,7 @@
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*/*/change/*
 // @icon         https://icons.duckduckgo.com/ip2/peeringdb.com.ico
 // @grant        GM_xmlhttpRequest
+// @grant        GM_notification
 // @run-at       document-end
 // @connect      data.iana.org
 // @connect      rdap.arin.net
@@ -1109,6 +1110,29 @@
   }
 
   /**
+   * Shows a non-blocking userscript notification when supported.
+   * Purpose: Surface completion/failure status for long-running CP actions.
+   * Necessity: Async updates may complete after several network calls and benefit from toasts.
+   */
+  function notifyUser({ title, text, timeout = 2500 }) {
+    const normalizedTitle = String(title || "PeeringDB CP").trim();
+    const normalizedText = String(text || "").trim();
+    if (!normalizedText) return;
+
+    try {
+      if (typeof GM_notification === "function") {
+        GM_notification({
+          title: normalizedTitle,
+          text: normalizedText,
+          timeout,
+        });
+      }
+    } catch (_error) {
+      // Notification support may vary per browser/extension environment.
+    }
+  }
+
+  /**
    * Temporarily changes button text then reverts after a delay.
    * Purpose: Provide user feedback that copy action succeeded.
    * Necessity: "Copied" feedback improves UX for copy-to-clipboard buttons.
@@ -1898,7 +1922,13 @@
                 anchor.style.opacity = "";
                 anchor.style.pointerEvents = "";
               }
-              if (!baseName) return;
+              if (!baseName) {
+                notifyUser({
+                  title: "PeeringDB CP",
+                  text: "Update Name: failed to resolve organization name.",
+                });
+                return;
+              }
             }
 
             const nextName = `${baseName}${appendName}`;
@@ -1908,6 +1938,10 @@
             markDeletedNetworkInlinesForDeletion();
             setInputValue("#id_name", nextName);
             clickSaveAndContinue();
+            notifyUser({
+              title: "PeeringDB CP",
+              text: `Update Name: saved '${nextName}'.`,
+            });
           },
         });
       },
@@ -1938,6 +1972,7 @@
             try {
               const orgId = getInputValue("#id_org");
               const appendName = getNameSuffixForDeletedEntity(ctx.entityId);
+              let usedRdapFallback = false;
 
               runNetworkResetActions();
 
@@ -1959,6 +1994,7 @@
                 const rdapOrgName = await rdapAutnumClient.resolveOrganizationNameByAsn(asn);
                 if (rdapOrgName) {
                   setNetworkNameValue(`${rdapOrgName}${appendName}`);
+                  usedRdapFallback = true;
                 }
               }
 
@@ -1969,8 +2005,22 @@
               }
 
               clickSaveAndContinue();
+              notifyUser({
+                title: "PeeringDB CP",
+                text: "Reset Information: changes prepared and save triggered.",
+              });
+              if (usedRdapFallback) {
+                notifyUser({
+                  title: "PeeringDB CP",
+                  text: "Reset Information: RDAP fallback was used for name resolution.",
+                });
+              }
             } catch (error) {
               console.error(`[${MODULE_PREFIX}] Reset failed`, error);
+              notifyUser({
+                title: "PeeringDB CP",
+                text: "Reset Information failed. See console for details.",
+              });
               button.textContent = originalLabel;
               button.style.opacity = "1";
               button.style.pointerEvents = "auto";
