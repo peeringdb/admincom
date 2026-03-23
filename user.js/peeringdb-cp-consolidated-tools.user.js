@@ -244,6 +244,7 @@
    * 3) deleted (all entities)
    * Purpose: Align visual background behavior with policy-defined ordering.
    * Necessity: Inline per-module background changes can conflict and obscure precedence.
+   * @param {{ entity: string, status: string, isDummyChildFacility: boolean }} ctx - Route context.
    */
   function applyEntityStateBackgroundClass(ctx) {
     const bgContainer = qs("#grp-content");
@@ -272,6 +273,7 @@
    * Synchronizes title markers for dummy-facility and deleted states.
    * Purpose: Keep heading markers accurate as admins edit status/org fields in-place.
    * Necessity: Marker rendering previously relied on module-local one-time insertions.
+   * @param {{ entity: string }} ctx - Route context used to resolve the current visual state.
    */
   function syncEntityStateTitleMarkers(ctx) {
     const title = qs("#grp-content-title h1");
@@ -331,6 +333,8 @@
    * Purpose: Refresh state highlighting when admins change status or org while editing.
    * Necessity: Without listeners, styling only reflects the state at initial page load.
    * Returns a dispose function that unsubscribes from the bus (lifecycle support).
+   * @param {{ entity: string }} ctx - Route context passed through to refresh callbacks.
+   * @returns {Function|null} Dispose function that removes bus subscriptions, or null.
    */
   function bindEntityStateBackgroundReactivity(ctx) {
     const statusSelect = qs("#id_status");
@@ -358,6 +362,7 @@
    * Closes a single dropdown action item and resets its toggle accessibility state.
    * Purpose: Provide centralized close behavior for toolbar and secondary-row dropdowns.
    * Necessity: Shared close logic prevents duplicated listener code per dropdown instance.
+   * @param {HTMLLIElement} listItem - The dropdown list item to close.
    */
   function closeDropdownActionItem(listItem) {
     if (!listItem) return;
@@ -381,6 +386,7 @@
    * Closes all open dropdowns except an optional exempt item.
    * Purpose: Enforce single-open-dropdown behavior across custom CP action menus.
    * Necessity: Simplifies global click/escape handling and keeps UI predictable.
+   * @param {HTMLLIElement|null} [exemptItem=null] - Optional item to leave open.
    */
   function closeAllDropdownActionItems(exemptItem = null) {
     Array.from(openDropdownActionItems).forEach((listItem) => {
@@ -419,6 +425,8 @@
    * Attempts to acquire a named action lock.
    * Purpose: Prevent duplicate execution for long-running script-driven actions.
    * Necessity: Double clicks or repeated menu triggers can race and produce duplicate saves.
+   * @param {string} lockKey - Unique identifier for the action being locked.
+   * @returns {boolean} True when the lock was acquired; false if already held.
    */
   function tryBeginActionLock(lockKey) {
     const normalizedKey = String(lockKey || "").trim();
@@ -433,6 +441,7 @@
    * Releases a previously acquired action lock.
    * Purpose: Re-enable action execution after async work completes.
    * Necessity: Locks must always be released to avoid permanent action blocking.
+   * @param {string} lockKey - Unique identifier for the lock to release.
    */
   function endActionLock(lockKey) {
     const normalizedKey = String(lockKey || "").trim();
@@ -446,6 +455,7 @@
    * production use is silent.
    * Toggle with: localStorage.setItem('pdbCpConsolidated.debug', '1')
    *   or via the Tampermonkey menu command "CP: Toggle Debug Mode".
+   * @returns {boolean} True when debug mode is active.
    */
   function isDebugEnabled() {
     return window.localStorage?.getItem(DIAGNOSTICS_STORAGE_KEY) === "1";
@@ -468,6 +478,8 @@
    * Normalizes organization ID into a stable cache key suffix.
    * Purpose: Ensure cache keys are deterministic across string/number ID inputs.
    * Necessity: Different call sites may pass IDs with whitespace or mixed types.
+   * @param {string|number} orgId - Raw organization ID from form field or API response.
+   * @returns {string} Trimmed string representation of the org ID.
    */
   function normalizeOrgIdForCache(orgId) {
     return String(orgId || "").trim();
@@ -477,6 +489,8 @@
    * Builds sessionStorage key used for persisted org-name cache entries.
    * Purpose: Keep all org-name cache keys namespaced under module prefix.
    * Necessity: Avoid collisions with other userscripts and local app storage keys.
+   * @param {string|number} orgId - Organization ID to build the key for.
+   * @returns {string} Namespaced sessionStorage key, or empty string if orgId is invalid.
    */
   function getOrgNameCacheStorageKey(orgId) {
     const normalizedOrgId = normalizeOrgIdForCache(orgId);
@@ -489,6 +503,8 @@
    * Purpose: Reuse recent org-name lookups to reduce repeated API requests.
    * Necessity: Update Name and Reset Information may request the same org repeatedly.
    * Returns null when cache is absent, malformed, or expired.
+   * @param {string|number} orgId - Organization ID to look up.
+   * @returns {string|null} Cached organization name, or null on miss/expiry/malform.
    */
   function getCachedOrganizationName(orgId) {
     const normalizedOrgId = normalizeOrgIdForCache(orgId);
@@ -537,6 +553,8 @@
    * Stores organization-name cache entry in memory and session storage.
    * Purpose: Persist successful org-name lookups for current tab lifecycle.
    * Necessity: Avoid duplicate network requests for frequently used org IDs.
+   * @param {string|number} orgId - Organization ID to cache the name for.
+   * @param {string} name - Resolved organization name to persist.
    */
   function setCachedOrganizationName(orgId, name) {
     const normalizedOrgId = normalizeOrgIdForCache(orgId);
@@ -592,6 +610,7 @@
    * Purpose: Allows individual modules to be toggled on/off without code changes.
    * Necessity: Provides user-level module control for the modular architecture.
    * Supports both JSON array and comma-separated formats for backward compatibility.
+   * @returns {Set<string>} Set of module ID strings that are currently disabled.
    */
   function getDisabledModules() {
     const raw = String(window.localStorage?.getItem(DISABLED_MODULES_STORAGE_KEY) || "").trim();
@@ -618,6 +637,9 @@
    * Checks if a module is enabled (not in the disabled set).
    * Purpose: Gate-keeper for module execution in dispatchModules().
    * Necessity: Implements selective module control without removing code.
+   * @param {string} moduleId - The module identifier to check.
+   * @param {Set<string>} disabledModules - Set of currently disabled module IDs.
+   * @returns {boolean} True when the module is enabled (not in the disabled set).
    */
   function isModuleEnabled(moduleId, disabledModules) {
     if (!moduleId) return false;
@@ -628,6 +650,7 @@
    * Retrieves explicit or auto-computed User-Agent for this session.
    * Purpose: Provide flexible UA configuration with fallback to trust-based generation.
    * Necessity: Allows manual override via localStorage while auto-computing from domain trust.
+   * @returns {string} User-Agent string to use for outgoing requests.
    */
   function getCustomRequestUserAgent() {
     const configured = String(window.localStorage?.getItem(USER_AGENT_STORAGE_KEY) || "").trim();
@@ -641,6 +664,7 @@
    * Purpose: Provides a unique identifier for correlating requests within a session.
    * Necessity: Enables server-side analytics and request tracking without exposing device fingerprint.
    * UUID persists across page reloads but is cleared when tab/session closes.
+   * @returns {string} Session UUID string (generated once per browser session).
    */
   function getSessionUuid() {
     const sessionKey = SESSION_UUID_STORAGE_KEY;
@@ -659,6 +683,7 @@
    * Purpose: Creates a privacy-preserving identifier for requests from untrusted domains.
    * Necessity: Balances analytics tracking with user privacy for non-trusted networks.
    * Returns a 16-character hex string derived from UA, platform, language, CPU count, memory.
+   * @returns {string} 16-character lowercase hex fingerprint string.
    */
   function computeClientFingerprint() {
     const parts = [
@@ -684,6 +709,8 @@
    * Necessity: Distinguishes between trusted (localhost, peeringdb.com) and untrusted domains
    * to decide whether to use full browser info or privacy-preserving fingerprint.
    * Also normalizes IPv6 URIs with bracket notation ([::1]) for transparent matching.
+   * @param {string} domain - Hostname to test (e.g., "www.peeringdb.com", "localhost").
+   * @returns {boolean} True when the domain matches a TRUSTED_DOMAINS_FOR_UA entry.
    */
   function isDomainTrusted(domain) {
     if (!domain) return false;
@@ -715,6 +742,8 @@
    * Necessity: For trusted domains (development, peeringdb.com), includes browser/platform for debugging;
    * for untrusted domains, uses fingerprint only to minimize data exposure.
    * Includes session UUID in both cases for request correlation.
+   * @param {string} domain - Hostname of the page making the request.
+   * @returns {string} Constructed User-Agent header value.
    */
   function buildTrustBasedUserAgent(domain) {
     const isTrusted = isDomainTrusted(domain);
@@ -735,6 +764,8 @@
    * Constructs HTTP headers for Tampermonkey requests with User-Agent.
    * Purpose: Centralize header building for all script-initiated requests.
    * Necessity: Ensures consistent User-Agent and other important headers across all API calls.
+   * @param {object} [baseHeaders={}] - Optional base headers to merge with generated ones.
+   * @returns {object} Header object with User-Agent key populated.
    */
   function buildTampermonkeyRequestHeaders(baseHeaders = {}) {
     const headers = { ...baseHeaders };
@@ -751,6 +782,15 @@
     return headers;
   }
 
+  /**
+   * Parses the current window URL into a structured CP route context object.
+   * Purpose: Provide a single authoritative source of routing data for all modules.
+   * Necessity: Multiple modules need entity type, entity ID, and page kind without
+   * re-parsing the URL each time — centralizing parsing prevents divergent path logic.
+   * @returns {{ host: string, path: string[], pathName: string, isCp: boolean,
+   *             entity: string, entityId: string, pageKind: string,
+   *             isEntityChangePage: boolean }}
+   */
   function getRouteContext() {
     const path = window.location.pathname.replace(/(^\/|\/$)/g, "").split("/");
     return {
@@ -773,6 +813,8 @@
    * Necessity: Reactive listeners can fire dozens of times per second; batching keeps
    * visual updates smooth without debounce latency.
    * If a callback is already pending for the same key, the new fn replaces it.
+   * @param {string} key - Deduplication key; one pending callback allowed per key.
+   * @param {Function} fn - DOM write callback to execute in the next animation frame.
    */
   function scheduleDomUpdate(key, fn) {
     if (pendingDomUpdates.has(key)) {
@@ -843,6 +885,9 @@
    * Purpose: Reduce boilerplate for DOM querying throughout the script.
    * Necessity: Used extensively for finding form fields and toolbar elements.
    * Wraps in try-catch to safely return null on selector errors.
+   * @param {string} selector - CSS selector string.
+   * @param {Document|Element} [root=document] - Optional scoping root element.
+   * @returns {Element|null} First matching element, or null.
    */
   function qs(selector, root = document) {
     try {
@@ -856,6 +901,9 @@
    * Convenience wrapper for querySelectorAll returning an array.
    * Purpose: Reduce boilerplate for finding multiple DOM elements.
    * Necessity: Used for inline sets, dynamic forms, and multi-element operations.
+   * @param {string} selector - CSS selector string.
+   * @param {Document|Element} [root=document] - Optional scoping root element.
+   * @returns {Element[]} Array of matching elements (may be empty).
    */
   function qsa(selector, root = document) {
     try {
@@ -869,6 +917,8 @@
    * Retrieves trimmed value from form input elements (input, select, textarea).
    * Purpose: Unified value extraction that handles both .value property and data attributes.
    * Necessity: Normalizes form field reading across different input types in Django admin forms.
+   * @param {string} selector - CSS selector for the target input element.
+   * @returns {string} Trimmed value string, or empty string if element not found.
    */
   function getInputValue(selector) {
     const element = qs(selector);
@@ -881,6 +931,14 @@
     return String(element.getAttribute("value") || "").trim();
   }
 
+  /**
+   * Reads the visible text of the currently selected option from a `<select>` element.
+   * Purpose: Unified selected-option reader that works across choice and render states.
+   * Necessity: `option:checked` and `option[selected]` behave differently across browsers
+   * and scripted form states; normalizing prevents silent empty reads.
+   * @param {string} selector - CSS selector for the target `<select>` element.
+   * @returns {string} Trimmed text of the selected option, or empty string if absent.
+   */
   function getSelectedOptionText(selector) {
     const select = qs(selector);
     if (!select) return "";
@@ -894,6 +952,14 @@
     return String(selectedOption?.textContent || "").trim();
   }
 
+  /**
+   * Builds a geocoding query string for facility address map links.
+   * Purpose: Prefer lat/long coordinates when available for precise map links,
+   * falling back to a formatted street address when coordinates are absent.
+   * Necessity: Facilities may have coordinates or address-only data; a unified
+   * builder covers both cases without branching at the call site.
+   * @returns {string} Comma-separated coordinate pair or formatted address string.
+   */
   function buildFacilityMapsQuerySource() {
     const latitude = getInputValue("#id_latitude");
     const longitude = getInputValue("#id_longitude");
@@ -919,6 +985,9 @@
    * Sets value on form input elements with consistent synchronization.
    * Purpose: Unified value assignment that updates both .value and attributes.
    * Necessity: Ensures form frameworks recognize the change (defaultValue for reset detection).
+   * @param {string} selector - CSS selector for the target input element.
+   * @param {string} value - Value to assign to the matched element.
+   * @returns {boolean} True when the element was found and updated; false otherwise.
    */
   function setInputValue(selector, value) {
     const element = qs(selector);
@@ -940,6 +1009,8 @@
    * Sets network name field value with proper change event firing.
    * Purpose: Ensure form validation and dependency updates trigger when name changes.
    * Necessity: Django admin forms monitor change events; manual setting requires event dispatch.
+   * @param {string} value - New name value to assign to the network name input.
+   * @returns {boolean} True when the #id_name element was found and updated.
    */
   function setNetworkNameValue(value) {
     const input = document.getElementById("id_name");
@@ -959,6 +1030,10 @@
    * Purpose: Provide sensible fallback names for networks when org lookup fails.
    * Necessity: Required field can't be empty; ASN is stable and visible on network pages.
    * Includes '#deleted' suffix for networks in deleted status.
+   * @param {string|number} asn - Autonomous System Number (with or without "AS" prefix).
+   * @param {string|number} networkId - CP network record ID used as fallback.
+   * @param {string} [suffix=""] - Optional suffix to append (e.g., " #42" for deleted records).
+   * @returns {string} Generated fallback name string (e.g., "AS64496 #42").
    */
   function getDeterministicNetworkFallbackName(asn, networkId, suffix = "") {
     const cleaned = String(asn || "").replace(/^AS/i, "").trim();
@@ -970,10 +1045,25 @@
     return `AS${networkId}${suffix}`;
   }
 
+  /**
+   * Returns the PeeringDB frontend URL slug for a given CP entity type.
+   * Purpose: Translate internal CP entity names to their public frontend URL segments.
+   * Necessity: Centralizes the entity→slug mapping shared by frontend links and API paths.
+   * @param {string} entity - Lowercase CP entity type (e.g., "internetexchange").
+   * @returns {string} Frontend URL slug (e.g., "ix"), or empty string if unmapped.
+   */
   function getFrontendSlugByEntity(entity) {
     return ENTITY_SLUG_MAP[entity] || "";
   }
 
+  /**
+   * Builds the root-relative frontend URL path for the current entity context.
+   * Purpose: Generate the canonical frontend path used for toolbar link href values.
+   * Necessity: Centralizes path construction from entity type + ID to avoid slug/ID drift
+   * across separate call sites that build frontend links.
+   * @param {{ entity: string, entityId: string }} ctx - Route context from getRouteContext().
+   * @returns {string} Root-relative path such as "/ix/42", or empty string on failure.
+   */
   function getEntityFrontendPath(ctx) {
     const slug = getFrontendSlugByEntity(ctx?.entity);
     if (!slug || !ctx?.entityId) return "";
@@ -984,6 +1074,8 @@
    * Resolves PeeringDB API resource slug for a CP entity type.
    * Purpose: Build direct JSON API links for the current entity page.
    * Necessity: CP workflows often require quick access to canonical API payloads.
+   * @param {string} entity - Lowercase CP entity type (e.g., "internetexchange").
+   * @returns {string} API resource slug (e.g., "ix"), or empty string if unmapped.
    */
   function getEntityApiResourceByEntity(entity) {
     return ENTITY_API_RESOURCE_MAP[entity] || "";
@@ -993,6 +1085,8 @@
    * Builds full API JSON URL for the current CP entity context.
    * Purpose: Provide one-click navigation to the matching API record.
    * Necessity: Avoid manual URL crafting when validating backend/source-of-truth data.
+   * @param {{ entity: string, entityId: string }} ctx - Route context from getRouteContext().
+   * @returns {string} Full API URL (e.g., "https://www.peeringdb.com/api/ix/42"), or empty string.
    */
   function getEntityApiJsonUrl(ctx) {
     const resource = getEntityApiResourceByEntity(ctx?.entity);
@@ -1005,6 +1099,9 @@
    * Builds a canonical PeeringDB API object URL for resource/id pairs.
    * Purpose: Keep API endpoint construction centralized and consistent.
    * Necessity: Avoids hardcoded URL drift across modules.
+   * @param {string} resource - API resource slug (e.g., "org", "ix").
+   * @param {string|number} entityId - Entity record ID.
+   * @returns {string} Full API URL, or empty string if either argument is invalid.
    */
   function getPeeringDbApiObjectUrl(resource, entityId) {
     const normalizedResource = String(resource || "").trim();
@@ -1014,9 +1111,12 @@
   }
 
   /**
-   * Safely returns the first object in PeeringDB list responses.
-   * Purpose: Standardize extraction of the first `data` row from API payloads.
-   * Necessity: Reduces repeated optional-chaining logic and malformed-shape edge cases.
+   * Emits a one-time console warning for malformed or unexpected API payload shapes.
+   * Purpose: Surface API contract violations in debug mode without flooding the console.
+   * Necessity: The same endpoint can be called many times per session; deduplication
+   * via a Set ensures the warning fires only once per source URL.
+   * @param {string} source - Endpoint URL or identifier where the payload was received.
+   * @param {*} payload - The malformed payload value forwarded to console.warn.
    */
   function warnMalformedApiPayloadOnce(source, payload) {
     if (!isDebugEnabled()) return;
@@ -1028,6 +1128,15 @@
     console.warn(`[${MODULE_PREFIX}] Unexpected API payload shape at '${warningKey}'`, payload);
   }
 
+  /**
+   * Safely returns the first data row from a PeeringDB list API response.
+   * Purpose: Standardize extraction of the first `data` entry from API payloads.
+   * Necessity: Reduces repeated optional-chaining and handles malformed shapes uniformly
+   * by delegating shape warnings to warnMalformedApiPayloadOnce.
+   * @param {*} payload - Raw JSON response object from a PeeringDB list endpoint.
+   * @param {string} [source="unknown"] - Endpoint URL for diagnostic messages.
+   * @returns {object|null} First item in `payload.data`, or null on any shape mismatch.
+   */
   function getFirstApiDataItem(payload, source = "unknown") {
     if (!payload || typeof payload !== "object") {
       warnMalformedApiPayloadOnce(source, payload);
@@ -1047,6 +1156,8 @@
    * Returns a reason code when API JSON action should be blocked.
    * Purpose: Keep visibility and click-policy checks consistent.
    * Necessity: Some entities may not expose status reliably; block only when policy-relevant.
+   * @param {{ entity: string, entityId: string }} ctx - Route context from getRouteContext().
+   * @returns {string} Empty string when allowed; "missing-endpoint" or "status:<value>" otherwise.
    */
   function getApiJsonActionBlockReason(ctx) {
     const apiJsonUrl = getEntityApiJsonUrl(ctx);
@@ -1065,6 +1176,8 @@
    * Determines whether the API JSON action should be visible for current context.
    * Purpose: Avoid showing the button when action policy does not allow opening.
    * Necessity: Prevent no-op UI affordances for non-OK entities.
+   * @param {{ entity: string, entityId: string }} ctx - Route context from getRouteContext().
+   * @returns {boolean} True when the API JSON toolbar action should be shown.
    */
   function shouldShowApiJsonAction(ctx) {
     return !getApiJsonActionBlockReason(ctx);
@@ -1094,6 +1207,14 @@
     dbg("self-check", "api resource coverage ok", { count: mappedResources.length });
   }
 
+  /**
+   * Returns the entity-specific label for the secondary Copy URL action button.
+   * Purpose: Make copy button labels contextually explicit (e.g., "Copy IX URL").
+   * Necessity: A generic "Copy URL" label is ambiguous when Org and Entity
+   * copy buttons both appear on the same secondary action row.
+   * @param {string} entity - Lowercase CP entity type (e.g., "internetexchange").
+   * @returns {string} Human-readable label string for the copy action.
+   */
   function getEntityCopyLabel(entity) {
     const labelByEntity = {
       facility: "Copy Facility URL",
@@ -1111,6 +1232,8 @@
    * Returns human-friendly website label for the current object type.
    * Purpose: Keep header website action labels concise and entity-specific.
    * Necessity: Replaces generic "ObjType Website" text with context-aware naming.
+   * @param {string} entity - Lowercase CP entity type (e.g., "internetexchange").
+   * @returns {string} Human-readable toolbar label (e.g., "IX Website").
    */
   function getEntityWebsiteLabel(entity) {
     const websiteLabelByEntity = {
@@ -1140,6 +1263,8 @@
    * Returns human-friendly frontend label for a CP entity.
    * Purpose: Make the main frontend action explicit about the destination entity type.
    * Necessity: Replaces generic "Frontend" text with entity-specific naming.
+   * @param {string} entity - Lowercase CP entity type (e.g., "internetexchange").
+   * @returns {string} Human-readable label (e.g., "IX (front-end)").
    */
   function getEntityFrontendLabel(entity) {
     const frontendLabelByEntity = {
@@ -1165,12 +1290,28 @@
     return `${fallback || "Entity"} (front-end)`;
   }
 
+  /**
+   * Resolves the organization ID to use when performing an Update Name action.
+   * Purpose: Return the correct org ID source — the entity ID itself for org pages,
+   * or the #id_org field for all other entity types.
+   * Necessity: Organization pages use their own entity ID as the org reference;
+   * child entities (networks, carriers, etc.) need the parent org from the form.
+   * @param {{ isEntityChangePage: boolean, entity: string, entityId: string }} ctx
+   * @returns {string} Organization ID string, or empty string if unresolvable.
+   */
   function getOrganizationIdForNameUpdate(ctx) {
     if (!ctx?.isEntityChangePage) return "";
     if (ctx.entity === "organization") return String(ctx.entityId || "").trim();
     return getInputValue("#id_org");
   }
 
+  /**
+   * Locates and returns the primary CP object-tools toolbar UL element.
+   * Purpose: Provide a single point of access for the main toolbar list.
+   * Necessity: Toolbar selectors differ across Grappelli versions; a unified locator
+   * with multiple fallback selectors avoids duplicate selector logic in every module.
+   * @returns {HTMLUListElement|null} The primary toolbar list element, or null if absent.
+   */
   function getToolbarList() {
     const toolbar = (
       qs("#grp-content-title > ul.grp-object-tools:not([data-pdb-cp-toolbar-row]):not([data-pdb-cp-action])") ||
@@ -1197,6 +1338,7 @@
    * Purpose: Prevent overlap between primary toolbar and secondary action row.
    * Necessity: Secondary row appears below primary toolbar; must account for toolbar height
    * which varies by content. Uses BoundingClientRect to detect actual overlap.
+   * @param {HTMLUListElement} row - The secondary action row element to adjust.
    */
   function applySecondaryRowVerticalOffset(row) {
     if (!row) return;
@@ -1220,6 +1362,9 @@
    * Purpose: Standardized way to add custom buttons (Google Maps, Frontend links, etc.).
    * Necessity: Ensures consistent styling, idempotency (prevents duplicates), and placement.
    * Marks buttons with data-pdb-cp-action attribute for reordering and identification.
+   * @param {{ id: string, label: string, href?: string, onClick?: Function,
+   *           target?: string|null, insertLeft?: boolean }} opts
+   * @returns {HTMLAnchorElement|null} The created anchor element, or null on failure.
    */
   function addToolbarAction({ id, label, href = "#", onClick, target = null, insertLeft = false }) {
     if (!id) return null;
@@ -1293,8 +1438,16 @@
     return a;
   }
 
+  /**
+   * Constructs a reusable dropdown list-item element (toggle anchor + flyout menu).
+   * Purpose: Build the shared DOM structure for multi-item toolbar and secondary-row menus.
+   * Necessity: Both toolbar and secondary-row dropdown helpers use the same toggle/flyout
+   * HTML pattern; centralizing avoids DOM duplication and styling drift.
+   * @param {{ id: string, label: string, items: Array<{label: string, href: string, target?: string}>,
+   *           resolveItemTarget?: Function }} opts
+   * @returns {{ li: HTMLLIElement, toggle: HTMLAnchorElement }|null}
+   */
   function createDropdownActionListItem({ id, label, items, resolveItemTarget = null }) {
-    if (!id || !Array.isArray(items) || items.length === 0) return null;
     ensureDropdownGlobalCloseListener();
 
     const li = document.createElement("li");
@@ -1375,8 +1528,16 @@
     return { li, toggle };
   }
 
+  /**
+   * Creates and inserts a dropdown action button into the primary CP toolbar.
+   * Purpose: Add multi-item expandable menus (e.g., Maps) to the main toolbar UL.
+   * Necessity: Toolbar insertion semantics differ from the secondary row; wrapping
+   * createDropdownActionListItem ensures correct placement and data-pdb-cp-action tagging.
+   * @param {{ id: string, label: string, items: Array<{label: string, href: string}>,
+   *           insertLeft?: boolean }} opts
+   * @returns {HTMLAnchorElement|null} The dropdown toggle anchor element, or null on failure.
+   */
   function addToolbarDropdownAction({ id, label, items, insertLeft = false }) {
-    if (!id || !Array.isArray(items) || items.length === 0) return null;
 
     const existing = qs(`#${id}`);
     if (existing) {
@@ -1426,6 +1587,13 @@
     return toggle;
   }
 
+  /**
+   * Returns the secondary action row UL element, creating and inserting it if absent.
+   * Purpose: Provide a persistent secondary UL row below the primary toolbar for custom buttons.
+   * Necessity: Multiple modules inject secondary buttons; a shared row avoids
+   * multiple disconnected rows and centralizes vertical offset handling.
+   * @returns {HTMLUListElement|null} The secondary action row element, or null on DOM failure.
+   */
   function getOrCreateSecondaryActionRow() {
     const contentTitle = qs("#grp-content-title");
     if (!contentTitle) return null;
@@ -1474,6 +1642,8 @@
    * Creates and appends a button to the secondary action row.
    * Purpose: Add custom actions to secondary row with consistent styling.
    * Necessity: Secondary row actions need inline-block styling and spacing different from primary toolbar.
+   * @param {{ id: string, label: string, href?: string, title?: string, onClick: Function }} opts
+   * @returns {HTMLAnchorElement|null} The created anchor element, or null on failure.
    */
   function addSecondaryActionButton({ id, label, href = "#", title = "", onClick }) {
     const row = getOrCreateSecondaryActionRow();
@@ -1514,6 +1684,14 @@
     return button;
   }
 
+  /**
+   * Creates and appends a dropdown to the secondary action row.
+   * Purpose: Add multi-item expandable actions (e.g., Maps) to the secondary row.
+   * Necessity: Secondary row insertion semantics and item target resolution differ from
+   * the primary toolbar; a dedicated helper keeps module code concise.
+   * @param {{ id: string, label: string, items: Array<{label: string, href: string}> }} opts
+   * @returns {HTMLAnchorElement|null} The dropdown toggle anchor element, or null on failure.
+   */
   function addSecondaryDropdownAction({ id, label, items }) {
     const row = getOrCreateSecondaryActionRow();
     if (!row || !id || !Array.isArray(items) || items.length === 0) return null;
@@ -1535,6 +1713,15 @@
     return toggle;
   }
 
+  /**
+   * Tests whether a container child element matches a priority descriptor.
+   * Purpose: Support both CSS-selector strings and predicate functions in TOOLBAR_*_ORDER arrays.
+   * Necessity: History item uses a function matcher; custom items use CSS attribute selectors;
+   * a unified tester lets one reorder loop handle both types without branching.
+   * @param {Element} child - DOM child element to test.
+   * @param {string|Function} priority - CSS selector string or boolean predicate function.
+   * @returns {boolean} True if `child` matches the given priority descriptor.
+   */
   function isPriorityMatch(child, priority) {
     if (!child || !priority) return false;
 
@@ -1557,6 +1744,8 @@
    * Identifies if a toolbar item is the History button.
    * Purpose: Handle History button specially in reordering (position it before custom actions).
    * Necessity: History button is Django admin native; needs position priority awareness.
+   * @param {Element} child - Toolbar LI element to test.
+   * @returns {boolean} True when the element is the native History button.
    */
   function isHistoryToolbarItem(child) {
     if (!child || child.hasAttribute("data-pdb-cp-action")) return false;
@@ -1574,6 +1763,8 @@
    * Purpose: Establish deterministic button order (Frontend before Org links, History before custom).
    * Necessity: Ensures consistent UI layout across page variations and module load orders.
    * Unmatched children stay in original order at the end.
+   * @param {HTMLElement} container - Parent element whose children will be reordered.
+   * @param {Array<string|Function>} priorities - Ordered list of CSS selectors or predicate functions.
    */
   function reorderChildrenByPriority(container, priorities) {
     if (!container || !Array.isArray(priorities) || priorities.length === 0) return;
@@ -1603,6 +1794,7 @@
    * Purpose: Coordinate reordering of all network page toolbar buttons.
    * Necessity: Network pages have most custom actions; reordering provides consistent UX.
    * For other entity types, no special ordering applied (preserves natural order).
+   * @param {{ isEntityChangePage: boolean, entity: string }} ctx - Route context.
    */
   function enforceToolbarButtonOrder(ctx) {
     if (!ctx?.isEntityChangePage) return;
@@ -1683,6 +1875,9 @@
    * from the entity response instead of making a separate /api/org/{id} call.
    * Necessity: Carrier and Campus schemas include org_name as a readOnly field.
    * Returns null on network error or missing data (graceful degradation).
+   * @param {string} entity - Lowercase CP entity type (e.g., "carrier").
+   * @param {string|number} entityId - CP entity record ID.
+   * @returns {Promise<string|null>} Resolved organization name, or null on failure.
    */
   async function getOrganizationNameFromEntityApi(entity, entityId) {
     const resource = getEntityApiResourceByEntity(entity);
@@ -1707,6 +1902,8 @@
    * Purpose: Resolve human-readable org names for network initialization.
    * Necessity: Network name should match org name; API lookup is more reliable than manual lookup.
    * Returns null on network error or missing data (graceful degradation).
+   * @param {string|number} orgId - PeeringDB organization record ID.
+   * @returns {Promise<string|null>} Resolved organization name, or null on failure.
    */
   async function getOrganizationName(orgId) {
     const normalizedOrgId = normalizeOrgIdForCache(orgId);
@@ -1735,6 +1932,7 @@
    * Programmatically clicks the "Save and continue editing" button.
    * Purpose: Auto-submit form after automated edits (Reset Information, Update Name).
    * Necessity: Script-driven form changes need programmatic submission; improves UX.
+   * @returns {boolean} True when the save button was found and clicked.
    */
   function clickSaveAndContinue() {
     const button =
@@ -1751,6 +1949,10 @@
    * Prompts user to confirm dangerous network reset operation.
    * Purpose: Prevent accidental data loss from Reset Information action.
    * Necessity: Shows user which network is being reset (by ID, ASN, name) for confirmation.
+   * @param {string} asn - ASN string for the network being reset.
+   * @param {string} networkName - Current network name shown in the confirmation prompt.
+   * @param {string|number} networkId - CP network record ID.
+   * @returns {boolean} True when the user confirmed; false when cancelled.
    */
   function confirmDangerousReset(asn, networkName, networkId) {
     const asnLabel = String(asn || "").trim();
@@ -1774,6 +1976,8 @@
    * Copies text to clipboard with modern and fallback implementations.
    * Purpose: Enable "Copy URL" actions for user convenience.
    * Necessity: Handles browsers with and without Clipboard API support.
+   * @param {string} text - Text content to write to the system clipboard.
+   * @returns {Promise<boolean>} Resolves true when copy succeeded; false otherwise.
    */
   async function copyToClipboard(text) {
     const value = String(text || "");
@@ -1808,6 +2012,7 @@
    * Shows a non-blocking userscript notification when supported.
    * Purpose: Surface completion/failure status for long-running CP actions.
    * Necessity: Async updates may complete after several network calls and benefit from toasts.
+   * @param {{ title?: string, text: string, timeout?: number }} opts - Notification options.
    */
   function notifyUser({ title, text, timeout = 2500 }) {
     const normalizedTitle = String(title || "PeeringDB CP").trim();
@@ -1831,6 +2036,8 @@
    * Temporarily changes button text then reverts after a delay.
    * Purpose: Provide user feedback that copy action succeeded.
    * Necessity: "Copied" feedback improves UX for copy-to-clipboard buttons.
+   * @param {HTMLAnchorElement} anchor - The toolbar button anchor whose text will pulse.
+   * @param {string} [successLabel="Copied"] - Temporary label shown during the pulse.
    */
   function pulseToolbarButton(anchor, successLabel = "Copied") {
     if (!anchor) return;
@@ -1846,6 +2053,8 @@
    * Temporarily changes copy-icon button text then reverts after a delay.
    * Purpose: Give immediate feedback for field-level copy actions.
    * Necessity: Field copy buttons are icon-only by default and need success confirmation.
+   * @param {HTMLButtonElement} button - The copy icon button whose text will pulse.
+   * @param {string} [successLabel="Copied"] - Temporary label shown during the pulse.
    */
   function pulseCopyIconButton(button, successLabel = "Copied") {
     if (!button) return;
@@ -1892,6 +2101,8 @@
    * Normalizes text copied from rendered field contents.
    * Purpose: Remove excessive whitespace while preserving readable one-line output.
    * Necessity: Rendered HTML often contains line breaks and spacing artifacts.
+   * @param {string} text - Raw text content extracted from the DOM.
+   * @returns {string} Normalized single-line string with trimmed whitespace.
    */
   function normalizeRenderedCopyText(text) {
     return String(text || "")
@@ -1904,6 +2115,8 @@
    * Finds the field label text for a value container.
    * Purpose: Support field-level filtering rules by human-visible label.
    * Necessity: Some CP rows are metadata or helper rows and should not get copy icons.
+   * @param {HTMLElement} valueCell - The `.c-2` value cell whose parent row label is read.
+   * @returns {string} Lowercase label text, or empty string if no label found.
    */
   function getFieldLabelText(valueCell) {
     const row = valueCell?.closest(".form-row");
@@ -1917,6 +2130,8 @@
    * Resolves best non-help data value from direct controls inside a field value cell.
    * Purpose: Distinguish actual field data from explanatory helper text.
    * Necessity: Prevents copy buttons from appearing when only help text is present.
+   * @param {HTMLElement} valueCell - The `.c-2` value cell to inspect.
+   * @returns {string} Best available data value string, or empty string if none.
    */
   function getDirectFieldDataValue(valueCell) {
     if (!valueCell) return "";
@@ -1966,6 +2181,8 @@
    * Determines whether a value container should receive a copy button.
    * Purpose: Exclude helper/metadata/lookup-only rows while keeping real data fields copiable.
    * Necessity: Avoids noisy icons on rows that do not represent useful copyable values.
+   * @param {HTMLElement} valueCell - The `.c-2` cell to evaluate.
+   * @returns {boolean} True when a copy button should be injected into this cell.
    */
   function shouldAttachCopyButtonToValueCell(valueCell) {
     if (!valueCell) return false;
@@ -1996,6 +2213,8 @@
    * Resolves the best rendered value from a Django admin field value container.
    * Purpose: Prefer human-visible values (grp-readonly, selected option labels) over raw markup.
    * Necessity: Different field types render values differently in CP forms and inline forms.
+   * @param {HTMLElement} container - The `.c-2` or similar value container element.
+   * @returns {string} Best human-visible text value from the container.
    */
   function getRenderedFieldValue(container) {
     if (!container) return "";
@@ -2054,6 +2273,8 @@
    * Determines the frontend URL path for a CP entity (network, carrier, ix).
    * Purpose: Generate correct copy-to-clipboard URL for the current entity type.
    * Necessity: Different entity types map to different URL paths.
+   * @param {{ entity: string, entityId: string }} ctx - Route context from getRouteContext().
+   * @returns {string} Root-relative frontend path (e.g., "/net/42").
    */
   function getCopyNetworkFrontendPath(ctx) {
     if (ctx.entity === "carrier") {
@@ -2071,6 +2292,7 @@
    * Retrieves currently selected status from the status dropdown.
    * Purpose: Determine if network/entity is marked as deleted.
    * Necessity: Used to add " #deleted" suffix to entity names for deleted records.
+   * @returns {string} Lowercase status value (e.g., "ok", "deleted"), or empty string.
    */
   function getSelectedStatus() {
     const statusSelect = qs("#id_status");
@@ -2093,6 +2315,14 @@
     return String(readonlyStatus || "").toLowerCase();
   }
 
+  /**
+   * Returns a `#<entityId>` suffix when the current entity status is "deleted".
+   * Purpose: Append the entity ID to names of deleted records for disambiguation.
+   * Necessity: Deleted entities may share similar names; a stable ID suffix makes
+   * them distinguishable during audits and prevents duplicate-name collisions.
+   * @param {string|number} entityId - The current entity's CP record ID.
+   * @returns {string} ` #<entityId>` when status is "deleted", otherwise empty string.
+   */
   function getNameSuffixForDeletedEntity(entityId) {
     return getSelectedStatus() === "deleted" ? ` #${entityId}` : "";
   }
@@ -2101,6 +2331,8 @@
    * Reads a readonly field value from a form row by its visible label text.
    * Purpose: Prefer values already rendered on the change form over stale API payloads.
    * Necessity: Some readonly values can differ from API fetch timing/state on page load.
+   * @param {string} labelText - Visible row label text (case-insensitive match).
+   * @returns {string} Trimmed text content of the `.grp-readonly` element, or empty string.
    */
   function getReadonlyFieldValueByLabel(labelText) {
     const normalizedLabel = String(labelText || "").trim().toLowerCase();
@@ -2120,6 +2352,8 @@
    * Reads a readonly link href from a form row by its visible label text.
    * Purpose: Reuse row-level links (e.g. Org website) as header actions.
    * Necessity: Some URLs are rendered as readonly anchors rather than inputs.
+   * @param {string} labelText - Visible row label text (case-insensitive match).
+   * @returns {string} href attribute value of the first public link in the row, or empty string.
    */
   function getReadonlyFieldLinkHrefByLabel(labelText) {
     const normalizedLabel = String(labelText || "").trim().toLowerCase();
@@ -2139,6 +2373,8 @@
    * Builds a stable link identity derived from Grainy namespace when available.
    * Purpose: Use deterministic per-object identity in window targets and action semantics.
    * Necessity: Avoid fragile IDs while preserving object-level context in opened links.
+   * @param {{ entity: string, entityId: string }} ctx - Route context from getRouteContext().
+   * @returns {string} Sanitized token derived from Grainy namespace or entity/ID fallback.
    */
   function getGrainyDerivedLinkIdentity(ctx) {
     const grainyNamespace = getReadonlyFieldValueByLabel("Grainy namespace");
@@ -2156,6 +2392,9 @@
    * Normalizes arbitrary text into a deterministic token usable in window target names.
    * Purpose: Guarantee stable, safe target segments for toolbar links.
    * Necessity: Prevents dynamic labels/IDs from creating invalid or inconsistent target names.
+   * @param {string} value - Raw string to normalize into a token.
+   * @param {string} [fallback="item"] - Token to use when value normalizes to empty.
+   * @returns {string} Lowercase alphanumeric-and-underscore token string.
    */
   function toStableIdentityToken(value, fallback = "item") {
     const normalized = String(value || "")
@@ -2171,6 +2410,9 @@
    * Builds deterministic target names for injected primary toolbar links.
    * Purpose: Ensure all nav-header links open in stable, object-scoped tab identities.
    * Necessity: Replaces ad-hoc _new/_blank targets with per-object deterministic targets.
+   * @param {string} actionId - Action identifier string used to compose the target suffix.
+   * @param {{ entity: string, entityId: string }} [ctx] - Route context; defaults to current page.
+   * @returns {string} Stable window target name string (e.g., "pdb_ix_42_pdbCpConsolidatedFrontend").
    */
   function getStableToolbarLinkTarget(actionId, ctx = getRouteContext()) {
     const grainyIdentity = toStableIdentityToken(getGrainyDerivedLinkIdentity(ctx), "entity");
@@ -2539,6 +2781,11 @@
     markDeletedNetworkInlinesForDeletion();
   }
 
+  // ---------------------------------------------------------------------------
+  // Module registry
+  // Each entry declares: id (string), match (ctx predicate), optional preconditions
+  // (ctx predicate), and run (ctx handler that may return a dispose function).
+  // ---------------------------------------------------------------------------
   const modules = [
     {
       id: "copy-frontend-urls",
@@ -3058,6 +3305,7 @@
    * Purpose: Central dispatcher that activates modules for the current page.
    * Necessity: Implements modular architecture; checks both enabled status and page match
    * before running each module. Catches and logs errors to prevent cascade failures.
+   * @param {{ entity: string, entityId: string, isEntityChangePage: boolean }} ctx - Route context.
    */
   function dispatchModules(ctx) {
     const disabledModules = getDisabledModules();
@@ -3169,6 +3417,7 @@
    * a self-check surfaces breakage before a user triggers an action.
    * Always logs to console.warn for any failed check; emits console.debug
    * details in debug mode. Runs at most once per page load.
+   * @param {{ entity: string, entityId: string, pathName: string }} ctx - Route context.
    */
   function runSelfCheck(ctx) {
     runApiResourceCoverageCheck();
@@ -3213,8 +3462,14 @@
     }
   }
 
+  /**
+   * Entry point for the consolidated CP userscript.
+   * Purpose: Orchestrate the full initialization sequence — route context parse,
+   * self-check, legacy cleanup, module dispatch, toolbar ordering, and TM menu registration.
+   * Necessity: A single entry point ensures sequential, predictable initialization
+   * regardless of DOMContentLoaded timing or future module additions.
+   */
   function runConsolidatedInit() {
-    const ctx = getRouteContext();
 
     if (!ctx.isCp || !ctx.isEntityChangePage) {
       return;
