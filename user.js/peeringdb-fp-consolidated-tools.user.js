@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.0.27.20260325
+// @version      1.0.28.20260325
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
@@ -264,6 +264,19 @@
   }
 
   /**
+   * Convenience wrapper for querySelectorAll returning an array.
+   * Purpose: Reduce repeated Array.from(querySelectorAll(...)) patterns in FP modules.
+   * Necessity: Keeps small DOM iteration helpers aligned with CP utility parity.
+   */
+  function qsa(selector, root = document) {
+    try {
+      return Array.from(root.querySelectorAll(selector));
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  /**
    * Retrieves trimmed innerText from a selected element.
    * Purpose: Safe extraction of display text for form fields and data fields.
    * Necessity: Provides consistent empty-string fallback vs. throwing on missing elements.
@@ -294,24 +307,36 @@
    * Purpose: Enable "Copy URL" and similar copy actions for user convenience.
    * Necessity: Handles browsers with and without Clipboard API support.
    */
-  function copyToClipboard(text) {
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(text).catch((err) => {
-        console.error("Async: Could not copy text: ", err);
-      });
-    } else {
-      // Fallback
-      const textArea = document.createElement("textarea");
-      textArea.value = text;
-      textArea.style.position = "fixed";
-      document.body.appendChild(textArea);
-      textArea.focus();
-      textArea.select();
+  async function copyToClipboard(text) {
+    const normalizedText = String(text ?? "");
+
+    if (navigator.clipboard?.writeText) {
       try {
-        document.execCommand("copy");
+        await navigator.clipboard.writeText(normalizedText);
+        return true;
       } catch (err) {
-        console.error("Fallback: Oops, unable to copy", err);
+        console.error("Async: Could not copy text:", err);
       }
+    }
+
+    const textArea = document.createElement("textarea");
+    textArea.value = normalizedText;
+    textArea.style.position = "fixed";
+    textArea.style.opacity = "0";
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+
+    try {
+      const copied = document.execCommand("copy");
+      if (!copied) {
+        console.error("Fallback: Copy command returned false");
+      }
+      return copied;
+    } catch (err) {
+      console.error("Fallback: Oops, unable to copy", err);
+      return false;
+    } finally {
       document.body.removeChild(textArea);
     }
   }
@@ -970,10 +995,17 @@
       id: "copy-record-data",
       match: (ctx) => ctx.isEntityPage,
       run: () => {
-        addButton("Copy URL", () => {
+        addButton("Copy URL", async (event) => {
           const name = getText('.view_title > div[data-edit-name="name"]');
           const uri = window.location.href;
-          copyToClipboard(`${name} (${uri})`);
+          const copied = await copyToClipboard(`${name} (${uri})`);
+          if (!copied) return;
+
+          const btn = event?.target;
+          if (!btn) return;
+          const orig = btn.innerText;
+          btn.innerText = "Copied!";
+          setTimeout(() => { btn.innerText = orig; }, 1000);
         }, "div.right.button-bar > div:first-child", "copy-url");
       },
     },
@@ -998,7 +1030,7 @@
           return link;
         }
 
-        const users = document.querySelectorAll(
+        const users = qsa(
           '#org-user-manager > div[data-edit-template="user-item"] > .editable'
         );
 
@@ -1066,7 +1098,7 @@
           const admins = [];
           const members = [];
 
-          const currentUsers = document.querySelectorAll(
+          const currentUsers = qsa(
             '#org-user-manager > div[data-edit-template="user-item"] > .editable'
           );
 
@@ -1092,7 +1124,7 @@
           });
 
           // Legacy script only returned admins joined by newline
-          copyToClipboard(admins.join("\n"));
+          void copyToClipboard(admins.join("\n"));
         });
 
         parent.insertBefore(btn, refNode);
