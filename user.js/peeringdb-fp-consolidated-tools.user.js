@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.0.26.20260325
+// @version      1.0.27.20260325
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
@@ -33,6 +33,10 @@
   const OBSERVER_IDLE_DISCONNECT_MS = 2000;
   const openDropdownActionItems = new Set();
   let dropdownGlobalCloseListenerBound = false;
+
+  // Mirrored request/session helper block:
+  // Keep this section structurally aligned with the CP consolidated script
+  // where practical, while preserving FP's tab-scoped session UUID behavior.
 
   /**
    * Retrieves the set of disabled module IDs from localStorage.
@@ -72,6 +76,36 @@
   }
 
   /**
+   * Returns storage for domain-scoped persistent values.
+   * Purpose: Centralize guarded access to localStorage for shared helper logic.
+   * Necessity: Keeps FP storage access patterns aligned with CP helper structure.
+   */
+  function getDomainCacheStorage() {
+    try {
+      if (window.localStorage) return window.localStorage;
+    } catch (_error) {
+      // Ignore; persistent storage may be unavailable.
+    }
+
+    return null;
+  }
+
+  /**
+   * Returns storage for tab-scoped transient values.
+   * Purpose: Isolate FP session identifiers to the current browser tab.
+   * Necessity: FP intentionally keeps session UUIDs tab-scoped, unlike CP.
+   */
+  function getTabSessionStorage() {
+    try {
+      if (window.sessionStorage) return window.sessionStorage;
+    } catch (_error) {
+      // Ignore; session storage may be unavailable.
+    }
+
+    return null;
+  }
+
+  /**
    * Generates or retrieves a persistent session UUID for the browser session.
    * Purpose: Provides a unique identifier for correlating requests within a session.
    * Necessity: Enables server-side analytics and request tracking without exposing device fingerprint.
@@ -79,11 +113,12 @@
    */
   function getSessionUuid() {
     const sessionKey = SESSION_UUID_STORAGE_KEY;
-    let uuid = window.sessionStorage?.getItem(sessionKey);
+    const storage = getTabSessionStorage();
+    let uuid = storage?.getItem(sessionKey);
     if (!uuid) {
       uuid = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-      if (window.sessionStorage) {
-        window.sessionStorage.setItem(sessionKey, uuid);
+      if (storage) {
+        storage.setItem(sessionKey, uuid);
       }
     }
     return uuid;
@@ -169,7 +204,7 @@
    * Necessity: Allows manual override via localStorage while auto-computing from domain trust.
    */
   function getCustomRequestUserAgent() {
-    const configured = String(window.localStorage?.getItem(USER_AGENT_STORAGE_KEY) || "").trim();
+    const configured = String(getDomainCacheStorage()?.getItem(USER_AGENT_STORAGE_KEY) || "").trim();
     if (configured) return configured;
     return buildTrustBasedUserAgent(window.location.hostname);
   }
@@ -181,11 +216,7 @@
    */
   function buildTampermonkeyRequestHeaders(baseHeaders = {}) {
     const headers = { ...baseHeaders };
-    const configured = String(window.localStorage?.getItem(USER_AGENT_STORAGE_KEY) || "").trim();
-
-    const userAgent =
-      configured ||
-      buildTrustBasedUserAgent(window.location.hostname);
+    const userAgent = getCustomRequestUserAgent();
 
     if (userAgent) {
       headers["User-Agent"] = userAgent;
