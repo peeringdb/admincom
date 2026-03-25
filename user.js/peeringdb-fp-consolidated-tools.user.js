@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.0.25.20260323
+// @version      1.0.26.20260325
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
@@ -31,6 +31,8 @@
   ];
   const DEFAULT_REQUEST_USER_AGENT = "PeeringDB-Admincom-FP-Consolidated";
   const OBSERVER_IDLE_DISCONNECT_MS = 2000;
+  const openDropdownActionItems = new Set();
+  let dropdownGlobalCloseListenerBound = false;
 
   /**
    * Retrieves the set of disabled module IDs from localStorage.
@@ -344,6 +346,68 @@
   }
 
   /**
+   * Closes a single FP dropdown wrapper and resets toggle accessibility state.
+   * Purpose: Centralize close behavior for toolbar overflow menus.
+   * Necessity: Shared close logic prevents duplicated per-menu dismissal handling.
+   */
+  function closeDropdownActionItem(wrapper) {
+    if (!wrapper) return;
+
+    const toggle = qs(':scope > a.btn.btn-primary', wrapper);
+    const menu = qs(':scope > div', wrapper);
+
+    if (menu) {
+      menu.style.display = "none";
+    }
+
+    if (toggle) {
+      toggle.setAttribute("aria-expanded", "false");
+    }
+
+    wrapper.removeAttribute("data-open");
+    wrapper.style.zIndex = "";
+    openDropdownActionItems.delete(wrapper);
+  }
+
+  /**
+   * Closes all open FP dropdown wrappers except an optional exempt wrapper.
+   * Purpose: Enforce single-open-dropdown behavior for FP toolbar overflow menus.
+   * Necessity: Keeps UI state predictable when multiple dropdown-capable actions exist.
+   */
+  function closeAllDropdownActionItems(exemptWrapper = null) {
+    Array.from(openDropdownActionItems).forEach((wrapper) => {
+      if (exemptWrapper && wrapper === exemptWrapper) return;
+      closeDropdownActionItem(wrapper);
+    });
+  }
+
+  /**
+   * Registers one shared listener pair for FP dropdown close behavior.
+   * Purpose: Replace per-menu document listeners with one shared close mechanism.
+   * Necessity: Reduces global listener duplication and supports Escape-to-close.
+   */
+  function ensureDropdownGlobalCloseListener() {
+    if (dropdownGlobalCloseListenerBound) return;
+    dropdownGlobalCloseListenerBound = true;
+
+    document.addEventListener("click", (event) => {
+      const target = event?.target;
+      const activeItems = Array.from(openDropdownActionItems);
+      if (!activeItems.length) return;
+
+      const clickedInsideAnyOpenItem = activeItems.some((wrapper) => wrapper.contains(target));
+      if (!clickedInsideAnyOpenItem) {
+        closeAllDropdownActionItems();
+      }
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      closeAllDropdownActionItems();
+    });
+  }
+
+  /**
    * Creates an overflow dropdown menu in the top-right toolbar.
    * Purpose: Provide a compact menu for multiple related tools (RIPEstat, BGPView, CIDR Report, etc.).
    * Necessity: Prevents toolbar overcrowding by grouping secondary network analysis tools.
@@ -356,6 +420,7 @@
     parentSelector = "div.right.button-bar > div:first-child",
   }) {
     if (!actionId || !Array.isArray(items) || items.length === 0) return null;
+    ensureDropdownGlobalCloseListener();
 
     const parent = getTopRightToolbarContainer(parentSelector);
     if (!parent) return null;
@@ -382,6 +447,8 @@
     toggle.style.whiteSpace = "nowrap";
     toggle.style.flex = "0 0 auto";
     toggle.style.userSelect = "none";
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.setAttribute("aria-haspopup", "true");
 
     const menu = document.createElement("div");
     menu.style.position = "absolute";
@@ -406,6 +473,9 @@
       link.textContent = item.label;
       link.style.whiteSpace = "nowrap";
       link.style.display = "block";
+      link.addEventListener("click", () => {
+        closeDropdownActionItem(wrapper);
+      });
       menu.appendChild(link);
     });
 
@@ -414,26 +484,27 @@
     parent.appendChild(wrapper);
 
     const closeMenu = () => {
-      menu.style.display = "none";
-      wrapper.removeAttribute("data-open");
+      closeDropdownActionItem(wrapper);
     };
 
     toggle.addEventListener("click", (event) => {
       event.preventDefault();
+      event.stopPropagation();
       const isOpen = wrapper.getAttribute("data-open") === "1";
       if (isOpen) {
         closeMenu();
       } else {
+        closeAllDropdownActionItems(wrapper);
         menu.style.display = "grid";
+        toggle.setAttribute("aria-expanded", "true");
         wrapper.setAttribute("data-open", "1");
+        wrapper.style.zIndex = "1001";
+        openDropdownActionItems.add(wrapper);
       }
     });
 
-    document.addEventListener("click", (event) => {
-      if (wrapper.getAttribute("data-open") !== "1") return;
-      if (!wrapper.contains(event.target)) {
-        closeMenu();
-      }
+    menu.addEventListener("click", (event) => {
+      event.stopPropagation();
     });
 
     return wrapper;
