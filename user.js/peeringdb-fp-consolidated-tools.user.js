@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.0.28.20260325
+// @version      1.0.29.20260326
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
@@ -1014,6 +1014,7 @@
       match: (ctx) => ctx.type === "org" && ctx.isEntityPage,
       run: () => {
         const CP_EMAIL_SEARCH_BASE = "https://www.peeringdb.com/cp/account/emailaddress/?q=";
+        const CP_USER_CHANGE_BASE = "https://www.peeringdb.com/cp/peeringdb_server/user";
         const EMAIL_REGEX = /[A-Z0-9._+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
 
         function createCpSearchLink(queryText, titleText) {
@@ -1030,11 +1031,33 @@
           return link;
         }
 
+        function createCpUserRecordLink(userId) {
+          if (!/^\d+$/.test(String(userId || "").trim())) return null;
+
+          const normalizedId = String(userId).trim();
+          const link = document.createElement("a");
+          link.href = `${CP_USER_CHANGE_BASE}/${normalizedId}/change/`;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.textContent = "🔍";
+          link.title = "Open user record in CP";
+          link.setAttribute("aria-label", "Open user record in CP");
+          link.style.display = "inline-block";
+          link.style.marginLeft = "6px";
+          link.style.textDecoration = "none";
+          return link;
+        }
+
         const users = qsa(
           '#org-user-manager > div[data-edit-template="user-item"] > .editable'
         );
 
         users.forEach((item) => {
+          const userId =
+            item.getAttribute("data-edit-id") ||
+            item.querySelector(".item[data-edit-id]")?.getAttribute("data-edit-id") ||
+            "";
+
           const usernameRow = item.querySelector(".item > div:nth-child(1) > div:nth-child(2)");
           if (usernameRow && !usernameRow.querySelector("a[data-pdb-fp-username-search]")) {
             const username = Array.from(usernameRow.childNodes)
@@ -1044,10 +1067,8 @@
               .trim();
 
             if (username) {
-              const usernameSearchLink = createCpSearchLink(
-                username,
-                "Search user by username in CP email address"
-              );
+              const usernameSearchLink = createCpUserRecordLink(userId);
+              if (!usernameSearchLink) return;
               usernameSearchLink.setAttribute("data-pdb-fp-username-search", "true");
 
               const badge = usernameRow.querySelector("span.badge-2fa-enabled");
