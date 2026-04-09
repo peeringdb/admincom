@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name            PeeringDB DP - Consolidated Tools
 // @namespace       https://www.peeringdb.com/
-// @version         1.1.6.20260409
-// @description     Consolidated DeskPro tools: linkifies ASN/org names (with ASN API name lookup), copies mailto addresses, and normalizes PeeringDB CP double-slash links
+// @version         1.4.0.20260409
+// @description     Consolidated DeskPro tools: linkifies/enriches PeeringDB links (ASN/IP/IX/NET), copies mailto addresses, normalizes PeeringDB CP double-slash links
 // @author          <chriztoffer@peeringdb.com>
 // @match           https://peeringdb.deskpro.com/app*
 // @icon            https://icons.duckduckgo.com/ip2/deskpro.com.ico
@@ -28,8 +28,13 @@
   const MAILTO_ICON_ATTR = "data-pdb-mailto-icon";
   const ACTION_EMOJI_LINK = "🔗";
   const ACTION_EMOJI_COPY = "📋";
+  const ACTION_EMOJI_IX = "🏢";
   const ACTION_LINK_ICON_ATTR = "data-pdb-action-link-icon";
   const ACTION_LINK_TEXT_ATTR = "data-pdb-action-link-text";
+  const IX_SHORTCUT_ATTR = "data-pdb-ix-shortcut";
+  const EXISTING_PDB_LINK_DECORATED_ATTR = "data-pdb-existing-link-decorated";
+  const EXISTING_PDB_LINK_ICON_ATTR = "data-pdb-existing-link-icon";
+  const EXISTING_PDB_LINK_TEXT_ATTR = "data-pdb-existing-link-text";
   const TARGET_ACTION_LINK_LABELS = new Set([
     "review affiliation/ownership request",
     "approve ownership request and notify user",
@@ -37,15 +42,29 @@
   const PDB_CP_DOUBLE_SLASH_PREFIX = "https://www.peeringdb.com//cp/peeringdb_server";
   const PDB_CP_SINGLE_SLASH_PREFIX = "https://www.peeringdb.com/cp/peeringdb_server";
   const DEFAULT_REQUEST_USER_AGENT = "PeeringDB-Admincom-DP-Consolidated";
-  const ASN_NAME_CACHE_STORAGE_PREFIX = "pdbDpConsolidated.asnNameCache.";
-  const ASN_NAME_CACHE_SCHEMA_VERSION = 1;
+  // Shared cache namespace (used by DP, FP, CP) for API data deduplication
+  const SHARED_CACHE_PREFIX = "pdbAdmincom.cache.";
+  const CACHE_SCHEMA_VERSION = 1;
   const ASN_API_TIMEOUT_MS = 12000;
   const ASN_API_RETRIES = 2;
   const ASN_NAME_CACHE_MISS_TTL_MS = 15 * 60 * 1000;
   const ASN_NAME_CACHE_TTL_MS = 7.5 * 60 * 60 * 1000;
+  const NETIXLAN_CACHE_TTL_MS = 3 * 60 * 60 * 1000;
+  const ENABLE_IP_TOOLTIP_POC_ENRICHMENT = true;
+  const ORG_CACHE_TTL_MS = 7.5 * 60 * 60 * 1000;
+  const USER_CACHE_TTL_MS = 7.5 * 60 * 60 * 1000;
+  const FACILITY_CACHE_TTL_MS = 7.5 * 60 * 60 * 1000;
+  const BATCH_FETCH_MAX_ASNS = 100; // Per-request limit for asn__in queries
+  const RATE_LIMIT_MIN_REMAINING = 10; // Backoff threshold
 
   const asnNameCache = new Map();
   const asnNameInFlight = new Map();
+  const dataCacheInFlight = new Map(); // In-flight dedup for all API requests
+  const rateLimitState = { limit: null, remaining: null, resetTime: null }; // Track rate-limit quotas
+  const IPV4_TOKEN_REGEX = /\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}\b/g;
+  const IPV4_TEST_REGEX = /\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}\b/;
+  const IPV6_TOKEN_REGEX = /\b(?=[0-9a-fA-F:]*:[0-9a-fA-F:]*)(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}\b/g;
+  const IPV6_TEST_REGEX = /\b(?=[0-9a-fA-F:]*:[0-9a-fA-F:]*)(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}\b/;
 
   /**
    * Returns localStorage when available for domain-scoped cache persistence.
@@ -71,23 +90,37 @@
   }
 
   /**
-   * Builds localStorage key for ASN-name cache entries.
+   * Builds localStorage key for cached API data (shared namespace).
+   * @param {string} type - Entity type (asn, org, user, facility).
+   * @param {string|number} id - Entity identifier.
+   * @returns {string} Namespaced cache key, or empty string when invalid.
+   */
+  function getSharedCacheStorageKey(type, id) {
+    const normalizedType = String(type || "").trim().toLowerCase();
+    const normalizedId = String(id || "").trim();
+    if (!normalizedType || !normalizedId || !/^[a-z_]+$/.test(normalizedType)) return "";
+    return `${SHARED_CACHE_PREFIX}${normalizedType}.${normalizedId}`;
+  }
+
+  /**
+   * Builds localStorage key for ASN-name cache entries (backward compat wrapper).
    * @param {string|number} asn - ASN value.
    * @returns {string} Namespaced cache key, or empty string when invalid.
    */
   function getAsnNameCacheStorageKey(asn) {
     const normalizedAsn = normalizeAsnForCache(asn);
     if (!normalizedAsn || !/^\d+$/.test(normalizedAsn)) return "";
-    return `${ASN_NAME_CACHE_STORAGE_PREFIX}${normalizedAsn}`;
+    return getSharedCacheStorageKey("asn", normalizedAsn);
   }
 
   /**
-   * Reads ASN name from localStorage cache when valid.
-   * @param {string|number} asn - ASN value.
-   * @returns {string|null} Cached ASN name, or null when absent/expired/invalid.
+   * Reads cached API data object from localStorage when valid.
+   * @param {string} type - Entity type (asn, org, user, facility).
+   * @param {string|number} id - Entity identifier.
+   * @returns {object|null} Cached data object, or null when absent/expired/invalid.
    */
-  function getCachedAsnNameFromStorage(asn) {
-    const storageKey = getAsnNameCacheStorageKey(asn);
+  function getCachedDataFromStorage(type, id) {
+    const storageKey = getSharedCacheStorageKey(type, id);
     if (!storageKey) return null;
 
     try {
@@ -96,49 +129,69 @@
       if (!raw) return null;
 
       const parsed = JSON.parse(raw);
-      const cachedName = String(parsed?.name || "").trim();
       const expiresAt = Number(parsed?.expiresAt || 0);
-      const schemaVersion = Number(parsed?.v ?? -1);
+      const schemaVersion = Number(parsed?.schema ?? -1);
       const now = Date.now();
       if (
-        !cachedName ||
         !Number.isFinite(expiresAt) ||
         expiresAt <= now ||
-        schemaVersion !== ASN_NAME_CACHE_SCHEMA_VERSION
+        schemaVersion !== CACHE_SCHEMA_VERSION
       ) {
         storage?.removeItem(storageKey);
         return null;
       }
 
-      return cachedName;
+      return parsed?.data || null;
     } catch (_error) {
       return null;
     }
   }
 
   /**
-   * Stores ASN name into localStorage cache with TTL/schema metadata.
+   * Reads ASN name from localStorage cache when valid (backward compat).
    * @param {string|number} asn - ASN value.
-   * @param {string} name - Resolved network name.
+   * @returns {string|null} Cached ASN name, or null when absent/expired/invalid.
    */
-  function setCachedAsnNameInStorage(asn, name) {
-    const storageKey = getAsnNameCacheStorageKey(asn);
-    const normalizedName = String(name || "").trim();
-    if (!storageKey || !normalizedName) return;
+  function getCachedAsnNameFromStorage(asn) {
+    const data = getCachedDataFromStorage("asn", asn);
+    return data ? String(data.name || "").trim() || null : null;
+  }
+
+  /**
+   * Stores API data object into localStorage cache with TTL/schema metadata.
+   * @param {string} type - Entity type (asn, org, user, facility).
+   * @param {string|number} id - Entity identifier.
+   * @param {object} data - Data object to cache.
+   * @param {number} [ttlMs=ASN_NAME_CACHE_TTL_MS] - Cache time-to-live (milliseconds).
+   */
+  function setCachedDataInStorage(type, id, data, ttlMs = ASN_NAME_CACHE_TTL_MS) {
+    const storageKey = getSharedCacheStorageKey(type, id);
+    if (!storageKey || !data || typeof data !== "object") return;
 
     try {
       const storage = getDomainCacheStorage();
       storage?.setItem(
         storageKey,
         JSON.stringify({
-          v: ASN_NAME_CACHE_SCHEMA_VERSION,
-          name: normalizedName,
-          expiresAt: Date.now() + ASN_NAME_CACHE_TTL_MS,
+          schema: CACHE_SCHEMA_VERSION,
+          data,
+          expiresAt: Date.now() + ttlMs,
         }),
       );
     } catch (_error) {
       // Ignore storage failures; in-memory cache still provides benefit.
     }
+  }
+
+  /**
+   * Stores ASN name into localStorage cache with TTL/schema metadata (backward compat).
+   * @param {string|number} asn - ASN value.
+   * @param {string} name - Resolved network name.
+   */
+  function setCachedAsnNameInStorage(asn, name) {
+    const normalizedName = String(name || "").trim();
+    if (!normalizedName) return;
+    setCachedDataInStorage("asn", asn, { name: normalizedName }, ASN_NAME_CACHE_TTL_MS);
   }
 
   /**
@@ -173,6 +226,28 @@
   }
 
   /**
+   * Updates rate-limit state from response headers.
+   * @param {object} headers - Response headers object.
+   */
+  function updateRateLimitState(headers) {
+    const limit = headers["x-ratelimit-limit"];
+    const remaining = headers["x-ratelimit-remaining"];
+    const reset = headers["x-ratelimit-reset"];
+    
+    if (limit) rateLimitState.limit = parseInt(limit);
+    if (remaining) rateLimitState.remaining = parseInt(remaining);
+    if (reset) rateLimitState.resetTime = new Date(reset);
+  }
+
+  /**
+   * Checks if current rate-limit quota is low enough to trigger backoff.
+   * @returns {boolean} True if should backoff (remaining quota < threshold).
+   */
+  function shouldBackoffRateLimit() {
+    return rateLimitState.remaining !== null && rateLimitState.remaining < RATE_LIMIT_MIN_REMAINING;
+  }
+
+  /**
    * Unified JSON fetch helper with retry and timeout support.
    * Purpose: Mirror CP script network behavior for stable PeeringDB API access.
    * Necessity: Prevents divergent network logic between Tampermonkey transport modes.
@@ -199,6 +274,15 @@
             onload: (response) => {
               if (response.status >= 200 && response.status < 300) {
                 try {
+                  // Extract rate-limit headers from response
+                  const responseHeaders = {};
+                  if (response.responseHeaders) {
+                    response.responseHeaders.split(/\r?\n/).forEach((line) => {
+                      const [key, value] = line.split(":", 2);
+                      if (key) responseHeaders[key.toLowerCase().trim()] = (value || "").trim();
+                    });
+                  }
+                  updateRateLimitState(responseHeaders);
                   resolve(JSON.parse(response.responseText));
                 } catch (_err) {
                   resolve(null);
@@ -252,6 +336,12 @@
         }
 
         try {
+          // Extract rate-limit headers from response
+          const responseHeaders = {};
+          response.headers.forEach((value, key) => {
+            responseHeaders[key.toLowerCase()] = value;
+          });
+          updateRateLimitState(responseHeaders);
           return await response.json();
         } catch (_parseError) {
           if (attempt + 1 >= retries) return null;
@@ -353,8 +443,250 @@
   }
 
   /**
-   * Hydrates an existing ASN link label with resolved API network name.
-   * Purpose: Preserve fast initial rendering, then progressively enhance link text.
+   * Fetches organization details including nested user/POC information.
+   * Purpose: Resolve org name and contact details (email, org_role) from org_id.
+   * @param {string|number} orgId - Organization ID to fetch.
+   * @returns {Promise<object|null>} Organization object with user_set, or null.
+   */
+  async function fetchOrgWithUsers(orgId) {
+    const normalizedOrgId = String(orgId || "").trim();
+    if (!normalizedOrgId || !/^\d+$/.test(normalizedOrgId)) return null;
+
+    const cacheKey = `fetchOrgWithUsers.${normalizedOrgId}`;
+    if (dataCacheInFlight.has(cacheKey)) {
+      return dataCacheInFlight.get(cacheKey);
+    }
+
+    const requestPromise = (async () => {
+      // Check localStorage cache first
+      const cached = getCachedDataFromStorage("org", normalizedOrgId);
+      if (cached) {
+        // Return null if this is a cached negative lookup
+        if (isNegativeCacheEntry(cached)) return null;
+        return cached;
+      }
+
+      const params = new URLSearchParams({
+        id: normalizedOrgId,
+        depth: "1",
+        limit: "1",
+      });
+      const url = `https://www.peeringdb.com/api/org?${params.toString()}`;
+      const payload = await pdbFetch(url);
+      
+      if (!payload || !Array.isArray(payload.data) || payload.data.length === 0) {
+        // Negative-cache failed lookup to avoid repeated requests
+        cacheNegativeLookup("org", normalizedOrgId, 1.5 * 3600 * 1000);
+        return null;
+      }
+      
+      const org = payload.data[0];
+      if (!org) {
+        cacheNegativeLookup("org", normalizedOrgId, 1.5 * 3600 * 1000);
+        return null;
+      }
+
+      // Cache the org data
+      setCachedDataInStorage("org", normalizedOrgId, org, ORG_CACHE_TTL_MS);
+      
+      return org;
+    })();
+
+    dataCacheInFlight.set(cacheKey, requestPromise);
+
+    try {
+      return await requestPromise;
+    } finally {
+      dataCacheInFlight.delete(cacheKey);
+    }
+  }
+
+  /**
+   * Fetches network record for an ASN.
+   * Purpose: Resolve org relation for optional IP-tooltip POC enrichment.
+   * @param {string|number} asn - ASN to resolve.
+   * @returns {Promise<object|null>} Network row, or null when unavailable.
+   */
+  async function fetchNetByAsn(asn) {
+    const normalizedAsn = String(asn || "").trim();
+    if (!/^\d+$/.test(normalizedAsn)) return null;
+
+    const cacheKey = `fetchNetByAsn.${normalizedAsn}`;
+    if (dataCacheInFlight.has(cacheKey)) {
+      return dataCacheInFlight.get(cacheKey);
+    }
+
+    const requestPromise = (async () => {
+      const cached = getCachedDataFromStorage("net", normalizedAsn);
+      if (cached) {
+        if (isNegativeCacheEntry(cached)) return null;
+        return cached;
+      }
+
+      const params = new URLSearchParams({
+        asn: normalizedAsn,
+        status: "ok",
+        depth: "0",
+        limit: "1",
+      });
+      const url = `https://www.peeringdb.com/api/net?${params.toString()}`;
+      const payload = await pdbFetch(url);
+      const net = getBestApiNetDataItem(payload, normalizedAsn);
+      if (!net) {
+        cacheNegativeLookup("net", normalizedAsn, ASN_NAME_CACHE_MISS_TTL_MS);
+        return null;
+      }
+
+      setCachedDataInStorage("net", normalizedAsn, net, ASN_NAME_CACHE_TTL_MS);
+      return net;
+    })();
+
+    dataCacheInFlight.set(cacheKey, requestPromise);
+    try {
+      return await requestPromise;
+    } finally {
+      dataCacheInFlight.delete(cacheKey);
+    }
+  }
+
+  /**
+   * Fetches network record by network id.
+   * Purpose: Richly hydrate existing /net/{id} anchors found in rendered DeskPro HTML.
+   * @param {string|number} netId - Network id.
+   * @returns {Promise<object|null>} Network row, or null when unavailable.
+   */
+  async function fetchNetById(netId) {
+    const normalizedNetId = String(netId || "").trim();
+    if (!/^\d+$/.test(normalizedNetId)) return null;
+
+    const cacheKey = `fetchNetById.${normalizedNetId}`;
+    if (dataCacheInFlight.has(cacheKey)) {
+      return dataCacheInFlight.get(cacheKey);
+    }
+
+    const requestPromise = (async () => {
+      const cached = getCachedDataFromStorage("net_id", normalizedNetId);
+      if (cached) {
+        if (isNegativeCacheEntry(cached)) return null;
+        return cached;
+      }
+
+      const params = new URLSearchParams({
+        id: normalizedNetId,
+        status: "ok",
+        depth: "0",
+        limit: "1",
+      });
+      const url = `https://www.peeringdb.com/api/net?${params.toString()}`;
+      const payload = await pdbFetch(url);
+      const net = Array.isArray(payload?.data) ? payload.data[0] || null : null;
+      if (!net) {
+        cacheNegativeLookup("net_id", normalizedNetId, ASN_NAME_CACHE_MISS_TTL_MS);
+        return null;
+      }
+
+      setCachedDataInStorage("net_id", normalizedNetId, net, ASN_NAME_CACHE_TTL_MS);
+      return net;
+    })();
+
+    dataCacheInFlight.set(cacheKey, requestPromise);
+    try {
+      return await requestPromise;
+    } finally {
+      dataCacheInFlight.delete(cacheKey);
+    }
+  }
+
+  /**
+   * Splits an array into chunks of specified maximum size.
+   * @param {array} arr - Array to chunk.
+   * @param {number} chunkSize - Maximum size per chunk.
+   * @returns {array} Array of chunks.
+   */
+  function chunkArray(arr, chunkSize) {
+    if (!Array.isArray(arr) || chunkSize < 1) return [];
+    const chunks = [];
+    for (let i = 0; i < arr.length; i += chunkSize) {
+      chunks.push(arr.slice(i, i + chunkSize));
+    }
+    return chunks;
+  }
+
+  /**
+   * Batch-fetches network data for multiple ASNs with automatic chunking.
+   * Purpose: Fetch up to 100 ASNs in parallel chunks (API limit per request).
+   * Reduces latency vs. serial requests: 5 ASNs typically <2s vs. ~5s serial.
+   * @param {array} asnList - Array of ASN numbers to fetch.
+   * @returns {Promise<array>} Flattened array of network objects form all chunks.
+   */
+  async function batchFetchNetworks(asnList) {
+    if (!Array.isArray(asnList) || asnList.length === 0) return [];
+
+    // Split into chunks respecting API batch size limit
+    const chunks = chunkArray(asnList, BATCH_FETCH_MAX_ASNS);
+    
+    const chunkPromises = chunks.map(async (asnChunk) => {
+      const queryString = asnChunk.join(",");
+      const params = new URLSearchParams({
+        asn__in: queryString,
+        depth: "1",
+        limit: "250",
+      });
+      const url = `https://www.peeringdb.com/api/net?${params.toString()}`;
+      const payload = await pdbFetch(url);
+      
+      if (!payload || !Array.isArray(payload.data)) return [];
+      
+      // Cache each network individually for later lookups
+      payload.data.forEach((net) => {
+        if (net && net.asn) {
+          setCachedDataInStorage("net", net.asn, net, ASN_NAME_CACHE_TTL_MS);
+        }
+      });
+      
+      return payload.data;
+    });
+
+    try {
+      const results = await Promise.all(chunkPromises);
+      return results.flat();
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  /**
+   * Formats a list of user objects as contact string: "Role (email), Role2 (email2)".
+   * Purpose: Create readable POC display for tickets.
+   * Priority: email > org_role > name (as specified).
+   * @param {array} users - Array of user objects from org.user_set.
+   * @returns {string} Formatted contact list, or empty string when no users.
+   */
+  function formatPocList(users) {
+    if (!Array.isArray(users) || users.length === 0) return "";
+
+    const pocParts = users
+      .map((user) => {
+        const email = String(user?.email || "").trim();
+        const orgRole = String(user?.user_class || "").trim();
+        const name = String(user?.name || "").trim();
+
+        // Priority: email > org_role > name
+        const primary = email || orgRole || name || null;
+        const secondary = (email && orgRole) ? orgRole : (email && name) ? name : null;
+
+        if (!primary) return null;
+        if (secondary) return `${secondary} (${primary})`;
+        return primary;
+      })
+      .filter((part) => part !== null);
+
+    return pocParts.join(", ");
+  }
+
+  /**
+   * Hydrates an existing ASN link label with resolved API network name and POC info.
+   * Purpose: Preserve fast initial rendering, then progressively enhance link text with org details.
    * Necessity: API requests are asynchronous and should not block DOM linkification.
    * @param {HTMLAnchorElement} anchor - ASN anchor element to update.
    * @param {HTMLSpanElement} labelNode - Text span containing ASN label.
@@ -367,10 +699,162 @@
     if (!resolvedName || !anchor?.isConnected || !labelNode?.isConnected) return;
 
     labelNode.textContent = `${originalDisplayText} (${resolvedName})`;
-    anchor.title = `Open ASN${asn} (${resolvedName}) in PeeringDB`;
+    let titleText = `Open ASN${asn} (${resolvedName}) in PeeringDB`;
+
+    // Optionally fetch org/POC info for enriched tooltip (non-blocking)
+    (async () => {
+      try {
+        const params = new URLSearchParams({
+          asn: asn,
+          depth: "1",
+          limit: "1",
+        });
+        const url = `https://www.peeringdb.com/api/net?${params.toString()}`;
+        const payload = await pdbFetch(url);
+        const net = getBestApiNetDataItem(payload, asn);
+        
+        if (!net || !net.org_id) return;
+        
+        const org = await fetchOrgWithUsers(net.org_id);
+        if (!org) return;
+
+        const pocList = formatPocList(org.user_set);
+        if (pocList && anchor?.isConnected) {
+          titleText = `${resolvedName}\nOrg: ${org.name}\nPOCs: ${pocList}`;
+          anchor.title = titleText;
+        }
+      } catch (_error) {
+        // Silently ignore POC resolution errors; base info still available
+      }
+    })();
+
+    anchor.title = titleText;
   }
 
-  // Tags whose text content must never be linkified.
+  /**
+   * Migrates old DP-specific cache keys to shared cache namespace.
+   * Purpose: Eliminate cache fragmentation when upgrading from v1.1.x to v1.2.0+.
+   * Run once on script load to consolidate legacy cache entries.
+   */
+  function migrateOldCacheKeys() {
+    try {
+      const storage = getDomainCacheStorage();
+      if (!storage) return;
+
+      const oldPrefixes = ["pdbDpConsolidated.asnNameCache."];
+      const keysToRemove = [];
+
+      for (let i = 0; i < storage.length; i++) {
+        const key = storage.key(i);
+        if (!key) continue;
+
+        for (const oldPrefix of oldPrefixes) {
+          if (key.startsWith(oldPrefix)) {
+            try {
+              const raw = storage.getItem(key);
+              if (!raw) continue;
+
+              const parsed = JSON.parse(raw);
+              const asn = key.substring(oldPrefix.length);
+
+              // Only migrate if newer cached format doesn't already exist
+              const newCacheKey = getSharedCacheStorageKey("asn", asn);
+              if (!storage.getItem(newCacheKey)) {
+                setCachedDataInStorage("asn", asn, { name: parsed.name }, ASN_NAME_CACHE_TTL_MS);
+              }
+
+              keysToRemove.push(key);
+            } catch (_error) {
+              // Skip entries that can't be parsed
+            }
+          }
+        }
+      }
+
+      // Clean up old keys after migrating
+      keysToRemove.forEach((key) => storage.removeItem(key));
+    } catch (_error) {
+      // Silently ignore migration errors; system continues to work
+    }
+  }
+
+  /**
+   * Classifies an API error into categories for retry/abort decisions.
+   * Purpose: Distinguish transient (retry-able) from fatal (abort) errors.
+   * @param {number} [status] - HTTP status code, or null/undefined for network error.
+   * @param {Error} [error] - Optional error object.
+   * @returns {object} Classification with type, retryable flag, and guidance.
+   */
+  function classifyError(status, error) {
+    if (status === 429 || status === 503) {
+      return {
+        type: "transient",
+        retryable: true,
+        backoffMs: 5000,
+        label: "Rate-limited or temporarily unavailable",
+      };
+    }
+    if (status === 404) {
+      return {
+        type: "not_found",
+        retryable: false,
+        ttl: 1.5 * 3600 * 1000, // Cache negative result for 1.5 hours
+        label: "Resource not found (404)",
+      };
+    }
+    if (status === 401 || status === 403) {
+      return {
+        type: "auth",
+        retryable: false,
+        label: "Authentication failed or access denied",
+      };
+    }
+    if (status >= 500) {
+      return {
+        type: "server",
+        retryable: true,
+        backoffMs: 10000,
+        label: "Server error (5xx)",
+      };
+    }
+    if (!status) {
+      return {
+        type: "network",
+        retryable: true,
+        backoffMs: 3000,
+        label: "Network error or timeout",
+      };
+    }
+    return {
+      type: "unknown",
+      retryable: false,
+      label: `Unknown error (HTTP ${status})`,
+    };
+  }
+
+  /**
+   * Negative-cache a missing entity to avoid repeated failed lookups.
+   * @param {string} type - Entity type (asn, org, user, facility).
+   * @param {string|number} id - Entity identifier.
+   * @param {number} [ttlMs=1.5 hours] - Cache time-to-live.
+   */
+  function cacheNegativeLookup(type, id, ttlMs = 1.5 * 3600 * 1000) {
+    setCachedDataInStorage(type, id, { error: "not_found", timestamp: Date.now() }, ttlMs);
+  }
+
+  /**
+   * Checks if a cache entry represents a negative lookup (not found).
+   * @param {object} cached - Cached data object.
+   * @returns {boolean} True if this is a cached "not found" result.
+   */
+  function isNegativeCacheEntry(cached) {
+    return cached && cached.error === "not_found";
+  }
+
+  /**
+   * Tags whose text content must never be linkified.
+   * Purpose: Protect editable/source-like regions and existing links.
+   */
   const SKIP_TAGS = new Set([
     "A", "SCRIPT", "STYLE", "NOSCRIPT",
     "TEXTAREA", "INPUT", "SELECT", "BUTTON",
@@ -411,6 +895,267 @@
   }
 
   /**
+   * Picks the best netixlan item from API payload.
+   * @param {*} payload - Parsed API response.
+   * @param {string} [expectedIp=""] - Queried IP address.
+   * @returns {object|null} Selected netixlan row.
+   */
+  function getBestNetixlanDataItem(payload, expectedIp = "") {
+    if (!payload || typeof payload !== "object") return null;
+    const data = payload.data;
+    if (!Array.isArray(data) || data.length === 0) return null;
+
+    const expected = String(expectedIp || "").trim();
+    const exact = data.find((item) => {
+      const ip4 = String(item?.ipaddr4 || "").trim();
+      const ip6 = String(item?.ipaddr6 || "").trim();
+      return expected && (ip4 === expected || ip6 === expected);
+    });
+    if (exact) return exact;
+
+    const operational = data.find(
+      (item) => Boolean(item?.operational) && String(item?.status || "").toLowerCase() === "ok",
+    );
+    if (operational) return operational;
+
+    return data[0] || null;
+  }
+
+  /**
+   * Fetches a netixlan row by IPv4 or IPv6 address.
+   * @param {string} ip - IPv4 or IPv6 address.
+   * @returns {Promise<object|null>} Best matching netixlan row.
+   */
+  async function fetchNetixlanByIp(ip) {
+    const normalizedIp = String(ip || "").trim();
+    if (!normalizedIp) return null;
+
+    const cacheKey = `fetchNetixlanByIp.${normalizedIp}`;
+    if (dataCacheInFlight.has(cacheKey)) {
+      return dataCacheInFlight.get(cacheKey);
+    }
+
+    const requestPromise = (async () => {
+      const cached = getCachedDataFromStorage("netixlan_ip", normalizedIp);
+      if (cached) {
+        if (isNegativeCacheEntry(cached)) return null;
+        return cached;
+      }
+
+      const params = new URLSearchParams({
+        status: "ok",
+        depth: "0",
+        limit: "1",
+      });
+      if (IPV4_TEST_REGEX.test(normalizedIp)) {
+        params.set("ipaddr4", normalizedIp);
+      } else if (IPV6_TEST_REGEX.test(normalizedIp)) {
+        params.set("ipaddr6", normalizedIp);
+      } else {
+        return null;
+      }
+
+      const url = `https://www.peeringdb.com/api/netixlan?${params.toString()}`;
+      const payload = await pdbFetch(url);
+      const netixlan = getBestNetixlanDataItem(payload, normalizedIp);
+      if (!netixlan) {
+        cacheNegativeLookup("netixlan_ip", normalizedIp, ASN_NAME_CACHE_MISS_TTL_MS);
+        return null;
+      }
+
+      setCachedDataInStorage("netixlan_ip", normalizedIp, netixlan, NETIXLAN_CACHE_TTL_MS);
+      return netixlan;
+    })();
+
+    dataCacheInFlight.set(cacheKey, requestPromise);
+    try {
+      return await requestPromise;
+    } finally {
+      dataCacheInFlight.delete(cacheKey);
+    }
+  }
+
+  /**
+   * Fetches exchange object by IX id.
+   * @param {string|number} ixId - Exchange id.
+   * @returns {Promise<object|null>} Exchange object.
+   */
+  async function fetchIxById(ixId) {
+    const normalizedIxId = String(ixId || "").trim();
+    if (!/^\d+$/.test(normalizedIxId)) return null;
+
+    const cacheKey = `fetchIxById.${normalizedIxId}`;
+    if (dataCacheInFlight.has(cacheKey)) {
+      return dataCacheInFlight.get(cacheKey);
+    }
+
+    const requestPromise = (async () => {
+      const cached = getCachedDataFromStorage("ix", normalizedIxId);
+      if (cached) {
+        if (isNegativeCacheEntry(cached)) return null;
+        return cached;
+      }
+
+      const params = new URLSearchParams({
+        id: normalizedIxId,
+        status: "ok",
+        depth: "0",
+        limit: "1",
+      });
+      const url = `https://www.peeringdb.com/api/ix?${params.toString()}`;
+      const payload = await pdbFetch(url);
+      const ix = Array.isArray(payload?.data) ? payload.data[0] || null : null;
+      if (!ix) {
+        cacheNegativeLookup("ix", normalizedIxId, ASN_NAME_CACHE_MISS_TTL_MS);
+        return null;
+      }
+
+      setCachedDataInStorage("ix", normalizedIxId, ix, FACILITY_CACHE_TTL_MS);
+      return ix;
+    })();
+
+    dataCacheInFlight.set(cacheKey, requestPromise);
+    try {
+      return await requestPromise;
+    } finally {
+      dataCacheInFlight.delete(cacheKey);
+    }
+  }
+
+  /**
+   * Adds a compact IX shortcut icon next to an enriched link.
+   * @param {HTMLAnchorElement} anchor - Primary anchor.
+   * @param {string|number} ixId - Exchange id.
+   * @param {string} [ixName=""] - Optional exchange name for tooltip.
+   */
+  function ensureIxShortcut(anchor, ixId, ixName = "") {
+    if (!anchor?.isConnected) return;
+    if (!/^\d+$/.test(String(ixId || "").trim())) return;
+    if (anchor.nextElementSibling?.getAttribute?.(IX_SHORTCUT_ATTR) === "true") return;
+
+    const ixLink = document.createElement("a");
+    ixLink.href = `https://www.peeringdb.com/ix/${ixId}`;
+    ixLink.target = "_blank";
+    ixLink.rel = "noopener noreferrer";
+    ixLink.setAttribute(IX_SHORTCUT_ATTR, "true");
+    ixLink.style.marginLeft = "3px";
+    ixLink.style.textDecoration = "none";
+    ixLink.title = ixName ? `Open IX ${ixName} in PeeringDB` : `Open IX ${ixId} in PeeringDB`;
+    ixLink.textContent = ACTION_EMOJI_IX;
+    ixLink.setAttribute("aria-label", ixLink.title);
+
+    anchor.insertAdjacentElement("afterend", ixLink);
+  }
+
+  /**
+   * Formats a speed integer into a compact human-readable label.
+   * @param {string|number} speed - Speed value from API.
+   * @returns {string} Speed label.
+   */
+  function formatSpeedLabel(speed) {
+    const numericSpeed = Number(speed);
+    if (!Number.isFinite(numericSpeed) || numericSpeed <= 0) return "speed n/a";
+    if (numericSpeed >= 1000000) return `${Math.round(numericSpeed / 1000000)}T`;
+    if (numericSpeed >= 1000) return `${Math.round(numericSpeed / 1000)}G`;
+    return `${numericSpeed}M`;
+  }
+
+  /**
+   * Builds an anchor for an IP address and enriches it from netixlan async.
+   * @param {string} ip - IPv4 or IPv6 token.
+   * @returns {HTMLAnchorElement} Configured IP anchor.
+   */
+  function makeIpLink(ip) {
+    const normalizedIp = String(ip || "").trim();
+    const a = document.createElement("a");
+    a.href = `https://www.peeringdb.com/search/v2?q=${encodeURIComponent(normalizedIp)}`;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.title = `Resolve ${normalizedIp} in PeeringDB`;
+    a.style.textDecoration = "none";
+    a.style.textDecorationLine = "none";
+
+    const text = document.createElement("span");
+    text.textContent = normalizedIp;
+    text.style.textDecoration = "underline";
+    text.style.textDecorationLine = "underline";
+
+    const icon = document.createElement("span");
+    icon.textContent = ` ${ACTION_EMOJI_LINK}`;
+    icon.setAttribute("aria-hidden", "true");
+    icon.style.textDecoration = "none";
+
+    a.append(text, icon);
+    a.setAttribute(LINKIFIED_ATTR, "true");
+    void hydrateIpLinkLabel(a, normalizedIp);
+    return a;
+  }
+
+  /**
+   * Hydrates an IP link using /api/netixlan and related data.
+   * @param {HTMLAnchorElement} anchor - Link element created by makeIpLink.
+   * @param {string} ip - IPv4 or IPv6 value.
+   * @returns {Promise<void>}
+   */
+  async function hydrateIpLinkLabel(anchor, ip) {
+    const netixlan = await fetchNetixlanByIp(ip);
+    if (!netixlan || !anchor?.isConnected) return;
+
+    const asn = String(netixlan.asn || "").trim();
+    const netId = String(netixlan.net_id || "").trim();
+    const ixId = String(netixlan.ix_id || "").trim();
+    const operational = netixlan.operational ? "operational" : "non-operational";
+    const speed = formatSpeedLabel(netixlan.speed);
+
+    let netName = String(netixlan.name || "").trim();
+    if (asn) {
+      const resolvedName = await fetchAsnNetworkName(asn);
+      if (resolvedName) netName = resolvedName;
+    }
+
+    let ixName = "";
+    if (ixId) {
+      const ix = await fetchIxById(ixId);
+      ixName = String(ix?.name || "").trim();
+    }
+
+    if (netId) {
+      anchor.href = `https://www.peeringdb.com/net/${netId}`;
+    } else if (asn) {
+      anchor.href = `https://www.peeringdb.com/asn/${asn}`;
+    }
+
+    const tooltipParts = [];
+    if (asn) tooltipParts.push(`AS${asn}`);
+    if (netName) tooltipParts.push(netName);
+    if (ixName) tooltipParts.push(ixName);
+    else if (ixId) tooltipParts.push(`IX ${ixId}`);
+    tooltipParts.push(speed);
+    tooltipParts.push(operational);
+
+    if (ENABLE_IP_TOOLTIP_POC_ENRICHMENT && asn) {
+      try {
+        const net = await fetchNetByAsn(asn);
+        if (net?.org_id) {
+          const org = await fetchOrgWithUsers(net.org_id);
+          const orgName = String(org?.name || "").trim();
+          const pocList = formatPocList(org?.user_set);
+          if (orgName) tooltipParts.push(`Org ${orgName}`);
+          if (pocList) tooltipParts.push(`POCs ${pocList}`);
+        }
+      } catch (_error) {
+        // Ignore optional POC enrichment failures; base tooltip remains available.
+      }
+    }
+
+    anchor.title = tooltipParts.join(" | ");
+
+    if (ixId) {
+      ensureIxShortcut(anchor, ixId, ixName);
+    }
+  }
+
+  /**
    * Builds organization search anchor with link emoji styling.
    * Purpose: Link affiliation organization names to PeeringDB search results.
    * @param {string} orgName - Organization search query value.
@@ -440,6 +1185,226 @@
     a.append(text, icon);
     a.setAttribute(LINKIFIED_ATTR, "true");
     return a;
+  }
+
+  /**
+   * Parses PeeringDB entity info from a URL for decoration/hydration.
+   * @param {string} href - Anchor href.
+   * @returns {{ kind: string, id?: string, entity?: string, url: URL }|null} Parsed descriptor.
+   */
+  function parsePeeringDbEntityFromHref(href) {
+    try {
+      const url = new URL(String(href || ""), window.location.origin);
+      const host = String(url.hostname || "").toLowerCase();
+      if (!(host === "peeringdb.com" || host === "www.peeringdb.com")) return null;
+
+      const entityMatch = url.pathname.match(/^\/(asn|net|ix)\/(\d+)(?:\/|$)/i);
+      if (entityMatch) {
+        return {
+          kind: String(entityMatch[1] || "").toLowerCase(),
+          id: String(entityMatch[2] || ""),
+          url,
+        };
+      }
+
+      const cpMatch = url.pathname.match(/^\/cp\/peeringdb_server\/([a-z_]+)\/(\d+)\/change\/?/i);
+      if (cpMatch) {
+        return {
+          kind: "cp",
+          entity: String(cpMatch[1] || "").toLowerCase(),
+          id: String(cpMatch[2] || ""),
+          url,
+        };
+      }
+
+      return { kind: "pdb", url };
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  /**
+   * Returns true when anchor visible text is a bare URL matching href.
+   * @param {HTMLAnchorElement} anchor - Anchor node.
+   * @returns {boolean} True when text is URL-like and safe to relabel.
+   */
+  function isBareUrlAnchorText(anchor) {
+    if (!anchor) return false;
+    const rawText = String(anchor.textContent || "").trim();
+    const rawHref = String(anchor.href || "").trim();
+    if (!rawText || !rawHref) return false;
+
+    const normalize = (value) =>
+      String(value || "")
+        .trim()
+        .replace(/^https?:\/\//i, "")
+        .replace(/\/$/, "")
+        .toLowerCase();
+
+    return normalize(rawText) === normalize(rawHref);
+  }
+
+  /**
+   * Ensures anchor has a text span + link icon while preserving existing complex content.
+   * @param {HTMLAnchorElement} anchor - Anchor to decorate.
+   * @param {string} [initialLabel=""] - Optional initial label when text is URL-like.
+   */
+  function ensureExistingPdbAnchorVisual(anchor, initialLabel = "") {
+    if (!anchor) return;
+
+    anchor.style.textDecoration = "none";
+    anchor.style.textDecorationLine = "none";
+
+    const hasComplexChildren = Array.from(anchor.childNodes).some((node) => node.nodeType === Node.ELEMENT_NODE);
+    if (!hasComplexChildren) {
+      let textNode = anchor.querySelector(`span[${EXISTING_PDB_LINK_TEXT_ATTR}]`);
+      if (!textNode) {
+        const rawText = String(anchor.textContent || "").trim();
+        const label = String(initialLabel || "").trim() || rawText || String(anchor.href || "").trim();
+
+        anchor.textContent = "";
+
+        textNode = document.createElement("span");
+        textNode.setAttribute(EXISTING_PDB_LINK_TEXT_ATTR, "true");
+        textNode.style.textDecoration = "underline";
+        textNode.style.textDecorationLine = "underline";
+        textNode.textContent = label;
+        anchor.appendChild(textNode);
+      }
+    }
+
+    if (!anchor.querySelector(`span[${EXISTING_PDB_LINK_ICON_ATTR}]`)) {
+      const icon = document.createElement("span");
+      icon.textContent = ` ${ACTION_EMOJI_LINK}`;
+      icon.setAttribute("aria-hidden", "true");
+      icon.setAttribute(EXISTING_PDB_LINK_ICON_ATTR, "true");
+      icon.style.textDecoration = "none";
+      anchor.appendChild(icon);
+    }
+  }
+
+  /**
+   * Updates decorated anchor label when a dedicated text span exists.
+   * @param {HTMLAnchorElement} anchor - Decorated anchor.
+   * @param {string} label - New text label.
+   */
+  function setExistingPdbAnchorLabel(anchor, label) {
+    const textNode = anchor?.querySelector?.(`span[${EXISTING_PDB_LINK_TEXT_ATTR}]`);
+    const normalized = String(label || "").trim();
+    if (!textNode || !normalized) return;
+    textNode.textContent = normalized;
+  }
+
+  /**
+   * Hydrates existing PeeringDB anchors with contextual titles and compact labels.
+   * @param {HTMLAnchorElement} anchor - Anchor to enrich.
+   * @param {{ kind: string, id?: string, entity?: string }} info - Parsed anchor descriptor.
+   * @returns {Promise<void>}
+   */
+  async function hydrateExistingPeeringDbAnchor(anchor, info) {
+    if (!anchor?.isConnected || !info) return;
+
+    try {
+      if (info.kind === "asn" && info.id) {
+        const name = await fetchAsnNetworkName(info.id);
+        if (!anchor?.isConnected) return;
+        const label = name ? `AS${info.id} (${name})` : `AS${info.id}`;
+        setExistingPdbAnchorLabel(anchor, label);
+        anchor.title = name ? `AS${info.id} | ${name}` : `AS${info.id}`;
+        return;
+      }
+
+      if (info.kind === "ix" && info.id) {
+        const ix = await fetchIxById(info.id);
+        if (!anchor?.isConnected) return;
+        const ixName = String(ix?.name || "").trim();
+        const label = ixName ? `IX ${info.id} (${ixName})` : `IX ${info.id}`;
+        setExistingPdbAnchorLabel(anchor, label);
+        anchor.title = ixName ? `IX ${info.id} | ${ixName}` : `IX ${info.id}`;
+        return;
+      }
+
+      if (info.kind === "net" && info.id) {
+        const net = await fetchNetById(info.id);
+        if (!anchor?.isConnected) return;
+
+        const netName = String(net?.name || net?.name_long || "").trim();
+        const asn = String(net?.asn || "").trim();
+        const orgId = String(net?.org_id || "").trim();
+
+        const tooltipParts = [];
+        tooltipParts.push(`NET ${info.id}`);
+        if (netName) tooltipParts.push(netName);
+        if (asn) tooltipParts.push(`AS${asn}`);
+
+        const label = netName ? `NET ${info.id} (${netName})` : `NET ${info.id}`;
+        setExistingPdbAnchorLabel(anchor, label);
+
+        if (orgId && ENABLE_IP_TOOLTIP_POC_ENRICHMENT) {
+          const org = await fetchOrgWithUsers(orgId);
+          if (anchor?.isConnected && org) {
+            const orgName = String(org.name || "").trim();
+            const pocList = formatPocList(org.user_set);
+            if (orgName) tooltipParts.push(`Org ${orgName}`);
+            if (pocList) tooltipParts.push(`POCs ${pocList}`);
+          }
+        }
+
+        if (anchor?.isConnected) {
+          anchor.title = tooltipParts.join(" | ");
+        }
+        return;
+      }
+
+      if (info.kind === "cp" && info.id) {
+        const entity = String(info.entity || "record").replace(/_/g, " ");
+        anchor.title = `Open CP ${entity} ${info.id}`;
+      }
+    } catch (_error) {
+      // Ignore enrichment failures for existing anchors; base navigation remains intact.
+    }
+  }
+
+  /**
+   * Decorates pre-existing PeeringDB anchors rendered in ticket HTML.
+   * Purpose: Provide consistent iconography and rich contextual tooltips without text-node relinkification.
+   * @param {Element} root - Root element to scan.
+   */
+  function decorateExistingPeeringDbLinks(root) {
+    if (!root || root.nodeType !== Node.ELEMENT_NODE) return;
+
+    const anchors = [];
+    if (root.matches?.("a[href]")) anchors.push(root);
+    root.querySelectorAll?.("a[href]").forEach((anchor) => anchors.push(anchor));
+
+    anchors.forEach((anchor) => {
+      if (!anchor || anchor.getAttribute(LINKIFIED_ATTR) === "true") return;
+      if (anchor.getAttribute(MAILTO_DECORATED_ATTR) === "true") return;
+
+      const info = parsePeeringDbEntityFromHref(anchor.getAttribute("href") || "");
+      if (!info) return;
+
+      const shouldRelabel = isBareUrlAnchorText(anchor);
+      let initialLabel = "";
+      if (shouldRelabel && info.kind === "asn" && info.id) initialLabel = `AS${info.id}`;
+      if (shouldRelabel && info.kind === "net" && info.id) initialLabel = `NET ${info.id}`;
+      if (shouldRelabel && info.kind === "ix" && info.id) initialLabel = `IX ${info.id}`;
+      if (shouldRelabel && info.kind === "cp" && info.id) initialLabel = `CP ${info.id}`;
+
+      ensureExistingPdbAnchorVisual(anchor, initialLabel);
+      if (!anchor.getAttribute("title")) {
+        if (info.kind === "cp" && info.id) {
+          anchor.title = `Open CP ${String(info.entity || "record").replace(/_/g, " ")} ${info.id}`;
+        } else if (info.kind === "pdb") {
+          anchor.title = "Open in PeeringDB";
+        }
+      }
+
+      if (anchor.getAttribute(EXISTING_PDB_LINK_DECORATED_ATTR) !== "true") {
+        anchor.setAttribute(EXISTING_PDB_LINK_DECORATED_ATTR, "true");
+        void hydrateExistingPeeringDbAnchor(anchor, info);
+      }
+    });
   }
 
   /**
@@ -599,6 +1564,13 @@
       },
     },
     {
+      // Label-led ASN value — link only the numeric token (e.g. "member ASN: 12345").
+      regex: /\b((?:member\s+asn|network\s+asn|asn|as)\s*[:=#-]?\s*)(\d{3,6})\b/gi,
+      buildNodes([, prefix, asn]) {
+        return [document.createTextNode(prefix), makeAsnLink(asn, asn)];
+      },
+    },
+    {
       // "provided this ASN in their request: 123" — only the bare number links.
       regex: /\bprovided this ASN in their request:\s*(\d+)/gi,
       buildNodes([fullMatch, asn]) {
@@ -617,10 +1589,100 @@
         ];
       },
     },
+    {
+      // IPv4 tokens should resolve via netixlan enrichment.
+      regex: /\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}\b/g,
+      buildNodes([ip]) {
+        return [makeIpLink(ip)];
+      },
+    },
+    {
+      // IPv6 tokens should resolve via netixlan enrichment.
+      regex: /\b(?=[0-9a-fA-F:]*:[0-9a-fA-F:]*)(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}\b/g,
+      buildNodes([ip]) {
+        if (!isLikelyIpv6Address(ip)) return [document.createTextNode(ip)];
+        return [makeIpLink(ip)];
+      },
+    },
   ];
 
   // Quick pre-test — text nodes matching none of the rules are rejected early.
-  const QUICK_TEST_REGEX = /\bASN?\d+\b|provided this ASN in their request:\s*\d+|wishes to be affiliated to Organization\s+['"\u201c\u201d\u2018\u2019][^'"\u201c\u201d\u2018\u2019\n]+['"\u201c\u201d\u2018\u2019]/i;
+  const QUICK_TEST_REGEX = /\bASN?\d+\b|\b(?:member\s+asn|network\s+asn|asn|as)\s*[:=#-]?\s*\d{3,6}\b|provided this ASN in their request:\s*\d+|wishes to be affiliated to Organization\s+['"\u201c\u201d\u2018\u2019][^'"\u201c\u201d\u2018\u2019\n]+['"\u201c\u201d\u2018\u2019]|\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}\b|\b(?=[0-9a-fA-F:]*:[0-9a-fA-F:]*)(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}\b|(?:^|\n)\s*\d{3,6}\s*(?:\n|$)/i;
+
+  /**
+   * Finds standalone 3-6 digit ASN candidates only in high-confidence contexts.
+   * Heuristics:
+   * - standalone ASN-like line adjacent to both IPv4 and IPv6 mentions
+   * - sequence context containing member-removal style fields (speed/policy + IP labels)
+   * - line preceded by explicit ASN label
+   * @param {string} text - Text-node content.
+   * @returns {Array<{start:number,end:number,asn:string}>} Candidate ranges.
+   */
+  function findProbableStandaloneAsnHits(text) {
+    const lines = String(text || "").split("\n");
+    const hits = [];
+    let offset = 0;
+
+    for (let i = 0; i < lines.length; i += 1) {
+      const rawLine = lines[i] || "";
+      const line = rawLine.replace(/\r$/, "");
+      const trimmed = line.trim();
+
+      if (!/^\d{3,6}$/.test(trimmed)) {
+        offset += rawLine.length + 1;
+        continue;
+      }
+
+      const windowStart = Math.max(0, i - 3);
+      const windowEnd = Math.min(lines.length, i + 4);
+      const windowText = lines.slice(windowStart, windowEnd).join("\n");
+      const prevLine = String(lines[i - 1] || "").toLowerCase();
+
+      const hasIpPair = IPV4_TEST_REGEX.test(windowText) && IPV6_TEST_REGEX.test(windowText);
+      const hasMemberBlock =
+        /\b(speed|policy)\b/i.test(windowText) && /\b(ipv4|ipaddr4)\b/i.test(windowText) && /\b(ipv6|ipaddr6)\b/i.test(windowText);
+      const precededByLabel = /\b(member\s+asn|network\s+asn|asn|as)\b/.test(prevLine);
+
+      if (hasIpPair || hasMemberBlock || precededByLabel) {
+        const start = offset + line.indexOf(trimmed);
+        hits.push({ start, end: start + trimmed.length, asn: trimmed });
+      }
+
+      offset += rawLine.length + 1;
+    }
+
+    return hits;
+  }
+
+  /**
+   * Validates whether a matched token is a likely IPv6 address.
+   * Purpose: Reduce false-positive linking for colon-delimited non-IP text.
+   * @param {string} token - Candidate token.
+   * @returns {boolean} True when token resembles a valid IPv6 literal.
+   */
+  function isLikelyIpv6Address(token) {
+    const value = String(token || "").trim();
+    if (!value || !value.includes(":")) return false;
+    if ((value.match(/:/g) || []).length < 2) return false;
+    if (/:::.+|:::/.test(value)) return false;
+    if (/[^0-9a-fA-F:]/.test(value)) return false;
+    if (value.startsWith(":") && !value.startsWith("::")) return false;
+    if (value.endsWith(":") && !value.endsWith("::")) return false;
+
+    const doubleColonMatches = value.match(/::/g) || [];
+    if (doubleColonMatches.length > 1) return false;
+
+    const collapsedParts = value.split("::");
+    const leftSegments = collapsedParts[0] ? collapsedParts[0].split(":").filter(Boolean) : [];
+    const rightSegments = collapsedParts[1] ? collapsedParts[1].split(":").filter(Boolean) : [];
+    const allSegments = [...leftSegments, ...rightSegments];
+
+    if (allSegments.length === 0 || allSegments.length > 8) return false;
+    if (collapsedParts.length === 1 && allSegments.length !== 8) return false;
+    if (collapsedParts.length === 2 && allSegments.length >= 8) return false;
+
+    return allSegments.every((segment) => /^[0-9a-fA-F]{1,4}$/.test(segment));
+  }
 
   /**
    * Extracts plain email address from a mailto href.
@@ -712,12 +1774,27 @@
       rule.regex.lastIndex = 0;
       let match;
       while ((match = rule.regex.exec(text)) !== null) {
-        hits.push({ start: match.index, end: match.index + match[0].length, rule, match });
+        hits.push({ start: match.index, end: match.index + match[0].length, rule, match, priority: 1 });
       }
     }
+
+    for (const hit of findProbableStandaloneAsnHits(text)) {
+      hits.push({
+        start: hit.start,
+        end: hit.end,
+        priority: 2,
+        rule: {
+          buildNodes([asn]) {
+            return [makeAsnLink(asn, asn)];
+          },
+        },
+        match: [hit.asn],
+      });
+    }
+
     if (hits.length === 0) return null;
 
-    hits.sort((a, b) => a.start - b.start);
+    hits.sort((a, b) => a.start - b.start || a.priority - b.priority || b.end - a.end);
     const fragment = document.createDocumentFragment();
     let cursor = 0;
     for (const { start, end, rule, match } of hits) {
@@ -797,6 +1874,7 @@
           normalizePeeringDbCpDoubleSlashLinks(node);
           decorateTargetActionLinks(node);
           decorateMailtoLinks(node);
+          decorateExistingPeeringDbLinks(node);
           linkifySubtree(node);
         } else if (node.nodeType === Node.TEXT_NODE) {
           linkifyTextNode(node);
@@ -811,13 +1889,17 @@
 
   /**
    * Initializes DeskPro consolidated tools on page load.
-   * Purpose: Run initial normalization/decorators and attach listeners/observer.
+   * Purpose: Run cache migration, initial normalization/decorators and attach listeners/observer.
    */
   function init() {
+    // Migrate old cache keys to shared namespace (one-time on first run after upgrade)
+    migrateOldCacheKeys();
+
     // Initial pass over whatever is already rendered.
     normalizePeeringDbCpDoubleSlashLinks(document.body);
     decorateTargetActionLinks(document.body);
     decorateMailtoLinks(document.body);
+    decorateExistingPeeringDbLinks(document.body);
     linkifySubtree(document.body);
 
     // Convert all mailto clicks into copy-to-clipboard behavior.
