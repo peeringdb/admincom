@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name            PeeringDB DP - Consolidated Tools
 // @namespace       https://www.peeringdb.com/
-// @version         1.1.5.20260409
+// @version         1.1.6.20260409
 // @description     Consolidated DeskPro tools: linkifies ASN/org names (with ASN API name lookup), copies mailto addresses, and normalizes PeeringDB CP double-slash links
 // @author          <chriztoffer@peeringdb.com>
 // @match           https://peeringdb.deskpro.com/app*
@@ -41,6 +41,7 @@
   const ASN_NAME_CACHE_SCHEMA_VERSION = 1;
   const ASN_API_TIMEOUT_MS = 12000;
   const ASN_API_RETRIES = 2;
+  const ASN_NAME_CACHE_MISS_TTL_MS = 15 * 60 * 1000;
   const ASN_NAME_CACHE_TTL_MS = 7.5 * 60 * 60 * 1000;
 
   const asnNameCache = new Map();
@@ -264,15 +265,26 @@
   }
 
   /**
-   * Returns the first item from PeeringDB list-style API payloads.
-   * Purpose: Normalize shape handling for `/api/net?asn=` lookups.
+   * Selects the best network item for ASN lookups from list-style API payloads.
+   * Purpose: Prefer exact ASN and active status from `/api/net` responses.
    * @param {*} payload - Parsed API response.
-   * @returns {object|null} First `data` entry, or null on malformed/empty payload.
+   * @param {string} expectedAsn - ASN value used in the query.
+   * @returns {object|null} Matching network entry, or null when unavailable.
    */
-  function getFirstApiDataItem(payload) {
+  function getBestApiNetDataItem(payload, expectedAsn) {
     if (!payload || typeof payload !== "object") return null;
     const data = payload.data;
     if (!Array.isArray(data) || data.length === 0) return null;
+
+    const expectedAsnNumber = Number(expectedAsn);
+    const exactOk = data.find(
+      (item) => Number(item?.asn) === expectedAsnNumber && String(item?.status || "").toLowerCase() === "ok",
+    );
+    if (exactOk) return exactOk;
+
+    const exact = data.find((item) => Number(item?.asn) === expectedAsnNumber);
+    if (exact) return exact;
+
     return data[0] || null;
   }
 
@@ -310,14 +322,21 @@
     }
 
     const requestPromise = (async () => {
-      const url = `https://www.peeringdb.com/api/net?asn=${encodeURIComponent(normalizedAsn)}`;
+      const params = new URLSearchParams({
+        asn: normalizedAsn,
+        depth: "0",
+        status: "ok",
+        limit: "1",
+      });
+      const url = `https://www.peeringdb.com/api/net?${params.toString()}`;
       const payload = await pdbFetch(url);
-      const net = getFirstApiDataItem(payload);
-      const resolved = String(net?.name || "").trim();
+      const net = getBestApiNetDataItem(payload, normalizedAsn);
+      const resolved = String(net?.name || net?.name_long || "").trim();
+      const ttl = resolved ? ASN_NAME_CACHE_TTL_MS : ASN_NAME_CACHE_MISS_TTL_MS;
 
       asnNameCache.set(normalizedAsn, {
         name: resolved,
-        expiresAt: Date.now() + ASN_NAME_CACHE_TTL_MS,
+        expiresAt: Date.now() + ttl,
       });
       if (resolved) setCachedAsnNameInStorage(normalizedAsn, resolved);
 

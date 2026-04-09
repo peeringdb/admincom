@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name            PeeringDB DP - Consolidated Tools
 // @namespace       https://www.peeringdb.com/
-// @version         1.1.5.20260409
+// @version         1.1.6.20260409
 // @description     Consolidated DeskPro tools: linkifies ASN/org names (with ASN API name lookup), copies mailto addresses, and normalizes PeeringDB CP double-slash links
 // @author          <chriztoffer@peeringdb.com>
 // @match           https://peeringdb.deskpro.com/app*
