@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.4.20260323
+// @version      2.0.173.20260413
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*/*/change/*
@@ -9,6 +9,8 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_notification
 // @grant        GM_registerMenuCommand
+// @grant        GM_unregisterMenuCommand
+// @grant        GM_setClipboard
 // @run-at       document-end
 // @connect      data.iana.org
 // @connect      rdap.arin.net

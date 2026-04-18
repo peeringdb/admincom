@@ -1,0 +1,4 @@
+.state/*.yaml
+.state/*.json
+.state/*.md
+*.code-workspace
