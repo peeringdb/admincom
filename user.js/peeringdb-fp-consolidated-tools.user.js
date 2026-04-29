@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.1.20.20260418
+// @version      1.1.21.20260429
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
@@ -30,7 +30,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbFpConsolidated";
-  const SCRIPT_VERSION = "1.1.20.20260418";
+  const SCRIPT_VERSION = "1.1.21.20260429";
   // RDAP fallback client is intentionally CP-only; FP does not implement RDAP lookups.
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
@@ -2684,6 +2684,28 @@
             const searchLink = createCpSearchLink(email, "Search user by email in CP");
             searchLink.setAttribute("data-pdb-fp-email-search", "true");
             emailRow.appendChild(searchLink);
+
+            // Add clipboard copy link alongside the search link.
+            const copyLink = document.createElement("a");
+            copyLink.href = "#";
+            copyLink.textContent = "📋";
+            copyLink.title = `Copy ${email}`;
+            copyLink.setAttribute("aria-label", `Copy ${email}`);
+            copyLink.setAttribute("data-pdb-fp-email-copy", "true");
+            copyLink.style.display = "inline-block";
+            copyLink.style.marginLeft = "6px";
+            copyLink.style.textDecoration = "none";
+            copyLink.addEventListener("click", (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              void copyToClipboard(email).then((copied) => {
+                if (!copied) return;
+                const prev = copyLink.getAttribute("title");
+                copyLink.setAttribute("title", `Copied: ${email}`);
+                setTimeout(() => copyLink.setAttribute("title", prev), 1200);
+              }).catch(() => {});
+            });
+            emailRow.appendChild(copyLink);
           });
           });
         }
