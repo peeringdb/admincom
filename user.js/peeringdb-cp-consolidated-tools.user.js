@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.173.20260413
+// @version      2.0.174.20260501
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
@@ -37,7 +37,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.173.20260413";
+  const SCRIPT_VERSION = "2.0.174.20260501";
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
   const SHARED_USER_AGENT_STORAGE_KEY = "pdbAdmincom.userAgent";
@@ -89,7 +89,7 @@
    * On first read after a script update, any entry whose stored v field does not match
    * is treated as stale and evicted, preventing silent misreads of old formats.
    */
-  const ORG_NAME_CACHE_SCHEMA_VERSION = 1;
+  const ORG_NAME_CACHE_SCHEMA_VERSION = 2;
   const ENTITY_TYPES = new Set([
     "facility",
     "network",
@@ -1687,95 +1687,135 @@
     const original = String(name || "").trim().replace(/\s+/g, " ");
     if (!original) return "";
 
+    // Known false positive: keep brand name intact (do not strip trailing "ME").
+    if (original === "Trade Me") return original;
+
     const legalSuffixPatterns = [
-      "S\\.?\\s*A\\.?\\s*S\\.?\\s*U\\.?", // SASU / S.A.S.U.
-      "S\\.?\\s*A\\.?\\s*S\\.?", // SAS / S.A.S.
-      "S\\.?\\s*N\\.?\\s*C\\.?", // SNC / S.N.C.
-      "S\\.?\\s*C\\.?\\s*C\\.?", // SCC / S.C.C.
-      "S\\.?\\s*C\\.?", // SC / S.C.
-      "L\\.?\\s*T\\.?\\s*D\\.?\\s*A\\.?", // LTDA / L.T.D.A.
-      "COMPANY\\s+LIMITED", // Company Limited (full legal form)
-      "COMPANY", // Company (bare suffix, e.g. "Private Company")
-      "MULTIPURPOSE\\s+COOPERATIVE", // Multipurpose Cooperative
-      "COOPERATIVE", // Cooperative legal form
-      "CO\\.?\\s*,?\\s*LTD\\.?", // Co., Ltd / Co Ltd
-      "LTD\\.?",
-      "LIMITED",
-      "PRIVATE",
-      "P\\.?\\s*V\\.?\\s*T\\.?", // PVT / P.V.T.
-      "S\\.?\\s*DE\\s*R\\.?\\s*L\\.?\\s*DE\\s*C\\.?\\s*V\\.?", // S. de R.L. de C.V (Mexico)
-      "S\\.?\\s*DE\\s*R\\.?\\s*L\\.?", // S. de R.L.
-      "S\\.?\\s*DE\\s*C\\.?\\s*V\\.?", // S. de C.V.
-      "S\\.?\\s*A\\.?\\s*DE\\s*C\\.?\\s*V\\.?", // S.A. de C.V.
-      "S\\.?\\s*D\\.?\\s*N\\.?", // SDN / S.D.N. (Malaysia)
-      "B\\.?\\s*H\\.?\\s*D\\.?", // BHD / B.H.D. (Malaysia)
-      "BERHAD", // Berhad (Malaysia)
-      "LIMITED\\s+LIABILITY\\s+COMPANY", // Limited Liability Company (full legal form)
-      "LIABILITY\\s+CO(?:MPANY)?", // Liability Co / Liability Company (partial legal form)
-      "LLC",
-      "LLP",
-      "PUBLIC\\s+JOINT[-\\s]+STOCK\\s+COMPANY", // Public Joint Stock Company (full legal form)
-      "OPEN\\s+JOINT[-\\s]+STOCK\\s+COMPANY", // Open Joint Stock Company (full legal form)
-      "P\\.?\\s*J\\.?\\s*S\\.?\\s*C\\.?", // PJSC / P.J.S.C.
-      "O\\.?\\s*J\\.?\\s*S\\.?\\s*C\\.?", // OJSC / O.J.S.C.
-      "J\\.?\\s*C\\.?\\s*S\\.?", // JCS / J.C.S.
-      "J\\.?\\s*S\\.?\\s*C\\.?", // JSC / J.S.C.
-      "CLOSED\\s+JOINT[-\\s]+STOCK\\s+COMPANY", // Closed Joint Stock Company (full legal form)
-      "C\\.?\\s*J\\.?\\s*S\\.?\\s*C\\.?", // CJSC / C.J.S.C. (Closed Joint-Stock Company)
-      "CYFYNGEDIG", // Cyfyngedig (Welsh equivalent of Limited)
-      "C\\.?\\s*Y\\.?\\s*F\\.?", // CYF / C.Y.F. (Welsh legal short form)
-      "INCORPORATED",
-      "INC\\.?",
-      "CORP\\.?",
-      "S\\.?\\s*A\\.?\\s*U\\.?", // SAU / S.A.U. (Spain)
-      "S\\.?\\s*A\\.?", // SA / S.A.
-      "C\\.?\\s*A\\.?", // CA / C.A.
-      "S\\.?\\s*R\\.?\\s*L\\.?", // SRL / S.R.L.
-      "S\\.?\\s*R\\.?\\s*L\\.?\\s*S\\.?", // SRLS / S.R.L.S.
-      "S\\.?\\s*R\\.?\\s*O\\.?", // SRO / S.R.O.
-      "I\\.?\\s*K\\.?\\s*E\\.?", // IKE / I.K.E. (Greece)
-      "S\\.?\\s*L\\.?\\s*U\\.?", // SLU / S.L.U. (Spain)
-      "S\\.?\\s*L\\.?", // SL / S.L. (Spain)
-      "S\\.?\\s*A\\.?\\s*R\\.?\\s*L\\.?", // SARL / S.A.R.L.
-      "S\\.?\\s*P\\.?\\s*A\\.?", // SPA / S.P.A.
-      "G\\.?\\s*M\\.?\\s*B\\.?\\s*H\\.?", // GmbH / G.m.b.H.
-      "G\\.?\\s*M\\.?\\s*B\\.?\\s*H\\.?\\s*&\\s*CO\\.?\\s*KG\\.?", // GmbH & Co. KG
-      "M\\.?\\s*B\\.?\\s*H\\.?", // mbH / m.b.H. (German LLC suffix without leading Gesellschaft)
-      "KG", // KG (Germany: Kommanditgesellschaft)
-      "[A-Za-z]{2,}gesellschaft", // German compound -gesellschaft entity types (e.g. Kommunikationsgesellschaft)
-      "SP\\.?\\s*Z\\.?\\s*O\\.?\\s*O\\.?", // sp. z o.o. (Poland)
-      "SPOLKA\\s+JAWNA", // Spolka Jawna (Polish general partnership)
-      "SP\\.?\\s*J\\.?", // Sp. J. (Polish general partnership)
-      "S\\.?\\s*H\\.?\\s*P\\.?\\s*K\\.?", // sh.p.k / Sh.p.k. (Albania)
-      "E\\.?\\s*O\\.?\\s*O\\.?\\s*D\\.?", // EOOD / E.O.O.D. (Bulgaria)
-      "O\\.?\\s*O\\.?\\s*D\\.?", // OOD / O.O.D. (Bulgaria)
-      "D\\.?\\s*O\\.?\\s*O\\.?", // DOO / D.O.O. (Balkans LLC form)
-      "KORLATOLT\\s+FELELOSSEGU\\s+TARSASAG", // Korlátolt Felelősségű Társaság (Hungary)
-      "K\\.?\\s*F\\.?\\s*T\\.?", // KFT / K.F.T. (Hungary)
-      "K\\.?\\s*K\\.?", // K.K. / KK (Japan: Kabushiki Kaisha)
-      "Z\\.?\\s*S\\.?", // z.s. / zs (Czech: zapsany spolek, registered association)
-      "AKTSIONERNO\\s+DRUZHESTVO", // Aktsionerno Druzhestvo (Bulgarian joint-stock company)
-      "AG",
-      "AB", // Aktiebolag (Sweden)
-      "BV",
-      "B\\.?\\s*V\\.?", // BV / B.V.
-      "N\\.?\\s*V\\.?", // NV / N.V.
-      "NV",
-      "E\\.?\\s*V\\.?", // e.V. / EV (Germany: eingetragener Verein)
-      "EINGETRAGENER\\s+VEREIN", // Eingetragener Verein (Germany)
-      "PTE\\.?",
-      "PTY\\.?",
-      "PLC",
-      "E\\.?\\s*P\\.?\\s*P\\.?", // EPP / E.P.P. (Brazil)
-      "M\\.?\\s*E\\.?", // ME / M.E. (Brazil)
-      "EIRELI",
-      "MEI",
-      "UAB", // UAB (Lithuania: Uzdaroji akcine bendrove, private limited company)
-      "M\\.?\\s*B\\.?", // MB (Lithuania: Mažoji bendrija)
-      "O\\.?\\s*U\\.?", // OU (Estonia: Osaühing)
-      "O\\.?\\s*Y\\.?", // OY (Finland: Osakeyhtiö)
-      "L\u0130M\u0130TED\\s+\u015e\u0130RKET\u0130", // Limited Şirketi (Turkey: Limited Company)
-      "A\\.?\\s*\u015e\\.?", // A.Ş. (Turkey: Anonim Şirket - Joint Stock Company)
+      "Corporation",
+      "Incorporated",
+      "Foundation",
+      "Private\\s+Limited",
+      "Limited",
+      "Limitada",
+      "L\\.?\\s*T\\.?\\s*D\\.?\\s*A\\.?\\s*-?\\s*E\\.?\\s*P\\.?\\s*P\\.?",
+      "L\\.?\\s*T\\.?\\s*D\\.?\\s*A\\.?\\s*-?\\s*M\\.?\\s*E\\.?",
+      "E\\.?\\s*I\\.?\\s*R\\.?\\s*E\\.?\\s*L\\.?\\s*I\\.?\\s*-?\\s*M\\.?\\s*E\\.?",
+      "Limitada\\s*-?\\s*M\\.?\\s*E\\.?",
+      "Limitada\\s*-?\\s*E\\.?\\s*P\\.?\\s*P\\.?",
+      "G\\.?\\s*M\\.?\\s*B\\.?\\s*H\\.?\\s*&\\s*C\\.?\\s*O\\.?\\s*K\\.?\\s*G\\.?",
+      "S\\.?\\s*A\\.?\\s*de\\s*C\\.?\\s*V\\.?",
+      "S\\.?\\s*de\\s*R\\.?\\s*L\\.?\\s*de\\s*C\\.?\\s*V\\.?",
+      "Unipessoal\\s+L\\.?\\s*d\\.?\\s*a\\.?",
+      "P\\.?\\s*v\\.?\\s*t\\.?\\s*L\\.?\\s*t\\.?\\s*d\\.?",
+      "S\\.?\\s*d\\.?\\s*n\\.?\\s*B\\.?\\s*h\\.?\\s*d\\.?",
+      "j\\.?\\s*d\\.?\\s*o\\.?\\s*o\\.?",
+      "E\\.?\\s*O\\.?\\s*O\\.?\\s*D\\.?",
+      "L\\.?\\s*[tT]\\.?\\s*[dD]\\.?\\s*\\u015e[tT][iI\\u0130\\u0131]\\.?",
+      "B\\.?\\s*V\\.?\\s*B\\.?\\s*A\\.?",
+      "C\\.?\\s*V\\.?\\s*B\\.?\\s*A\\.?",
+      "K\\.?\\s*G\\.?\\s*a\\.?\\s*A\\.?",
+      "S\\.?\\s*A\\.?\\s*S\\.?\\s*U\\.?",
+      "C\\.?\\s*o\\.?[,\\s]*L\\.?\\s*t\\.?\\s*d\\.?",
+      "S\\.?\\s*p\\.?\\s*z\\.?\\s*o\\.?\\s*o\\.?",
+      "P\\.?\\s*J\\.?\\s*S\\.?\\s*C\\.?",
+      "J\\.?\\s*S\\.?\\s*C\\.?\\s*B\\.?",
+      "J\\.?\\s*S\\.?\\s*C\\.?",
+      "L\\.?\\s*T\\.?\\s*D\\.?\\s*A\\.?",
+      "E\\.?\\s*I\\.?\\s*R\\.?\\s*E\\.?\\s*L\\.?\\s*I\\.?",
+      "E\\.?\\s*U\\.?\\s*R\\.?\\s*L\\.?",
+      "S\\.?\\s*A\\.?\\s*R\\.?\\s*L\\.?",
+      "S\\.?\\s*A\\.?\\s*S\\.?",
+      "S\\.?\\s*P\\.?\\s*R\\.?\\s*L\\.?",
+      "S\\.?\\s*P\\.?\\s*A\\.?",
+      "S\\.?\\s*R\\.?\\s*L\\.?",
+      "S\\.?\\s*R\\.?\\s*O\\.?",
+      "S\\.?\\s*C\\.?\\s*A\\.?",
+      "S\\.?\\s*N\\.?\\s*C\\.?",
+      "S\\.?\\s*C\\.?\\s*C\\.?",
+      "S\\.?\\s*L\\.?\\s*U\\.?",
+      "G\\.?\\s*M\\.?\\s*B\\.?\\s*H\\.?",
+      "P\\.?\\s*L\\.?\\s*L\\.?\\s*C\\.?",
+      "V\\.?\\s*O\\.?\\s*F\\.?",
+      "O\\.?\\s*H\\.?\\s*G\\.?",
+      "O\\.?\\s*O\\.?\\s*O\\.?",
+      "P\\.?\\s*A\\.?\\s*O\\.?",
+      "P\\.?\\s*A\\.?\\s*T\\.?",
+      "O\\.?\\s*O\\.?\\s*D\\.?",
+      "D\\.?\\s*O\\.?\\s*O\\.?",
+      "T\\.?\\s*O\\.?\\s*V\\.?",
+      "E\\.?\\s*P\\.?\\s*E\\.?",
+      "I\\.?\\s*K\\.?\\s*E\\.?",
+      "E\\.?\\s*P\\.?\\s*P\\.?",
+      "M\\.?\\s*E\\.?\\s*I\\.?",
+      "N\\.?\\s*y\\.?\\s*r\\.?\\s*t\\.?",
+      "Z\\.?\\s*r\\.?\\s*t\\.?",
+      "K\\.?\\s*f\\.?\\s*t\\.?",
+      "A\\.?\\s*p\\.?\\s*S\\.?",
+      "A\\.?\\s*N\\.?\\s*S\\.?",
+      "A\\.?\\s*S\\.?\\s*A\\.?",
+      "O\\.?\\s*y\\.?\\s*j\\.?",
+      "S\\.?\\s*p\\.?\\s*k\\.?",
+      "S\\.?\\s*p\\.?\\s*j\\.?",
+      "d\\.?\\s*o\\.?\\s*o\\.?",
+      "L\\.?\\s*d\\.?\\s*a\\.?",
+      "U\\.?\\s*A\\.?\\s*B\\.?",
+      "S\\.?\\s*I\\.?\\s*A\\.?",
+      "Z\\.?\\s*A\\.?\\s*O\\.?",
+      "L\\.?\\s*T\\.?\\s*D\\.?",
+      "L\\.?\\s*L\\.?\\s*C\\.?",
+      "L\\.?\\s*L\\.?\\s*P\\.?",
+      "I\\.?\\s*N\\.?\\s*C\\.?",
+      "P\\.?\\s*L\\.?\\s*C\\.?",
+      "P\\.?\\s*T\\.?\\s*E\\.?",
+      "P\\.?\\s*T\\.?\\s*Y\\.?",
+      "L\\.?\\s*P\\.?",
+      "A\\.?\\s*G\\.?",
+      "K\\.?\\s*G\\.?",
+      "U\\.?\\s*G\\.?",
+      "O\\.?\\s*G\\.?",
+      "G\\.?\\s*b\\.?\\s*R\\.?",
+      "e\\.?\\s*V\\.?",
+      "e\\.?\\s*K\\.?",
+      "e\\.?\\s*G\\.?",
+      "m\\.?\\s*b\\.?\\s*H\\.?",
+      "B\\.?\\s*V\\.?",
+      "N\\.?\\s*V\\.?",
+      "C\\.?\\s*V\\.?",
+      "A\\.?\\s*B\\.?",
+      "H\\.?\\s*B\\.?",
+      "K\\.?\\s*B\\.?",
+      "O\\.?\\s*y\\.?",
+      "A\\/S",
+      "K\\/S",
+      "I\\/S",
+      "A\\.?\\s*S\\.?",
+      "A\\.?\\s*O\\.?",
+      "K\\.?\\s*K\\.?",
+      "G\\.?\\s*K\\.?",
+      "P\\.?\\s*v\\.?\\s*t\\.?",
+      "B\\.?\\s*h\\.?\\s*d\\.?",
+      "B\\.?\\s*t\\.?",
+      "d\\.?\\s*d\\.?",
+      "C\\.?\\s*o\\.?\\s*r\\.?\\s*p\\.?",
+      "C\\.?\\s*C\\.?",
+      "S[a\\u00e0]rl",
+      "A\\.?\\s*\\u015e\\.?",
+      "A\\.?\\s*D\\.?",
+      "A\\.?\\s*E\\.?",
+      "O\\.?\\s*E\\.?",
+      "E\\.?\\s*E\\.?",
+      "P\\.?\\s*P\\.?",
+      "a\\.?\\s*s\\.?",
+      "O[\\u00dc\\u00fc]|OU",
+      "S\\.?\\s*E\\.?",
+      "M\\.?\\s*B\\.?",
+      "S\\.?\\s*A\\.?",
+      "S\\.?\\s*L\\.?",
+      "S\\.?\\s*C\\.?",
+      "C\\.?\\s*A\\.?",
+      "C\\.?\\s*O\\.?",
+      "S\\.?\\s*S\\.?",
+      "M\\.?\\s*E\\.?",
     ];
 
     const legalPrefixPatterns = [
@@ -1851,9 +1891,11 @@
       `(.*?)(?:[\\s,().-]+)((?:${legalSuffixPatterns.join("|")}))\\b(?:[\\s,.-]+)(?:[A-Z]{2}|[A-Z]{3})[\\s,().-]*$`,
       "i",
     );
-    const legalWithTrailingCountryCodeMatch = candidate.match(legalWithTrailingCountryCodeRegex);
-    if (legalWithTrailingCountryCodeMatch?.[1] && legalWithTrailingCountryCodeMatch?.[2]) {
-      candidate = `${legalWithTrailingCountryCodeMatch[1].trim()} ${legalWithTrailingCountryCodeMatch[2].trim()}`.trim();
+    if (!suffixRegex.test(candidate)) {
+      const legalWithTrailingCountryCodeMatch = candidate.match(legalWithTrailingCountryCodeRegex);
+      if (legalWithTrailingCountryCodeMatch?.[1] && legalWithTrailingCountryCodeMatch?.[2]) {
+        candidate = `${legalWithTrailingCountryCodeMatch[1].trim()} ${legalWithTrailingCountryCodeMatch[2].trim()}`.trim();
+      }
     }
 
     // Strip leading prefix once

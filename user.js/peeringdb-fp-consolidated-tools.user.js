@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.1.21.20260429
+// @version      1.1.22.20260501
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
@@ -30,7 +30,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbFpConsolidated";
-  const SCRIPT_VERSION = "1.1.21.20260429";
+  const SCRIPT_VERSION = "1.1.22.20260501";
   // RDAP fallback client is intentionally CP-only; FP does not implement RDAP lookups.
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
@@ -1964,6 +1964,7 @@
 
         let pdbType = ctx.type;
         let title = qs('div[data-edit-name="name"]')?.getAttribute("data-edit-value") || "";
+        const legalLongName = getText('div[data-edit-name="name_long"]');
         let extra = "";
 
         if (ctx.type === "asn" || ctx.type === "net") {
@@ -1971,15 +1972,17 @@
           if (asn) {
             pdbType = `as${asn.replace(/\D/g, "")}`;
           }
+          if (legalLongName) title = legalLongName;
           const aka = getText('div[data-edit-name="aka"]');
           if (aka && aka !== title) {
             title += ` (a.k.a. ${aka})`;
           }
           extra = sep + "net.peeringdb.com";
+        } else if (["org", "fac", "carrier", "campus"].includes(ctx.type)) {
+          if (legalLongName) title = legalLongName;
         } else if (ctx.type === "ix") {
           pdbType = "ixp";
-          const longName = getText('div[data-edit-name="name_long"]');
-          if (longName) title = longName;
+          if (legalLongName) title = legalLongName;
         }
 
         if (title) {

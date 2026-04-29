@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name            PeeringDB DP - Consolidated Tools
 // @namespace       https://www.peeringdb.com/
-// @version         1.6.4.20260429
+// @version         1.6.5.20260501
 // @description     Consolidated DeskPro tools: linkifies/enriches PeeringDB links (ASN/IP/IX/NET), copies mailto addresses, normalizes PeeringDB CP double-slash links
 // @author          <chriztoffer@peeringdb.com>
 // @match           https://peeringdb.deskpro.com/app*
@@ -30,7 +30,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbDp";
-  const SCRIPT_VERSION = "1.6.4.20260429";
+  const SCRIPT_VERSION = "1.6.5.20260501";
   // RDAP fallback client is intentionally CP-only; DP does not implement RDAP lookups.
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
@@ -879,6 +879,16 @@
   }
 
   /**
+   * Resolves the authoritative legal display name for an entity payload.
+   * Prefers long legal name when available, then falls back to short name.
+   * @param {object|null|undefined} entity - API entity payload.
+   * @returns {string} Resolved legal-preferred name.
+   */
+  function resolveEntityLegalName(entity) {
+    return String(entity?.name_long || entity?.name || "").trim();
+  }
+
+  /**
    * Resolves network name for an ASN via PeeringDB API with cache and in-flight dedupe.
    * Purpose: Enrich ASN link labels with authoritative network names.
    * Necessity: Limits duplicate API calls when the same ASN appears repeatedly in one ticket.
@@ -922,7 +932,7 @@
       const url = `https://www.peeringdb.com/api/net?${params.toString()}`;
       const payload = await pdbFetch(url);
       const net = getBestApiNetDataItem(payload, normalizedAsn);
-      const resolved = String(net?.name || net?.name_long || "").trim();
+      const resolved = resolveEntityLegalName(net);
       const ttl = resolved ? ASN_NAME_CACHE_TTL_MS : ASN_NAME_CACHE_MISS_TTL_MS;
 
       asnNameCache.set(normalizedAsn, {
@@ -1863,7 +1873,7 @@
         const net = await fetchNetById(info.id);
         if (!anchor?.isConnected) return;
 
-        const netName = String(net?.name || net?.name_long || "").trim();
+        const netName = resolveEntityLegalName(net);
         const asn = String(net?.asn || "").trim();
         const orgId = String(net?.org_id || "").trim();
 
