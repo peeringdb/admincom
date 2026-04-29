@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name            PeeringDB DP - Consolidated Tools
 // @namespace       https://www.peeringdb.com/
-// @version         1.5.9.20260414
+// @version         1.6.4.20260429
 // @description     Consolidated DeskPro tools: linkifies/enriches PeeringDB links (ASN/IP/IX/NET), copies mailto addresses, normalizes PeeringDB CP double-slash links
 // @author          <chriztoffer@peeringdb.com>
 // @match           https://peeringdb.deskpro.com/app*
@@ -30,7 +30,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbDp";
-  const SCRIPT_VERSION = "1.5.7.20260413";
+  const SCRIPT_VERSION = "1.6.4.20260429";
   // RDAP fallback client is intentionally CP-only; DP does not implement RDAP lookups.
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
@@ -71,6 +71,8 @@
   const MAILTO_SEARCH_LINK_ATTR = "data-pdb-mailto-search-link";
   const MAILTO_COPY_LINK_ATTR = "data-pdb-mailto-copy-link";
   const ACTION_EMOJI_LINK = "🔗";
+  const FP_LINK_ICON_URL = "https://icons.duckduckgo.com/ip2/peeringdb.com.ico";
+  const FP_LINK_ICON_SIZE_PX = 12;
   const ACTION_EMOJI_COPY = "📋";
   const ACTION_EMOJI_IX = "🏢";
   const ACTION_LINK_ICON_ATTR = "data-pdb-action-link-icon";
@@ -1372,6 +1374,23 @@
   ]);
 
   /**
+   * Builds a favicon image node for FP-style PeeringDB links.
+   * AI Maintenance: Keep this helper limited to visual FP link affordance only.
+   * @returns {HTMLImageElement} Icon image element.
+   */
+  function createFpLinkIconNode() {
+    const icon = document.createElement("img");
+    icon.src = FP_LINK_ICON_URL;
+    icon.alt = "";
+    icon.setAttribute("aria-hidden", "true");
+    icon.width = FP_LINK_ICON_SIZE_PX;
+    icon.height = FP_LINK_ICON_SIZE_PX;
+    icon.style.marginLeft = "4px";
+    icon.style.verticalAlign = "text-bottom";
+    return icon;
+  }
+
+  /**
    * Builds ASN anchor element with link emoji and delayed name hydration.
    * Purpose: Standardize visual/behavioral construction of all ASN links.
    * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
@@ -1385,18 +1404,11 @@
     a.target = "_blank";
     a.rel = "noopener noreferrer";
     a.title = `Open ASN${asn} in PeeringDB`;
-    a.style.textDecoration = "none";
-    a.style.textDecorationLine = "none";
 
     const text = document.createElement("span");
     text.textContent = displayText;
-    text.style.textDecoration = "underline";
-    text.style.textDecorationLine = "underline";
 
-    const icon = document.createElement("span");
-    icon.textContent = ` ${ACTION_EMOJI_LINK}`;
-    icon.setAttribute("aria-hidden", "true");
-    icon.style.textDecoration = "none";
+    const icon = createFpLinkIconNode();
 
     a.append(text, icon);
     a.setAttribute(LINKIFIED_ATTR, "true");
@@ -1571,17 +1583,11 @@
     a.target = "_blank";
     a.rel = "noopener noreferrer";
     a.title = `Search ${query} in PeeringDB`;
-    a.style.textDecoration = "none";
 
     const text = document.createElement("span");
     text.textContent = query;
-    text.style.textDecoration = "underline";
-    text.style.textDecorationLine = "underline";
 
-    const icon = document.createElement("span");
-    icon.textContent = ` ${ACTION_EMOJI_LINK}`;
-    icon.setAttribute("aria-hidden", "true");
-    icon.style.textDecoration = "none";
+    const icon = createFpLinkIconNode();
 
     a.append(text, icon);
     a.setAttribute(LINKIFIED_ATTR, "true");
@@ -1617,18 +1623,11 @@
     a.target = "_blank";
     a.rel = "noopener noreferrer";
     a.title = `Search organization \"${query}\" in PeeringDB`;
-    a.style.textDecoration = "none";
-    a.style.textDecorationLine = "none";
 
     const text = document.createElement("span");
     text.textContent = displayText;
-    text.style.textDecoration = "underline";
-    text.style.textDecorationLine = "underline";
 
-    const icon = document.createElement("span");
-    icon.textContent = ` ${ACTION_EMOJI_LINK}`;
-    icon.setAttribute("aria-hidden", "true");
-    icon.style.textDecoration = "none";
+    const icon = createFpLinkIconNode();
 
     a.append(text, icon);
     a.setAttribute(LINKIFIED_ATTR, "true");
@@ -1795,56 +1794,29 @@
   }
 
   /**
-   * Ensures anchor has a text span + link icon while preserving existing complex content.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
-   * @param {HTMLAnchorElement} anchor - Anchor to decorate.
-   * @param {string} [initialLabel=""] - Optional initial label when text is URL-like.
+   * Ensures an existing PeeringDB anchor is marked as visited by the script.
+   * Purpose: Idempotent marker to prevent duplicate processing; visible text and
+   * native browser link styling are intentionally preserved (no restructuring,
+   * no forced text-decoration overrides, no appended icon).
+   * AI Maintenance: Do NOT reintroduce text-mutation or text-decoration mutations here.
+   * @param {HTMLAnchorElement} anchor - Anchor to mark.
+   * @param {string} [_initialLabel=""] - Reserved for backward compatibility; ignored.
    */
-  function ensureExistingPdbAnchorVisual(anchor, initialLabel = "") {
+  function ensureExistingPdbAnchorVisual(anchor, _initialLabel = "") {
     if (!anchor) return;
-
-    anchor.style.textDecoration = "none";
-    anchor.style.textDecorationLine = "none";
-
-    const hasComplexChildren = Array.from(anchor.childNodes).some((node) => node.nodeType === Node.ELEMENT_NODE);
-    if (!hasComplexChildren) {
-      let textNode = anchor.querySelector(`span[${EXISTING_PDB_LINK_TEXT_ATTR}]`);
-      if (!textNode) {
-        const rawText = stripTrailingLinkEmojiTokens(String(anchor.textContent || ""));
-        const label = String(initialLabel || "").trim() || rawText || String(anchor.href || "").trim();
-
-        anchor.textContent = "";
-
-        textNode = document.createElement("span");
-        textNode.setAttribute(EXISTING_PDB_LINK_TEXT_ATTR, "true");
-        textNode.style.textDecoration = "underline";
-        textNode.style.textDecorationLine = "underline";
-        textNode.textContent = label;
-        anchor.appendChild(textNode);
-      }
-    }
-
-    if (!anchor.querySelector(`span[${EXISTING_PDB_LINK_ICON_ATTR}]`)) {
-      const icon = document.createElement("span");
-      icon.textContent = ` ${ACTION_EMOJI_LINK}`;
-      icon.setAttribute("aria-hidden", "true");
-      icon.setAttribute(EXISTING_PDB_LINK_ICON_ATTR, "true");
-      icon.style.textDecoration = "none";
-      anchor.appendChild(icon);
-    }
+    // Intentionally a no-op for visible content. The caller still sets `anchor.title`
+    // for tooltip enrichment; navigation behavior is unchanged.
   }
 
   /**
-   * Updates decorated anchor label when a dedicated text span exists.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
-   * @param {HTMLAnchorElement} anchor - Decorated anchor.
-   * @param {string} label - New text label.
+   * No-op retained for backward compatibility with hydration callers.
+   * Visible text on pre-existing anchors is intentionally not mutated.
+   * AI Maintenance: Do NOT reintroduce visible-text mutation here.
+   * @param {HTMLAnchorElement} _anchor - Decorated anchor (unused).
+   * @param {string} _label - New text label (ignored).
    */
-  function setExistingPdbAnchorLabel(anchor, label) {
-    const textNode = anchor?.querySelector?.(`span[${EXISTING_PDB_LINK_TEXT_ATTR}]`);
-    const normalized = String(label || "").trim();
-    if (!textNode || !normalized) return;
-    textNode.textContent = normalized;
+  function setExistingPdbAnchorLabel(_anchor, _label) {
+    // Intentionally empty: hydration must not change visible link text.
   }
 
   /**
@@ -2097,9 +2069,6 @@
       .querySelectorAll(`span[${MAILTO_HELPER_WRAP_ATTR}="${ownerId}"]`)
       .forEach((node) => node.remove());
 
-    anchor.style.textDecoration = "none";
-    anchor.style.textDecorationLine = "none";
-
     if (emailAddress) {
       const helperWrap = document.createElement("span");
       helperWrap.setAttribute(MAILTO_HELPER_WRAP_ATTR, ownerId);
@@ -2111,7 +2080,7 @@
       cpSearchLink.href = buildCpEmailSearchUrl(emailAddress);
       cpSearchLink.target = "_blank";
       cpSearchLink.rel = "noopener noreferrer";
-      cpSearchLink.textContent = ` ${ACTION_EMOJI_LINK}`;
+      cpSearchLink.textContent = " 🔍";
       cpSearchLink.setAttribute(MAILTO_SEARCH_LINK_ATTR, "true");
       cpSearchLink.setAttribute("aria-label", `Search ${emailAddress} in CP`);
       cpSearchLink.title = `Search ${emailAddress} in CP`;
@@ -2207,10 +2176,11 @@
   }
 
   /**
-   * Appends a link emoji to specific DeskPro action links.
-   * Purpose: Align action-link affordance with other linkified actions.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
-   * @param {HTMLAnchorElement} anchor - Anchor to decorate when label matches target list.
+   * Marks specific DeskPro action links as decorated without changing their
+   * visible text or text-decoration. Intrusive emoji/icon decoration was
+   * intentionally removed; native browser link styling now applies.
+   * AI Maintenance: Do NOT reintroduce text restructuring or text-decoration mutations.
+   * @param {HTMLAnchorElement} anchor - Anchor to evaluate.
    */
   function decorateTargetActionLink(anchor) {
     if (!anchor) return;
@@ -2222,36 +2192,8 @@
       .toLowerCase();
     if (!TARGET_ACTION_LINK_LABELS.has(label)) return;
 
-    anchor.style.textDecoration = "none";
-    anchor.style.textDecorationLine = "none";
-
-    let textSpan = anchor.querySelector(`span[${ACTION_LINK_TEXT_ATTR}]`);
-    if (!textSpan) {
-      textSpan = document.createElement("span");
-      textSpan.setAttribute(ACTION_LINK_TEXT_ATTR, "true");
-      textSpan.style.textDecoration = "underline";
-      textSpan.style.textDecorationLine = "underline";
-
-      const fragment = document.createDocumentFragment();
-      for (const node of Array.from(anchor.childNodes)) {
-        if (node.nodeType === Node.ELEMENT_NODE && node.getAttribute?.(ACTION_LINK_ICON_ATTR) === "true") {
-          continue;
-        }
-        fragment.appendChild(node);
-      }
-      textSpan.appendChild(fragment);
-      anchor.appendChild(textSpan);
-    }
-
-    // Prevent duplicate icon insertion during mutation reprocessing.
-    if (anchor.querySelector(`span[${ACTION_LINK_ICON_ATTR}]`)) return;
-
-    const icon = document.createElement("span");
-    icon.textContent = ` ${ACTION_EMOJI_LINK}`;
-    icon.setAttribute("aria-hidden", "true");
-    icon.setAttribute(ACTION_LINK_ICON_ATTR, "true");
-    icon.style.textDecoration = "none";
-    anchor.append(icon);
+    // Mark as processed to keep the mutation observer idempotent.
+    anchor.setAttribute(ACTION_LINK_TEXT_ATTR, "true");
   }
 
   /**
@@ -2286,8 +2228,9 @@
       },
     },
     {
-      // "provided this ASN in their request: 123" — only the bare number links.
-      regex: /\bprovided this ASN in their request:\s*(\d+)/gi,
+      // "They also provided this ASN in their request: 123" — link only the bare number.
+      // Accept optional "they also" prefix and flexible separator before the ASN value.
+      regex: /\b(?:(?:they\s+also\s+)?provided this ASN in their request)\s*[:#=-]?\s*(\d+)/gi,
       buildNodes([fullMatch, asn]) {
         const prefix = fullMatch.slice(0, fullMatch.length - asn.length);
         return [document.createTextNode(prefix), makeAsnLink(asn, asn)];
@@ -2328,7 +2271,7 @@
   ];
 
   // Quick pre-test — text nodes matching none of the rules are rejected early.
-  const QUICK_TEST_REGEX = /\bASN?\d+\b|\b(?:member\s+asn|network\s+asn|asn)\s*[:=#-]?\s*\d{3,6}\b|provided this ASN in their request:\s*\d+|wishes to be affiliated to Organization\s+['"\u201c\u201d\u2018\u2019][^'"\u201c\u201d\u2018\u2019\n]+['"\u201c\u201d\u2018\u2019]|(?:^|\n)\s*\d{3,6}\s*(?:\n|$)|\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}(?!\/\d)(?!\.\d)\b|\b(?=[0-9a-fA-F:]*:[0-9a-fA-F:]*)(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}(?!:)(?!\/\d)\b/i;
+  const QUICK_TEST_REGEX = /\bASN?\d+\b|\b(?:member\s+asn|network\s+asn|asn)\s*[:=#-]?\s*\d{3,6}\b|\b(?:(?:they\s+also\s+)?provided this ASN in their request)\s*[:#=-]?\s*\d+|wishes to be affiliated to Organization\s+['"\u201c\u201d\u2018\u2019][^'"\u201c\u201d\u2018\u2019\n]+['"\u201c\u201d\u2018\u2019]|(?:^|\n)\s*\d{3,6}\s*(?:\n|$)|\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}(?!\/\d)(?!\.\d)\b|\b(?=[0-9a-fA-F:]*:[0-9a-fA-F:]*)(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}(?!:)(?!\/\d)\b/i;
 
   /**
    * Finds standalone 3-6 digit ASN candidates only in high-confidence contexts.
@@ -2586,6 +2529,30 @@
     nodes.forEach(linkifyTextNode);
   }
 
+  /**
+   * Returns the DeskPro ticket message list container used for scoped decoration.
+   * Purpose: Restrict all DP linkification/decorators to ticket message content only.
+   * @returns {Element|null} Scoped message container when present.
+   */
+  function getScopedMessageContainer() {
+    return document.querySelector("div[data-ticket-message-list-scrolled]");
+  }
+
+  /**
+   * Checks whether a node belongs to the scoped ticket message container.
+   * AI Maintenance: Keep checks cheap and robust for both element/text nodes.
+   * @param {Node} node - Candidate node from mutation records.
+   * @returns {boolean} True when node is inside scoped container.
+   */
+  function isNodeInScopedContainer(node) {
+    if (!node || (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.TEXT_NODE)) {
+      return false;
+    }
+    const container = getScopedMessageContainer();
+    if (!container) return false;
+    return container === node || container.contains(node);
+  }
+
   // ── MutationObserver ──────────────────────────────────────────────────────
 
   let observer;
@@ -2667,6 +2634,9 @@
 
     for (const { addedNodes } of mutations) {
       for (const node of addedNodes) {
+        // Only decorate/linkify nodes inside the DeskPro message list container.
+        if (!isNodeInScopedContainer(node)) continue;
+
         if (node.nodeType === Node.ELEMENT_NODE) {
           normalizePeeringDbCpDoubleSlashLinks(node);
           decorateTargetActionLinks(node);
@@ -2699,12 +2669,15 @@
     // participate in re-decoration.
     cleanupLegacyDuplicatePeeringDbAnchors(document.body);
 
-    // Initial pass over whatever is already rendered.
-    normalizePeeringDbCpDoubleSlashLinks(document.body);
-    decorateTargetActionLinks(document.body);
-    decorateMailtoLinks(document.body);
-    decorateExistingPeeringDbLinks(document.body);
-    linkifySubtree(document.body);
+    // Initial pass over whatever is already rendered in the message list container.
+    const messageContainer = getScopedMessageContainer();
+    if (messageContainer) {
+      normalizePeeringDbCpDoubleSlashLinks(messageContainer);
+      decorateTargetActionLinks(messageContainer);
+      decorateMailtoLinks(messageContainer);
+      decorateExistingPeeringDbLinks(messageContainer);
+      linkifySubtree(messageContainer);
+    }
 
     // Convert all mailto clicks into copy-to-clipboard behavior.
     document.addEventListener("click", interceptMailtoClick, true);
