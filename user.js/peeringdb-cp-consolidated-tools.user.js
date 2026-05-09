@@ -6584,7 +6584,7 @@
             href: entityUrl,
             title: entityUrl,
             onClick: async (event) => {
-              const copied = await copyToClipboard(entityUrl);
+              const copied = await copyToClipboard(`${entityCopyLabel} | ${entityUrl}`);
               if (copied) {
                 pulseToolbarButton(event?.target, "Copied URL");
               }
