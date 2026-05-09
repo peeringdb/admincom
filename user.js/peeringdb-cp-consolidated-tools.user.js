@@ -6578,13 +6578,15 @@
 
         if (entityUrl) {
           const entityCopyLabel = `${getEntityCopyLabel(ctx.entity)} #${ctx.entityId}`;
+          const entityName = getInputValue("#id_name");
+          const copyText = entityName ? `${entityName} | ${entityUrl}` : `${entityCopyLabel} | ${entityUrl}`;
           addSecondaryActionButton({
             id: `${MODULE_PREFIX}CopyEntityUrl`,
             label: entityCopyLabel,
             href: entityUrl,
             title: entityUrl,
             onClick: async (event) => {
-              const copied = await copyToClipboard(`${entityCopyLabel} | ${entityUrl}`);
+              const copied = await copyToClipboard(copyText);
               if (copied) {
                 pulseToolbarButton(event?.target, "Copied URL");
               }
