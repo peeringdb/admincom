@@ -6627,7 +6627,37 @@
           href: orgUrl,
           title: orgUrl,
           onClick: async (event) => {
-            const copied = await copyToClipboard(orgUrl);
+            // Priority A: Get org name from dropdown selection
+            let orgName = (qs("#id_org > option[selected]")?.innerText || "").trim();
+
+            // Priority B: Check global cache if dropdown is empty
+            if (!orgName) {
+              orgName = getCachedOrganizationName(orgId) || "";
+            }
+
+            // Priority C: API fetch if cache miss and status is not deleted
+            if (!orgName) {
+              const status = String(getSelectedStatus() || "").trim().toLowerCase();
+              if (status !== "deleted") {
+                try {
+                  const response = await fetch(`/api/v2/org/${orgId}/`);
+                  if (response.ok) {
+                    const data = await response.json();
+                    const fetchedName = String(data?.name || "").trim();
+                    if (fetchedName) {
+                      orgName = fetchedName;
+                      setCachedOrganizationName(orgId, fetchedName);
+                    }
+                  }
+                } catch (_error) {
+                  // Silently fall through to URI-only copy
+                }
+              }
+            }
+
+            // Priority D: Build copy text (org name + URL or URI only)
+            const copyText = orgName ? `${orgName} | ${orgUrl}` : orgUrl;
+            const copied = await copyToClipboard(copyText);
             if (copied) {
               pulseToolbarButton(event?.target, "Copied Org URL");
             }
