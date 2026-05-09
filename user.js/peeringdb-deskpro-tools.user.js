@@ -2069,6 +2069,9 @@
       .forEach((node) => node.remove());
 
     if (emailAddress) {
+      // Display email with copy emoji inline to indicate copy functionality
+      anchor.textContent = `${emailAddress} ${ACTION_EMOJI_COPY}`;
+
       const helperWrap = document.createElement("span");
       helperWrap.setAttribute(MAILTO_HELPER_WRAP_ATTR, ownerId);
       helperWrap.style.display = "inline-flex";
@@ -2087,12 +2090,13 @@
 
       const copyLink = document.createElement("a");
       copyLink.href = "#";
-      copyLink.textContent = ` ${ACTION_EMOJI_COPY}`;
+      copyLink.textContent = "";
       copyLink.setAttribute(MAILTO_COPY_LINK_ATTR, "true");
       copyLink.setAttribute(MAILTO_ICON_ATTR, "true");
       copyLink.setAttribute("aria-label", `Copy ${emailAddress}`);
       copyLink.title = `Copy ${emailAddress}`;
       copyLink.style.textDecoration = "none";
+      copyLink.style.display = "none";
       copyLink.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -2287,8 +2291,9 @@
       const hasMemberBlock =
         /\b(speed|policy)\b/i.test(windowText) && /\b(ipv4|ipaddr4)\b/i.test(windowText) && /\b(ipv6|ipaddr6)\b/i.test(windowText);
       const precededByLabel = /\b(member\s+asn|network\s+asn|asn|as)\b/.test(prevLine);
+      const precededByRequestPhrase = /(?:they\s+also\s+)?provided this\s+asn\s+in\s+their\s+request/i.test(windowText);
 
-      if (hasIpPair || hasMemberBlock || precededByLabel) {
+      if (hasIpPair || hasMemberBlock || precededByLabel || precededByRequestPhrase) {
         const start = offset + line.indexOf(trimmed);
         hits.push({ start, end: start + trimmed.length, asn: trimmed });
       }
