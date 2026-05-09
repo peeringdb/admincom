@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name            PeeringDB DP - Consolidated Tools
 // @namespace       https://www.peeringdb.com/
-// @version         1.6.5.20260501
+// @version         1.6.6.20260504
 // @description     Consolidated DeskPro tools: linkifies/enriches PeeringDB links (ASN/IP/IX/NET), copies mailto addresses, normalizes PeeringDB CP double-slash links
 // @author          <chriztoffer@peeringdb.com>
 // @match           https://peeringdb.deskpro.com/app*
@@ -30,7 +30,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbDp";
-  const SCRIPT_VERSION = "1.6.5.20260501";
+  const SCRIPT_VERSION = "1.6.7.20260504";
   // RDAP fallback client is intentionally CP-only; DP does not implement RDAP lookups.
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
@@ -54,7 +54,6 @@
    */
   const FEATURE_FLAGS = Object.freeze({
     debugMode: false,
-    ipLinkification: true,
   });
 
   /**
@@ -123,7 +122,7 @@
   /**
    * Returns localStorage when available for domain-scoped cache persistence.
    * Purpose: Share ASN name cache entries across tabs and page reloads.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @returns {Storage|null} localStorage instance, or null when unavailable.
    */
   function getDomainCacheStorage() {
@@ -137,7 +136,7 @@
 
   /**
    * Returns storage for tab-scoped transient values.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @returns {Storage|null} sessionStorage instance, or null when unavailable.
    */
   function getTabSessionStorage() {
@@ -154,7 +153,7 @@
    * Purpose: Provides a unique identifier for correlating requests within a session.
    * Necessity: Enables server-side analytics and request tracking without exposing device fingerprint.
    * UUID persists across page reloads and tabs on the same origin.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @returns {string} Session UUID string (generated once per browser session).
    */
   function getSessionUuid() {
@@ -175,7 +174,7 @@
    * Purpose: Creates a privacy-preserving identifier for requests from untrusted domains.
    * Necessity: Balances analytics tracking with user privacy for non-trusted networks.
    * Returns a 16-character hex string derived from UA, platform, language, CPU count, memory.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {string} 16-character lowercase hex fingerprint string.
    */
   function computeClientFingerprint() {
@@ -202,7 +201,7 @@
    * Necessity: Distinguishes between trusted (localhost, peeringdb.com) and untrusted domains
    * to decide whether to use full browser info or privacy-preserving fingerprint.
    * Also normalizes IPv6 URIs with bracket notation ([::1]) for transparent matching.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {string} domain - Hostname to test (e.g., "www.peeringdb.com", "localhost").
    * @returns {boolean} True when the domain matches a TRUSTED_DOMAINS_FOR_UA entry.
    */
@@ -236,7 +235,7 @@
    * Necessity: For trusted domains (development, peeringdb.com), includes browser/platform for debugging;
    * for untrusted domains, uses fingerprint only to minimize data exposure.
    * Includes session UUID in both cases for request correlation.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} domain - Hostname of the page making the request.
    * @returns {string} Constructed User-Agent header value.
    */
@@ -259,7 +258,7 @@
    * Retrieves explicit or auto-computed User-Agent for this session.
    * Purpose: Provide flexible UA configuration with fallback to trust-based generation.
    * Necessity: Allows manual override via localStorage while auto-computing from domain trust.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @returns {string} User-Agent string to use for outgoing requests.
    */
   function getCustomRequestUserAgent() {
@@ -271,7 +270,7 @@
 
   /**
    * Reads JSON feature-flag overrides from localStorage.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {object} Parsed override map, or empty object when unavailable/invalid.
    */
   function getFeatureFlagOverrides() {
@@ -287,7 +286,7 @@
 
   /**
    * Returns resolved feature-flag value using defaults plus localStorage overrides.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} flagName - Flag key inside FEATURE_FLAGS.
    * @returns {boolean} Resolved boolean state.
    */
@@ -304,7 +303,7 @@
 
   /**
    * Returns feature-flag default/override/resolved state.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} flagName - Flag key inside FEATURE_FLAGS.
    * @returns {{ defaultValue: boolean, overrideValue: boolean|null, enabled: boolean }|null} Flag state.
    */
@@ -320,7 +319,7 @@
 
   /**
    * Sets a feature-flag override and cleans up redundant values.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} flagName - Flag key inside FEATURE_FLAGS.
    * @param {boolean} enabled - Resolved target state.
    */
@@ -348,7 +347,7 @@
 
   /**
    * Removes all feature-flag overrides and restores defaults.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function resetFeatureFlagOverrides() {
     try {
@@ -363,7 +362,7 @@
    * Purpose: Gate verbose console output behind an opt-in flag so normal
    * production use is silent.
    * Toggle with: localStorage.setItem('pdbAdmincom.debug', '1')
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {boolean} True when debug mode is active.
    */
   function isDebugEnabled() {
@@ -374,7 +373,7 @@
    * Structured debug logger — no-ops unless debug mode is active.
    * Purpose: Provide consistent prefixed console output for diagnostics
    * without polluting normal page console output.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} tag  - Short subsystem label shown in brackets.
    * @param {string} msg  - Human-readable message.
    * @param {...*}   rest - Optional extra values forwarded to console.debug.
@@ -386,7 +385,7 @@
 
   /**
    * Normalizes ASN value into a stable cache key suffix.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string|number} asn - Raw ASN value.
    * @returns {string} Trimmed ASN string.
    */
@@ -396,7 +395,7 @@
 
   /**
    * Builds localStorage key for cached API data (shared namespace).
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string} type - Entity type (asn, org, user, facility).
    * @param {string|number} id - Entity identifier.
    * @returns {string} Namespaced cache key, or empty string when invalid.
@@ -410,7 +409,7 @@
 
   /**
    * Builds localStorage key for ASN-name cache entries (backward compat wrapper).
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string|number} asn - ASN value.
    * @returns {string} Namespaced cache key, or empty string when invalid.
    */
@@ -422,7 +421,7 @@
 
   /**
    * Reads cached API data object from localStorage when valid.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string} type - Entity type (asn, org, user, facility).
    * @param {string|number} id - Entity identifier.
    * @returns {object|null} Cached data object, or null when absent/expired/invalid.
@@ -457,7 +456,7 @@
 
   /**
    * Reads ASN name from localStorage cache when valid (backward compat).
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string|number} asn - ASN value.
    * @returns {string|null} Cached ASN name, or null when absent/expired/invalid.
    */
@@ -468,7 +467,7 @@
 
   /**
    * Stores API data object into localStorage cache with TTL/schema metadata.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string} type - Entity type (asn, org, user, facility).
    * @param {string|number} id - Entity identifier.
    * @param {object} data - Data object to cache.
@@ -495,7 +494,7 @@
 
   /**
    * Stores ASN name into localStorage cache with TTL/schema metadata (backward compat).
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string|number} asn - ASN value.
    * @param {string} name - Resolved network name.
    */
@@ -509,7 +508,7 @@
    * Constructs request headers for script-driven HTTP requests.
    * Purpose: Keep User-Agent and internal tracing header values consistent.
    * Necessity: Centralizes request identity formatting for all PeeringDB API calls.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {object} [baseHeaders={}] - Optional caller-provided headers.
    * @returns {object} Final request headers including UA metadata.
    */
@@ -529,7 +528,7 @@
   /**
    * Removes headers that cannot be used with browser fetch.
    * Purpose: Avoid forbidden-header runtime failures for same-origin fetch mode.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {object} headers - Source headers object.
    * @returns {object} Fetch-safe header copy.
    */
@@ -543,7 +542,7 @@
 
   /**
    * Updates rate-limit state from response headers.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {object} headers - Response headers object.
    */
   function updateRateLimitState(headers) {
@@ -558,7 +557,7 @@
 
   /**
    * Checks if current rate-limit quota is low enough to trigger backoff.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {boolean} True if should backoff (remaining quota < threshold).
    */
   function shouldBackoffRateLimit() {
@@ -569,7 +568,7 @@
    * Unified JSON fetch helper with retry and timeout support.
    * Purpose: Mirror CP script network behavior for stable PeeringDB API access.
    * Necessity: Prevents divergent network logic between Tampermonkey transport modes.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} url - Absolute URL to request.
    * @param {{ headers?: object, timeout?: number, retries?: number }} [options] - Request tuning options.
    * @returns {Promise<object|null>} Parsed JSON payload, or null on failure.
@@ -676,7 +675,7 @@
   /**
    * Performs an API GET and returns HTTP status information.
    * Purpose: Distinguish true 404 missing objects from transient/auth failures.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} url - Request URL.
    * @param {object} [options={}] - Request options.
    * @returns {Promise<{ok:boolean,status:number|null}>} Fetch result with status.
@@ -729,7 +728,7 @@
 
   /**
    * Maps frontend entity kinds to CP backend model names.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} kind - Frontend entity kind.
    * @returns {string} CP model segment, or empty string when unsupported.
    */
@@ -746,9 +745,24 @@
     return mapping[normalizedKind] || "";
   }
 
+  const displayTypeMap = {
+    fac: "fac",
+    facility: "fac",
+    net: "net",
+    network: "net",
+    asn: "net",
+    org: "org",
+    organization: "org",
+    carrier: "carrier",
+    ix: "ix",
+    internetexchange: "ix",
+    campus: "campus",
+    user: "user",
+  };
+
   /**
    * Builds canonical CP change URL for a model/id pair.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} model - CP backend model name.
    * @param {string|number} id - Object identifier.
    * @returns {string} Absolute CP change URL, or empty string when invalid.
@@ -762,7 +776,7 @@
 
   /**
    * Resolves API probe URL for frontend entity existence checks.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} kind - Frontend entity kind.
    * @param {string|number} id - Entity identifier.
    * @returns {string} API URL, or empty string when unsupported.
@@ -788,7 +802,7 @@
   /**
    * Returns true when a frontend entity is confirmed missing (404).
    * Policy: fallback triggers only for confirmed HTTP 404 responses.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} kind - Frontend entity kind.
    * @param {string|number} id - Entity identifier.
    * @returns {Promise<boolean>} True when entity is missing.
@@ -836,7 +850,7 @@
 
   /**
    * Resolves CP fallback URL for missing frontend entities.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ kind: string, id?: string }} info - Parsed frontend entity descriptor.
    * @returns {Promise<string>} CP fallback URL, or empty string when no fallback needed.
    */
@@ -856,7 +870,7 @@
   /**
    * Selects the best network item for ASN lookups from list-style API payloads.
    * Purpose: Prefer exact ASN and active status from `/api/net` responses.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {*} payload - Parsed API response.
    * @param {string} expectedAsn - ASN value used in the query.
    * @returns {object|null} Matching network entry, or null when unavailable.
@@ -892,7 +906,7 @@
    * Resolves network name for an ASN via PeeringDB API with cache and in-flight dedupe.
    * Purpose: Enrich ASN link labels with authoritative network names.
    * Necessity: Limits duplicate API calls when the same ASN appears repeatedly in one ticket.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string|number} asn - ASN number to resolve.
    * @returns {Promise<string>} Resolved network name, or empty string when unavailable.
    */
@@ -956,7 +970,7 @@
   /**
    * Fetches organization details including nested user/POC information.
    * Purpose: Resolve org name and contact details (email, org_role) from org_id.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string|number} orgId - Organization ID to fetch.
    * @returns {Promise<object|null>} Organization object with user_set, or null.
    */
@@ -1016,7 +1030,7 @@
   /**
    * Fetches network record for an ASN.
    * Purpose: Resolve org relation for optional IP-tooltip POC enrichment.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string|number} asn - ASN to resolve.
    * @returns {Promise<object|null>} Network row, or null when unavailable.
    */
@@ -1065,7 +1079,7 @@
   /**
    * Fetches network record by network id.
    * Purpose: Richly hydrate existing /net/{id} anchors found in rendered DeskPro HTML.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string|number} netId - Network id.
    * @returns {Promise<object|null>} Network row, or null when unavailable.
    */
@@ -1113,7 +1127,7 @@
 
   /**
    * Splits an array into chunks of specified maximum size.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {array} arr - Array to chunk.
    * @param {number} chunkSize - Maximum size per chunk.
    * @returns {array} Array of chunks.
@@ -1131,7 +1145,7 @@
    * Batch-fetches network data for multiple ASNs with automatic chunking.
    * Purpose: Fetch up to 100 ASNs in parallel chunks (API limit per request).
    * Reduces latency vs. serial requests: 5 ASNs typically <2s vs. ~5s serial.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {array} asnList - Array of ASN numbers to fetch.
    * @returns {Promise<array>} Flattened array of network objects form all chunks.
    */
@@ -1175,7 +1189,7 @@
    * Formats a list of user objects as contact string: "Role (email), Role2 (email2)".
    * Purpose: Create readable POC display for tickets.
    * Priority: email > org_role > name (as specified).
-   * AI Maintenance: Preserve normalization/parsing rules and backward-compatible output formats.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {array} users - Array of user objects from org.user_set.
    * @returns {string} Formatted contact list, or empty string when no users.
    */
@@ -1205,7 +1219,7 @@
    * Hydrates an existing ASN link label with resolved API network name and POC info.
    * Purpose: Preserve fast initial rendering, then progressively enhance link text with org details.
    * Necessity: API requests are asynchronous and should not block DOM linkification.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLAnchorElement} anchor - ASN anchor element to update.
    * @param {HTMLSpanElement} labelNode - Text span containing ASN label.
    * @param {string|number} asn - ASN identifier used for API resolution.
@@ -1253,7 +1267,7 @@
    * Migrates old DP-specific cache keys to shared cache namespace.
    * Purpose: Eliminate cache fragmentation when upgrading from v1.1.x to v1.2.0+.
    * Run once on script load to consolidate legacy cache entries.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    */
   function migrateOldCacheKeys() {
     try {
@@ -1300,7 +1314,7 @@
   /**
    * Classifies an API error into categories for retry/abort decisions.
    * Purpose: Distinguish transient (retry-able) from fatal (abort) errors.
-   * AI Maintenance: Preserve normalization/parsing rules and backward-compatible output formats.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {number} [status] - HTTP status code, or null/undefined for network error.
    * @param {Error} [error] - Optional error object.
    * @returns {object} Classification with type, retryable flag, and guidance.
@@ -1354,7 +1368,7 @@
 
   /**
    * Negative-cache a missing entity to avoid repeated failed lookups.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string} type - Entity type (asn, org, user, facility).
    * @param {string|number} id - Entity identifier.
    * @param {number} [ttlMs=1.5 hours] - Cache time-to-live.
@@ -1365,7 +1379,7 @@
 
   /**
    * Checks if a cache entry represents a negative lookup (not found).
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {object} cached - Cached data object.
    * @returns {boolean} True if this is a cached "not found" result.
    */
@@ -1385,7 +1399,7 @@
 
   /**
    * Builds a favicon image node for FP-style PeeringDB links.
-   * AI Maintenance: Keep this helper limited to visual FP link affordance only.
+   * @ai Keep this helper limited to visual FP link affordance only.
    * @returns {HTMLImageElement} Icon image element.
    */
   function createFpLinkIconNode() {
@@ -1403,7 +1417,7 @@
   /**
    * Builds ASN anchor element with link emoji and delayed name hydration.
    * Purpose: Standardize visual/behavioral construction of all ASN links.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {string|number} asn - ASN identifier.
    * @param {string} displayText - Visible initial label (e.g. AS12345).
    * @returns {HTMLAnchorElement} Fully configured ASN anchor.
@@ -1428,7 +1442,7 @@
 
   /**
    * Fetches exchange object by IX id.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string|number} ixId - Exchange id.
    * @returns {Promise<object|null>} Exchange object.
    */
@@ -1477,7 +1491,7 @@
   /**
    * Returns the best netixlan record from an API result set.
    * Prefers records that include an ix.name for label enrichment.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {Array} items - Netixlan data array from API.
    * @returns {object|null} Best record, or null when none available.
    */
@@ -1488,7 +1502,7 @@
 
   /**
    * Fetches the best netixlan record for an IPv4 address.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} ip - IPv4 address.
    * @returns {Promise<object|null>} Netixlan record, or null when not found.
    */
@@ -1513,7 +1527,7 @@
 
   /**
    * Adds a compact IX shortcut icon next to an enriched link.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLAnchorElement} anchor - Primary anchor.
    * @param {string|number} ixId - Exchange id.
    * @param {string} [ixName=""] - Optional exchange name for tooltip.
@@ -1539,7 +1553,7 @@
 
   /**
    * Formats a speed integer into a compact human-readable label.
-   * AI Maintenance: Preserve normalization/parsing rules and backward-compatible output formats.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {string|number} speed - Speed value from API.
    * @returns {string} Speed label.
    */
@@ -1554,7 +1568,7 @@
   /**
    * Builds organization search anchor with link emoji styling.
    * Purpose: Link affiliation organization names to PeeringDB search results.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} orgName - Organization search query value.
    * @param {string} [displayText=orgName] - Visible label for the anchor text span.
    * @returns {HTMLAnchorElement} Configured organization-search anchor.
@@ -1562,7 +1576,7 @@
   /**
    * Returns true when text is a plausible compressed IPv6 address (colon-hex notation).
    * Used as a secondary gate after the IPv6 regex to reject false positives.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} text - Candidate string.
    * @returns {boolean}
    */
@@ -1582,7 +1596,7 @@
   /**
    * Builds an IP address search anchor with link emoji styling.
    * Purpose: Link bare IP addresses to PeeringDB search results.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} ip - IP address to linkify.
    * @returns {HTMLAnchorElement} Configured IP-search anchor.
    */
@@ -1607,7 +1621,7 @@
   /**
    * Async-enriches an IP link anchor with IX name from netixlan API data.
    * Purpose: Replace bare IP label with contextual IX name once data is available.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLAnchorElement} anchor - Anchor to update.
    * @param {string} ip - IPv4 address used for lookup.
    * @returns {Promise<void>}
@@ -1626,6 +1640,15 @@
     }
   }
 
+  /**
+   * Builds organization search anchor element with link icon and FP-style affordance.
+   * Purpose: Standardize visual/behavioral construction of organization lookup links.
+   * Necessity: Allows moderators to search for organization names directly from DeskPro.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
+   * @param {string} orgName - Organization name/query to search for.
+   * @param {string} [displayText] - Visible label text; defaults to orgName.
+   * @returns {HTMLAnchorElement} Fully configured organization search anchor.
+   */
   function makeOrganizationSearchLink(orgName, displayText = orgName) {
     const query = String(orgName || "").trim();
     const a = document.createElement("a");
@@ -1646,7 +1669,7 @@
 
   /**
    * Parses PeeringDB entity info from a URL for decoration/hydration.
-   * AI Maintenance: Preserve normalization/parsing rules and backward-compatible output formats.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {string} href - Anchor href.
    * @returns {{ kind: string, id?: string, entity?: string, url: URL }|null} Parsed descriptor.
    */
@@ -1684,23 +1707,25 @@
   /**
    * Resolves CP entity model names to compact type tokens and relation semantics.
    * Purpose: Ensure decorated CP links always include explicit target type.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} entity - CP model/entity segment from URL.
    * @returns {{ token: string, label: string, isRelationship: boolean }} Normalized CP type descriptor.
    */
   function getCpEntityTypeInfo(entity) {
     const normalized = String(entity || "").trim().toLowerCase();
     const mapping = {
-      org: { token: "org", label: "organization", isRelationship: false },
-      organization: { token: "org", label: "organization", isRelationship: false },
-      user: { token: "user", label: "user", isRelationship: false },
-      fac: { token: "fac", label: "facility", isRelationship: false },
-      facility: { token: "fac", label: "facility", isRelationship: false },
-      net: { token: "net", label: "network", isRelationship: false },
-      network: { token: "net", label: "network", isRelationship: false },
-      asn: { token: "asn", label: "ASN", isRelationship: false },
-      ix: { token: "ix", label: "internet exchange", isRelationship: false },
-      internetexchange: { token: "ix", label: "internet exchange", isRelationship: false },
+      org: { token: displayTypeMap.org, label: "organization", isRelationship: false },
+      organization: { token: displayTypeMap.organization, label: "organization", isRelationship: false },
+      user: { token: displayTypeMap.user, label: "user", isRelationship: false },
+      fac: { token: displayTypeMap.fac, label: "facility", isRelationship: false },
+      facility: { token: displayTypeMap.facility, label: "facility", isRelationship: false },
+      net: { token: displayTypeMap.net, label: "network", isRelationship: false },
+      network: { token: displayTypeMap.network, label: "network", isRelationship: false },
+      asn: { token: displayTypeMap.asn, label: "ASN", isRelationship: false },
+      ix: { token: displayTypeMap.ix, label: "internet exchange", isRelationship: false },
+      internetexchange: { token: displayTypeMap.internetexchange, label: "internet exchange", isRelationship: false },
+      carrier: { token: displayTypeMap.carrier, label: "carrier", isRelationship: false },
+      campus: { token: displayTypeMap.campus, label: "campus", isRelationship: false },
       ixlan: { token: "ixlan", label: "IX LAN", isRelationship: true },
       ixfac: { token: "ixfac", label: "IX-facility", isRelationship: true },
       internetexchangefacility: { token: "ixfac", label: "IX-facility", isRelationship: true },
@@ -1732,7 +1757,7 @@
 
   /**
    * Returns true when anchor visible text is a bare URL matching href.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLAnchorElement} anchor - Anchor node.
    * @returns {boolean} True when text is URL-like and safe to relabel.
    */
@@ -1755,7 +1780,7 @@
   /**
    * Strips trailing link-emoji tokens from visible anchor text.
    * Purpose: Prevent re-decoration cycles from treating prior emoji icons as label content.
-   * AI Maintenance: Preserve normalization/parsing rules and backward-compatible output formats.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {string} value - Raw anchor text.
    * @returns {string} Text without trailing link-emoji tokens.
    */
@@ -1768,7 +1793,7 @@
   /**
    * Returns true when anchor text is composed only of link-emoji tokens.
    * Purpose: Detect stray duplicate anchors created from repeated visual decoration.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLAnchorElement} anchor - Anchor to inspect.
    * @returns {boolean} True when text has no content beyond link emoji characters.
    */
@@ -1781,7 +1806,7 @@
   /**
    * Resolves previous sibling anchor, including wrappers that contain an anchor.
    * Purpose: Support duplicate cleanup in editor markup where anchors may be wrapped in spans.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {HTMLAnchorElement} anchor - Current anchor.
    * @returns {HTMLAnchorElement|null} Previous sibling anchor candidate.
    */
@@ -1795,7 +1820,7 @@
   /**
    * Determines whether an anchor is inside an editable composer region.
    * Purpose: Avoid modifying DeskPro editor content while snippets are inserted/managed.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLAnchorElement} anchor - Anchor to evaluate.
    * @returns {boolean} True when inside a contenteditable ancestor.
    */
@@ -1808,7 +1833,7 @@
    * Purpose: Idempotent marker to prevent duplicate processing; visible text and
    * native browser link styling are intentionally preserved (no restructuring,
    * no forced text-decoration overrides, no appended icon).
-   * AI Maintenance: Do NOT reintroduce text-mutation or text-decoration mutations here.
+   *  Do NOT reintroduce text-mutation or text-decoration mutations here.
    * @param {HTMLAnchorElement} anchor - Anchor to mark.
    * @param {string} [_initialLabel=""] - Reserved for backward compatibility; ignored.
    */
@@ -1821,7 +1846,7 @@
   /**
    * No-op retained for backward compatibility with hydration callers.
    * Visible text on pre-existing anchors is intentionally not mutated.
-   * AI Maintenance: Do NOT reintroduce visible-text mutation here.
+   *  Do NOT reintroduce visible-text mutation here.
    * @param {HTMLAnchorElement} _anchor - Decorated anchor (unused).
    * @param {string} _label - New text label (ignored).
    */
@@ -1831,7 +1856,7 @@
 
   /**
    * Hydrates existing PeeringDB anchors with contextual titles and compact labels.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLAnchorElement} anchor - Anchor to enrich.
    * @param {{ kind: string, id?: string, entity?: string }} info - Parsed anchor descriptor.
    * @returns {Promise<void>}
@@ -1916,7 +1941,7 @@
   /**
    * Decorates pre-existing PeeringDB anchors rendered in ticket HTML.
    * Purpose: Provide consistent iconography and rich contextual tooltips without text-node relinkification.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {Element} root - Root element to scan.
    */
   function decorateExistingPeeringDbLinks(root) {
@@ -1945,42 +1970,6 @@
         const previousHref = String(previousAnchor?.getAttribute?.("href") || "").trim();
         if (currentHref && previousHref && currentHref === previousHref) {
           anchor.remove();
-          return;
-        }
-      }
-
-      // Detect DeskPro-generated PeeringDB IP search links (/search/v2?q=<ip>).
-      if (info.kind === "pdb" && isFeatureEnabled("ipLinkification")) {
-        const qParam = String(info.url?.searchParams?.get("q") || "").trim();
-        const hasCidr = /\/\d+$/.test(qParam);
-        const isIpv4Query = !hasCidr && IPV4_TEST_REGEX.test(qParam) && /^[0-9.]+$/.test(qParam);
-        const isIpv6Query = !hasCidr && IPV6_TEST_REGEX.test(qParam) && isLikelyIpv6Address(qParam);
-
-        if (hasCidr && qParam) {
-          // CIDR prefix anchor (e.g. 192.168.0.0/24) — replace with plain text so
-          // it is not linkified and does not produce a broken IP search result.
-          anchor.replaceWith(document.createTextNode(qParam));
-          return;
-        }
-
-        // IPv6-like qParam that is NOT a complete address (DeskPro split a subnet prefix,
-        // e.g. "2001:df5:ebc0" from "2001:df5:ebc0::/48"). Replace with the anchor's text
-        // content — the remaining "::/48" is already plain text in the DOM.
-        const isFragmentedIpv6 =
-          !hasCidr && qParam.includes(":") && IPV6_TEST_REGEX.test(qParam) && !isLikelyIpv6Address(qParam);
-        if (isFragmentedIpv6) {
-          anchor.replaceWith(document.createTextNode(anchor.textContent || qParam));
-          return;
-        }
-
-        if (isIpv4Query || isIpv6Query) {
-          // Plain IP already linked by DeskPro — decorate in-place, skip text-node re-linkification.
-          ensureExistingPdbAnchorVisual(anchor, qParam);
-          anchor.title = `Search ${qParam} in PeeringDB`;
-          if (anchor.getAttribute(EXISTING_PDB_LINK_DECORATED_ATTR) !== "true") {
-            anchor.setAttribute(EXISTING_PDB_LINK_DECORATED_ATTR, "true");
-            void hydrateIpLinkLabel(anchor, qParam);
-          }
           return;
         }
       }
@@ -2020,7 +2009,7 @@
    * One-time cleanup pass for stale duplicate PeeringDB anchors from older render cycles.
    * Purpose: Remove emoji-only duplicate anchors already present in ticket DOM before
    * normal decoration runs.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {Element} root - Root element to scan.
    * @returns {number} Number of removed duplicate anchors.
    */
@@ -2057,7 +2046,7 @@
    * Decorates a mailto anchor for copy-to-clipboard UX.
    * Purpose: Add copy emoji indicator and remove underline decoration.
    * Necessity: Ticket operators need clear click affordance for mail addresses.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {HTMLAnchorElement} anchor - Mailto anchor to decorate.
    */
   function decorateMailtoAnchor(anchor) {
@@ -2123,7 +2112,7 @@
   /**
    * Decorates all mailto anchors in a subtree.
    * Purpose: Ensure initial render and dynamic content share identical mailto UX.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {Element} root - Root element to scan.
    */
   function decorateMailtoLinks(root) {
@@ -2136,7 +2125,7 @@
 
   /**
    * Normalizes known malformed PeeringDB CP double-slash URLs in plain text.
-   * AI Maintenance: Preserve normalization/parsing rules and backward-compatible output formats.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {string} value - Raw text containing URL content.
    * @returns {string} Text with normalized CP URL prefix.
    */
@@ -2147,7 +2136,7 @@
   /**
    * Normalizes malformed PeeringDB CP URL prefix in anchor href and text nodes.
    * Purpose: Keep both clickable destination and displayed text consistent.
-   * AI Maintenance: Preserve normalization/parsing rules and backward-compatible output formats.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {HTMLAnchorElement} anchor - Anchor node to normalize.
    */
   function normalizeAnchorHrefAndText(anchor) {
@@ -2174,7 +2163,7 @@
 
   /**
    * Applies CP URL double-slash normalization to all anchors under root.
-   * AI Maintenance: Preserve normalization/parsing rules and backward-compatible output formats.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {Element} root - Root element to scan.
    */
   function normalizePeeringDbCpDoubleSlashLinks(root) {
@@ -2189,7 +2178,7 @@
    * Marks specific DeskPro action links as decorated without changing their
    * visible text or text-decoration. Intrusive emoji/icon decoration was
    * intentionally removed; native browser link styling now applies.
-   * AI Maintenance: Do NOT reintroduce text restructuring or text-decoration mutations.
+   *  Do NOT reintroduce text restructuring or text-decoration mutations.
    * @param {HTMLAnchorElement} anchor - Anchor to evaluate.
    */
   function decorateTargetActionLink(anchor) {
@@ -2208,7 +2197,7 @@
 
   /**
    * Decorates all target DeskPro action links in a subtree.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {Element} root - Root element to scan.
    */
   function decorateTargetActionLinks(root) {
@@ -2257,31 +2246,10 @@
         ];
       },
     },
-    {
-      featureFlag: "ipLinkification",
-      // IPv4 host address — not a CIDR prefix, not inside an existing link.
-      regex: IPV4_TOKEN_REGEX,
-      buildNodes([fullMatch]) {
-        const anchor = makeIpLink(fullMatch);
-        void hydrateIpLinkLabel(anchor, fullMatch);
-        return [anchor];
-      },
-    },
-    {
-      featureFlag: "ipLinkification",
-      // IPv6 address — colon-hex notation, not a CIDR prefix.
-      regex: IPV6_TOKEN_REGEX,
-      buildNodes([fullMatch]) {
-        if (!isLikelyIpv6Address(fullMatch)) return [document.createTextNode(fullMatch)];
-        const anchor = makeIpLink(fullMatch);
-        void hydrateIpLinkLabel(anchor, fullMatch);
-        return [anchor];
-      },
-    },
   ];
 
   // Quick pre-test — text nodes matching none of the rules are rejected early.
-  const QUICK_TEST_REGEX = /\bASN?\d+\b|\b(?:member\s+asn|network\s+asn|asn)\s*[:=#-]?\s*\d{3,6}\b|\b(?:(?:they\s+also\s+)?provided this ASN in their request)\s*[:#=-]?\s*\d+|wishes to be affiliated to Organization\s+['"\u201c\u201d\u2018\u2019][^'"\u201c\u201d\u2018\u2019\n]+['"\u201c\u201d\u2018\u2019]|(?:^|\n)\s*\d{3,6}\s*(?:\n|$)|\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}(?!\/\d)(?!\.\d)\b|\b(?=[0-9a-fA-F:]*:[0-9a-fA-F:]*)(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}(?!:)(?!\/\d)\b/i;
+  const QUICK_TEST_REGEX = /\bASN?\d+\b|\b(?:member\s+asn|network\s+asn|asn)\s*[:=#-]?\s*\d{3,6}\b|\b(?:(?:they\s+also\s+)?provided this ASN in their request)\s*[:#=-]?\s*\d+|wishes to be affiliated to Organization\s+['"\u201c\u201d\u2018\u2019][^'"\u201c\u201d\u2018\u2019\n]+['"\u201c\u201d\u2018\u2019]|(?:^|\n)\s*\d{3,6}\s*(?:\n|$)/i;
 
   /**
    * Finds standalone 3-6 digit ASN candidates only in high-confidence contexts.
@@ -2289,7 +2257,7 @@
    * - standalone ASN-like line adjacent to both IPv4 and IPv6 mentions
    * - sequence context containing member-removal style fields (speed/policy + IP labels)
    * - line preceded by explicit ASN label
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} text - Text-node content.
    * @returns {Array<{start:number,end:number,asn:string}>} Candidate ranges.
    */
@@ -2333,7 +2301,7 @@
 
   /**
    * Extracts plain email address from a mailto href.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} href - Anchor href value.
    * @returns {string} Decoded email address, or empty string.
    */
@@ -2351,7 +2319,7 @@
   /**
    * Returns the CP account-email search URL for a specific email value.
    * Purpose: Build stable deep links from DeskPro mailto addresses into CP lookup.
-   * AI Maintenance: Preserve normalization/parsing rules and backward-compatible output formats.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {string} emailAddress - Email address extracted from mailto href.
    * @returns {string} CP email search URL, or empty string when input is invalid.
    */
@@ -2364,7 +2332,7 @@
   /**
    * Returns a stable owner id for mailto helper decorations on an anchor.
    * Purpose: Tie sibling helper links to a specific mailto anchor across re-decoration passes.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {HTMLAnchorElement} anchor - Decorated mailto anchor.
    * @returns {string} Stable owner id value.
    */
@@ -2379,7 +2347,7 @@
 
   /**
    * Copies text to clipboard using modern API with legacy fallback.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} text - Text to copy.
    * @returns {Promise<boolean>} True when copy succeeded.
    */
@@ -2412,7 +2380,7 @@
   /**
    * Intercepts mailto clicks and converts them to copy-to-clipboard actions.
    * Purpose: Prevent default mail client opening inside DeskPro workflows.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {MouseEvent} event - Captured click event.
    */
   function interceptMailtoClick(event) {
@@ -2446,7 +2414,7 @@
   /**
    * Build a DocumentFragment from `text` by replacing all pattern matches with
    * link nodes according to REPLACEMENT_RULES. Returns null if nothing matches.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function linkifyText(text) {
     const hits = [];
@@ -2493,7 +2461,7 @@
   /**
    * Replace all matched tokens inside a single text node with linked nodes.
    * Skips nodes already inside an <a> or a skipped-tag element.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function linkifyTextNode(textNode) {
     const parent = textNode.parentNode;
@@ -2509,7 +2477,7 @@
    * Walk all text nodes under `root` and linkify each one.
    * Collects nodes into an array first so the TreeWalker isn't
    * invalidated by DOM mutations during replacement.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function linkifySubtree(root) {
     if (root.nodeType !== Node.ELEMENT_NODE) return;
@@ -2550,7 +2518,7 @@
 
   /**
    * Checks whether a node belongs to the scoped ticket message container.
-   * AI Maintenance: Keep checks cheap and robust for both element/text nodes.
+   * @ai Keep checks cheap and robust for both element/text nodes.
    * @param {Node} node - Candidate node from mutation records.
    * @returns {boolean} True when node is inside scoped container.
    */
@@ -2572,7 +2540,7 @@
   /**
    * Registers DP Tampermonkey runtime toggles for feature flags.
    * Purpose: Enable rapid runtime experimentation without redeploying.
-   * AI Maintenance: Preserve menu command registration behavior.
+   * @ai Preserve menu command registration behavior.
    */
   function registerDpMenuCommands() {
     if (dpMenuCommandsRegistered) return;
@@ -2634,7 +2602,7 @@
   /**
    * Handles MutationObserver events for dynamically loaded DeskPro content.
    * Purpose: Re-apply all normalizers/decorators/linkification to added nodes.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {MutationRecord[]} mutations - Mutation records from observer callback.
    */
   function onMutations(mutations) {
@@ -2667,7 +2635,7 @@
   /**
    * Initializes DeskPro consolidated tools on page load.
    * Purpose: Run cache migration, initial normalization/decorators and attach listeners/observer.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function init() {
     registerDpMenuCommands();

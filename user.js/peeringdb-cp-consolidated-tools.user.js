@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.174.20260501
+// @version      2.0.176.20260504
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
@@ -37,7 +37,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.174.20260501";
+  const SCRIPT_VERSION = "2.0.176.20260504";
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
   const SHARED_USER_AGENT_STORAGE_KEY = "pdbAdmincom.userAgent";
@@ -149,17 +149,32 @@
    */
   const ENTITY_TYPES_OWN_NAME = new Set(["organization", "facility", "internetexchange"]);
 
+  const displayTypeMap = {
+    fac: "fac",
+    facility: "fac",
+    net: "net",
+    network: "net",
+    asn: "net",
+    org: "org",
+    organization: "org",
+    carrier: "carrier",
+    ix: "ix",
+    internetexchange: "ix",
+    campus: "campus",
+    user: "user",
+  };
+
   /**
    * Unified entity slug mapping for frontend URLs and API resource paths.
    * getFrontendSlugByEntity delegates to this map.
    */
   const ENTITY_SLUG_MAP = {
-    facility: "fac",
-    network: "net",
-    organization: "org",
-    carrier: "carrier",
-    internetexchange: "ix",
-    campus: "campus",
+    facility: displayTypeMap.facility,
+    network: displayTypeMap.network,
+    organization: displayTypeMap.organization,
+    carrier: displayTypeMap.carrier,
+    internetexchange: displayTypeMap.internetexchange,
+    campus: displayTypeMap.campus,
   };
 
   /**
@@ -266,7 +281,7 @@
 
   /**
    * Reads JSON feature-flag overrides from localStorage.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {object} Parsed override map, or empty object when unavailable/invalid.
    */
   function getFeatureFlagOverrides() {
@@ -282,7 +297,7 @@
 
   /**
    * Returns resolved feature-flag value using defaults plus localStorage overrides.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} flagName - Flag key inside FEATURE_FLAGS.
    * @returns {boolean} Resolved boolean state.
    */
@@ -299,7 +314,7 @@
 
   /**
    * Returns feature-flag default/override/resolved state.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} flagName - Flag key inside FEATURE_FLAGS.
    * @returns {{ defaultValue: boolean, overrideValue: boolean|null, enabled: boolean }|null} Flag state.
    */
@@ -315,7 +330,7 @@
 
   /**
    * Sets a feature-flag override and removes redundant entries.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} flagName - Flag key inside FEATURE_FLAGS.
    * @param {boolean} enabled - Resolved target state.
    */
@@ -343,7 +358,7 @@
 
   /**
    * Removes all feature-flag overrides and restores defaults.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function resetFeatureFlagOverrides() {
     try {
@@ -358,7 +373,7 @@
    * Purpose: Provide one authoritative source of truth for all state-driven visuals.
    * Necessity: Background, title markers, and future features derive from the same
    * state data. Computing it once prevents drift and redundant DOM/field reads.
-   * AI Maintenance: Preserve normalization/parsing rules and backward-compatible output formats.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {object} ctx - Route context from getRouteContext().
    * @returns {{ state: string, entity: string, status: string,
    *             isDummyChildFacility: boolean }}
@@ -386,7 +401,7 @@
    * Ensures CSS classes for entity-state background highlighting are available.
    * Purpose: Centralize state background colors in one style block instead of inline colors.
    * Necessity: Keeps state precedence predictable and easy to maintain across modules.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function ensureEntityStateBackgroundStyles() {
     const styleId = `${MODULE_PREFIX}EntityStateBackgroundStyle`;
@@ -418,7 +433,7 @@
    * 3) deleted (all entities)
    * Purpose: Align visual background behavior with policy-defined ordering.
    * Necessity: Inline per-module background changes can conflict and obscure precedence.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ entity: string, status: string, isDummyChildFacility: boolean }} ctx - Route context.
    */
   function applyEntityStateBackgroundClass(ctx) {
@@ -448,7 +463,7 @@
    * Synchronizes title markers for dummy-facility and deleted states.
    * Purpose: Keep heading markers accurate as admins edit status/org fields in-place.
    * Necessity: Marker rendering previously relied on module-local one-time insertions.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ entity: string }} ctx - Route context used to resolve the current visual state.
    */
   function syncEntityStateTitleMarkers(ctx) {
@@ -509,7 +524,7 @@
    * Purpose: Refresh state highlighting when admins change status or org while editing.
    * Necessity: Without listeners, styling only reflects the state at initial page load.
    * Returns a dispose function that unsubscribes from the bus (lifecycle support).
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {{ entity: string }} ctx - Route context passed through to refresh callbacks.
    * @returns {Function|null} Dispose function that removes bus subscriptions, or null.
    */
@@ -539,7 +554,7 @@
    * Closes a single dropdown action item and resets its toggle accessibility state.
    * Purpose: Provide centralized close behavior for toolbar and secondary-row dropdowns.
    * Necessity: Shared close logic prevents duplicated listener code per dropdown instance.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {HTMLLIElement} listItem - The dropdown list item to close.
    */
   function closeDropdownActionItem(listItem) {
@@ -564,7 +579,7 @@
    * Closes all open dropdowns except an optional exempt item.
    * Purpose: Enforce single-open-dropdown behavior across custom CP action menus.
    * Necessity: Simplifies global click/escape handling and keeps UI predictable.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {HTMLLIElement|null} [exemptItem=null] - Optional item to leave open.
    */
   function closeAllDropdownActionItems(exemptItem = null) {
@@ -578,7 +593,7 @@
    * Registers one global listener pair for dropdown close behavior.
    * Purpose: Replace per-dropdown document listeners with one shared close handler.
    * Necessity: Reduces global event listener count and improves maintainability.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function ensureDropdownGlobalCloseListener() {
     if (dropdownGlobalCloseListenerBound) return;
@@ -605,7 +620,7 @@
    * Attempts to acquire a named action lock.
    * Purpose: Prevent duplicate execution for long-running script-driven actions.
    * Necessity: Double clicks or repeated menu triggers can race and produce duplicate saves.
-   * AI Maintenance: Preserve execution ordering, locks, and route/module boundaries.
+   * @ai Preserve execution ordering, locks, and route/module boundaries.
    * @param {string} lockKey - Unique identifier for the action being locked.
    * @returns {boolean} True when the lock was acquired; false if already held.
    */
@@ -622,7 +637,7 @@
    * Releases a previously acquired action lock.
    * Purpose: Re-enable action execution after async work completes.
    * Necessity: Locks must always be released to avoid permanent action blocking.
-   * AI Maintenance: Preserve execution ordering, locks, and route/module boundaries.
+   * @ai Preserve execution ordering, locks, and route/module boundaries.
    * @param {string} lockKey - Unique identifier for the lock to release.
    */
   function endActionLock(lockKey) {
@@ -637,7 +652,7 @@
    * production use is silent.
   * Toggle with: localStorage.setItem('pdbAdmincom.debug', '1')
    *   or via the Tampermonkey menu command "CP: Toggle Debug Mode".
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {boolean} True when debug mode is active.
    */
   function isDebugEnabled() {
@@ -648,7 +663,7 @@
    * Structured debug logger — no-ops unless debug mode is active.
    * Purpose: Provide consistent prefixed console output for module and
    * bus diagnostics without polluting normal page console output.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} tag  - short subsystem label shown in brackets.
    * @param {string} msg  - human-readable message.
    * @param {...*}   rest - optional extra values forwarded to console.debug.
@@ -661,7 +676,7 @@
   /**
    * Persists a lightweight org-update success audit entry.
    * Purpose: Keep a short local history to simplify regression triage.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ orgId: string, name: string, aka?: string }} entry - Successful update entry.
    */
   function appendOrgUpdateSuccessAuditEntry(entry) {
@@ -698,7 +713,7 @@
    * Returns storage for domain-scoped cache entries.
    * Purpose: Share short-lived cache payloads across tabs on the same origin.
    * Necessity: tab-scoped storage breaks cross-tab consistency; localStorage enables cross-tab reuse.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @returns {Storage|null} localStorage instance, or null when unavailable.
    */
   function getDomainCacheStorage() {
@@ -716,7 +731,7 @@
   * Purpose: Provide optional per-tab persistence for ephemeral state when needed.
   * Necessity: Some flows benefit from tab-local fallback storage that does not
   * leak across tabs on the same origin.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @returns {Storage|null} sessionStorage instance, or null when unavailable.
    */
   function getTabSessionStorage() {
@@ -733,7 +748,7 @@
    * Normalizes organization ID into a stable cache key suffix.
    * Purpose: Ensure cache keys are deterministic across string/number ID inputs.
    * Necessity: Different call sites may pass IDs with whitespace or mixed types.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string|number} orgId - Raw organization ID from form field or API response.
    * @returns {string} Trimmed string representation of the org ID.
    */
@@ -745,7 +760,7 @@
    * Builds storage key used for persisted org-name cache entries.
    * Purpose: Keep all org-name cache keys namespaced under module prefix.
    * Necessity: Avoid collisions with other userscripts and local app storage keys.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string|number} orgId - Organization ID to build the key for.
    * @returns {string} Namespaced storage key, or empty string if orgId is invalid.
    */
@@ -760,7 +775,7 @@
    * Purpose: Reuse recent org-name lookups to reduce repeated API requests.
    * Necessity: Update Name and Reset Information may request the same org repeatedly.
    * Returns null when cache is absent, malformed, or expired.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string|number} orgId - Organization ID to look up.
    * @returns {string|null} Cached organization name, or null on miss/expiry/malform.
    */
@@ -812,7 +827,7 @@
    * Stores organization-name cache entry in memory and domain storage.
    * Purpose: Persist successful org-name lookups for current tab lifecycle.
    * Necessity: Avoid duplicate network requests for frequently used org IDs.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string|number} orgId - Organization ID to cache the name for.
    * @param {string} name - Resolved organization name to persist.
    */
@@ -842,7 +857,7 @@
    * Clears all organization-name cache entries from memory and domain storage.
    * Purpose: Provide explicit cache invalidation control for stale org-name lookups.
    * Necessity: Admin workflows occasionally require immediate refresh after org renames.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    */
   function clearOrganizationNameCache() {
     orgNameMemoryCache.clear();
@@ -872,7 +887,7 @@
    * Purpose: Allows individual modules to be toggled on/off without code changes.
    * Necessity: Provides user-level module control for the modular architecture.
    * Supports both JSON array and comma-separated formats for backward compatibility.
-   * AI Maintenance: Preserve execution ordering, locks, and route/module boundaries.
+   * @ai Preserve execution ordering, locks, and route/module boundaries.
    * @returns {Set<string>} Set of module ID strings that are currently disabled.
    */
   function getDisabledModules() {
@@ -900,7 +915,7 @@
    * Checks if a module is enabled (not in the disabled set).
    * Purpose: Gate-keeper for module execution in dispatchModules().
    * Necessity: Implements selective module control without removing code.
-   * AI Maintenance: Preserve execution ordering, locks, and route/module boundaries.
+   * @ai Preserve execution ordering, locks, and route/module boundaries.
    * @param {string} moduleId - The module identifier to check.
    * @param {Set<string>} disabledModules - Set of currently disabled module IDs.
    * @returns {boolean} True when the module is enabled (not in the disabled set).
@@ -915,7 +930,7 @@
    * Retrieves explicit or auto-computed User-Agent for this session.
    * Purpose: Provide flexible UA configuration with fallback to trust-based generation.
    * Necessity: Allows manual override via localStorage while auto-computing from domain trust.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @returns {string} User-Agent string to use for outgoing requests.
    */
   function getCustomRequestUserAgent() {
@@ -930,7 +945,7 @@
    * Purpose: Provides a unique identifier for correlating requests within a session.
    * Necessity: Enables server-side analytics and request tracking without exposing device fingerprint.
    * UUID persists across page reloads and tabs on the same origin.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @returns {string} Session UUID string (generated once per browser session).
    */
   function getSessionUuid() {
@@ -951,7 +966,7 @@
    * Purpose: Creates a privacy-preserving identifier for requests from untrusted domains.
    * Necessity: Balances analytics tracking with user privacy for non-trusted networks.
    * Returns a 16-character hex string derived from UA, platform, language, CPU count, memory.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {string} 16-character lowercase hex fingerprint string.
    */
   function computeClientFingerprint() {
@@ -978,7 +993,7 @@
    * Necessity: Distinguishes between trusted (localhost, peeringdb.com) and untrusted domains
    * to decide whether to use full browser info or privacy-preserving fingerprint.
    * Also normalizes IPv6 URIs with bracket notation ([::1]) for transparent matching.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {string} domain - Hostname to test (e.g., "www.peeringdb.com", "localhost").
    * @returns {boolean} True when the domain matches a TRUSTED_DOMAINS_FOR_UA entry.
    */
@@ -1012,7 +1027,7 @@
    * Necessity: For trusted domains (development, peeringdb.com), includes browser/platform for debugging;
    * for untrusted domains, uses fingerprint only to minimize data exposure.
    * Includes session UUID in both cases for request correlation.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} domain - Hostname of the page making the request.
    * @returns {string} Constructed User-Agent header value.
    */
@@ -1035,7 +1050,7 @@
    * Constructs HTTP headers for Tampermonkey requests with User-Agent.
    * Purpose: Centralize header building for all script-initiated requests.
    * Necessity: Ensures consistent User-Agent and other important headers across all API calls.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {object} [baseHeaders={}] - Optional base headers to merge with generated ones.
    * @returns {object} Header object with User-Agent key populated.
    */
@@ -1055,7 +1070,7 @@
   /**
    * Returns a copy of headers safe to pass into fetch().
    * Purpose: Remove forbidden header names that browsers block in fetch.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {object} headers - Source headers object.
    * @returns {object} Fetch-safe headers object.
    */
@@ -1070,7 +1085,7 @@
   /**
    * Reads a cookie value by name from document.cookie.
    * Purpose: Retrieve CSRF token for authenticated state-changing API requests.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string} name - Cookie name to look up.
    * @returns {string} Decoded cookie value or empty string when missing.
    */
@@ -1094,7 +1109,7 @@
   /**
    * Resolves CSRF token from common cookie and DOM locations.
    * Purpose: Ensure authenticated mutation requests can pass Django CSRF checks.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {string} CSRF token string, or empty string if unavailable.
    */
   function getCsrfToken() {
@@ -1124,7 +1139,7 @@
   /**
    * Extracts a header value from raw response headers text.
    * Purpose: Retrieve server-provided diagnostics (e.g., x-auth-status) from GM responses.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} rawHeaders - Raw response headers string.
    * @param {string} headerName - Header name to find (case-insensitive).
    * @returns {string} Header value, or empty string when absent.
@@ -1150,7 +1165,7 @@
    * Logs outgoing request UA for external URIs when debug mode is enabled.
    * Purpose: Provide per-request UA visibility for RDAP/bootstrap troubleshooting.
    * Necessity: External requests can behave differently based on the effective UA.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ method: string, url: string, headers: object, attempt?: number, retries?: number, mode?: string }} meta
    */
   function logExternalRequestUserAgent(meta) {
@@ -1189,7 +1204,7 @@
    * Emits current User-Agent details to debug console when diagnostics are enabled.
    * Purpose: Make it easy to verify which UA is currently active and why.
    * Necessity: Debugging remote API behavior often depends on the effective UA value.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {boolean} True when a log was emitted; false when debug mode is disabled.
    */
   function logCurrentUserAgentDebug() {
@@ -1219,7 +1234,7 @@
    * Purpose: Provide a single authoritative source of routing data for all modules.
    * Necessity: Multiple modules need entity type, entity ID, and page kind without
    * re-parsing the URL each time — centralizing parsing prevents divergent path logic.
-   * AI Maintenance: Preserve execution ordering, locks, and route/module boundaries.
+   * @ai Preserve execution ordering, locks, and route/module boundaries.
    * @returns {{ host: string, path: string[], pathName: string, isCp: boolean,
    *             entity: string, entityId: string, pageKind: string,
    *             isEntityChangePage: boolean, isEntityListPage: boolean }}
@@ -1243,7 +1258,7 @@
 
   /**
    * Resolves canonical entity key for hard-exclude checks.
-   * AI Maintenance: Preserve normalization/parsing rules and backward-compatible output formats.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {string} entity - Route entity segment.
    * @returns {string} Canonical entity key, or empty string if unsupported.
    */
@@ -1254,7 +1269,7 @@
 
   /**
    * Returns exclusion metadata when current route is hard-excluded.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ isEntityChangePage: boolean, entity: string, entityId: string }} ctx - Route context.
    * @returns {{ entityType: string, entityId: string }|null} Exclusion info or null.
    */
@@ -1273,7 +1288,7 @@
 
   /**
    * Returns true when script-driven write/change actions must be blocked.
-   * AI Maintenance: Preserve execution ordering, locks, and route/module boundaries.
+   * @ai Preserve execution ordering, locks, and route/module boundaries.
    * @param {{ isEntityChangePage: boolean, entity: string, entityId: string }} ctx - Route context.
    * @returns {boolean} True when write/change actions are disallowed for this entity.
    */
@@ -1283,7 +1298,7 @@
 
   /**
    * Notifies user that write/change action is blocked for hard-excluded entities.
-   * AI Maintenance: Preserve execution ordering, locks, and route/module boundaries.
+   * @ai Preserve execution ordering, locks, and route/module boundaries.
    * @param {string} actionLabel - Human-readable action label.
    * @param {{ isEntityChangePage: boolean, entity: string, entityId: string }} ctx - Route context.
    */
@@ -1305,7 +1320,7 @@
    * Necessity: Reactive listeners can fire dozens of times per second; batching keeps
    * visual updates smooth without debounce latency.
    * If a callback is already pending for the same key, the new fn replaces it.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {string} key - Deduplication key; one pending callback allowed per key.
    * @param {Function} fn - DOM write callback to execute in the next animation frame.
    */
@@ -1328,7 +1343,7 @@
    * subscribers so future modules attach to named events rather than raw DOM fields.
    * Necessity: Prevents N-modules × 2-fields listener explosion; one DOM binding
    * per field emits to all interested subscribers through the bus.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   const pdbBus = (() => {
     const listeners = new Map();
@@ -1355,7 +1370,7 @@
    * addEventListener call on the same elements.
    * Necessity: Single DOM listener per field, many bus subscribers — O(1) DOM cost.
    * Guarded by data-pdb-cp-bus-bound so safe to call from multiple modules.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function bindFormFieldBus() {
     const statusSelect = qs("#id_status");
@@ -1380,7 +1395,7 @@
    * Purpose: Reduce boilerplate for DOM querying throughout the script.
    * Necessity: Used extensively for finding form fields and toolbar elements.
    * Wraps in try-catch to safely return null on selector errors.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {string} selector - CSS selector string.
    * @param {Document|Element} [root=document] - Optional scoping root element.
    * @returns {Element|null} First matching element, or null.
@@ -1397,7 +1412,7 @@
    * Convenience wrapper for querySelectorAll returning an array.
    * Purpose: Reduce boilerplate for finding multiple DOM elements.
    * Necessity: Used for inline sets, dynamic forms, and multi-element operations.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {string} selector - CSS selector string.
    * @param {Document|Element} [root=document] - Optional scoping root element.
    * @returns {Element[]} Array of matching elements (may be empty).
@@ -1414,7 +1429,7 @@
    * Retrieves trimmed value from form input elements (input, select, textarea).
    * Purpose: Unified value extraction that handles both .value property and data attributes.
    * Necessity: Normalizes form field reading across different input types in Django admin forms.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} selector - CSS selector for the target input element.
    * @returns {string} Trimmed value string, or empty string if element not found.
    */
@@ -1433,7 +1448,7 @@
    * Reads the value attribute of the currently selected option from a `<select>` element.
    * Purpose: Extract the option value rather than display text for form submissions.
    * Necessity: Some dropdowns store codes (country codes) in value vs. full text in display.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} selector - CSS selector for the target `<select>` element.
    * @returns {string} Trimmed value of the selected option, or empty string if absent.
    */
@@ -1455,7 +1470,7 @@
    * Purpose: Unified selected-option reader that works across choice and render states.
    * Necessity: `option:checked` and `option[selected]` behave differently across browsers
    * and scripted form states; normalizing prevents silent empty reads.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} selector - CSS selector for the target `<select>` element.
    * @returns {string} Trimmed text of the selected option, or empty string if absent.
    */
@@ -1478,7 +1493,7 @@
    * falling back to a formatted street address when coordinates are absent.
    * Necessity: Facilities may have coordinates or address-only data; a unified
    * builder covers both cases without branching at the call site.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @returns {string} Comma-separated coordinate pair or formatted address string.
    */
   function buildFacilityMapsQuerySource() {
@@ -1506,7 +1521,7 @@
    * Sets value on form input elements with consistent synchronization.
    * Purpose: Unified value assignment that updates both .value and attributes.
    * Necessity: Ensures form frameworks recognize the change (defaultValue for reset detection).
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} selector - CSS selector for the target input element.
    * @param {string} value - Value to assign to the matched element.
    * @returns {boolean} True when the element was found and updated; false otherwise.
@@ -1531,7 +1546,7 @@
    * Sets network name field value with proper change event firing.
    * Purpose: Ensure form validation and dependency updates trigger when name changes.
    * Necessity: Django admin forms monitor change events; manual setting requires event dispatch.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} value - New name value to assign to the network name input.
    * @returns {boolean} True when the #id_name element was found and updated.
    */
@@ -1553,7 +1568,7 @@
    * Purpose: Keep Long Name reads/writes resilient to minor template/id changes.
    * Necessity: CP forms may render this field with different IDs depending on
    * model/version, so lookup must support both ID and label-based discovery.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @returns {HTMLInputElement|HTMLTextAreaElement|null} Long Name input element.
    */
   function getNetworkLongNameInputElement() {
@@ -1582,7 +1597,7 @@
 
   /**
    * Reads current Long Name field value for network change forms.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @returns {string} Trimmed long-name value, or empty string when unavailable.
    */
   function getNetworkLongNameValue() {
@@ -1593,7 +1608,7 @@
 
   /**
    * Sets Long Name field value with change/input events.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} value - Value to set in Long Name.
    * @returns {boolean} True when Long Name field was found and updated.
    */
@@ -1614,7 +1629,7 @@
 
   /**
    * Resolves editable long-name input element for organization forms.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {HTMLInputElement|HTMLTextAreaElement|null} Long Name input element.
    */
   function getOrganizationLongNameInputElement() {
@@ -1643,7 +1658,7 @@
 
   /**
    * Reads current Long Name field value for organization change forms.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {string} Trimmed long-name value, or empty string when unavailable.
    */
   function getOrganizationLongNameValue() {
@@ -1654,7 +1669,7 @@
 
   /**
    * Sets organization Long Name field value with change/input events.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} value - Value to set in Long Name.
    * @returns {boolean} True when Long Name field was found and updated.
    */
@@ -1679,7 +1694,7 @@
    * in Long Name.
    * Necessity: Organizations frequently include legal prefixes (e.g. PT, CV) and
    * suffixes (e.g. LTDA, SAS) that are better suited for Long Name than short Name.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} name - Full organization name.
    * @returns {string} Name without leading company-type prefix or trailing suffix tokens.
    */
@@ -1972,7 +1987,7 @@
    * Purpose: Keep short Name concise when source names include department/division text.
    * Necessity: Names like "Company, Data Network Management Division" should keep
    * the unit in Long Name while using company core in Name.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} name - Full organization/network name.
    * @returns {string} Name with trailing unit descriptor removed when confidently detected.
    */
@@ -2013,7 +2028,7 @@
   /**
    * Resolves canonical short name from comma-separated legal aliases.
    * Purpose: Handle patterns like "FOO SDN BHD, Foo Berhad" and keep one compact short name.
-   * AI Maintenance: Preserve normalization/parsing rules and backward-compatible output formats.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {string} name - Full organization/network name.
    * @returns {string} Canonical compact alias, or empty string when not confidently resolvable.
    */
@@ -2044,7 +2059,7 @@
   /**
    * Removes trailing registration-number segment when appended after a comma.
    * Example: "Company PTE. LTD., 202208375N" -> "Company PTE. LTD."
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} name - Raw full name.
    * @returns {string} Name without trailing registration segment when confidently detected.
    */
@@ -2104,7 +2119,7 @@
 
   /**
    * Compacts an entity name for short Name field while preserving legal/full form in Long Name.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} name - Source full name.
    * @returns {{ shortName: string, longName: string }} Compacted short name and optional long name.
    */
@@ -2150,7 +2165,7 @@
   /**
    * Normalizes simple single-dash alphabetic forms into spaced words.
    * Example: "Locl-net" -> "Locl Net".
-   * AI Maintenance: Preserve normalization/parsing rules and backward-compatible output formats.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {string} value - Source string.
    * @returns {string} Normalized string.
    */
@@ -2165,7 +2180,7 @@
   /**
    * Collapses exact comma-separated duplicate names.
    * Example: "Name, Name" -> "Name"
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} name - Raw name candidate.
    * @returns {string} Deduplicated name when exact duplication is detected.
    */
@@ -2202,7 +2217,7 @@
   /**
    * Detects ASN-like token variants inside free-form text.
    * Examples: "AS123456", "ASN 123456", "123456".
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} value - Input text to inspect.
    * @returns {boolean} True when an ASN-like token is present.
    */
@@ -2217,7 +2232,7 @@
   /**
    * Detects names that look like generated maintainer/registry handles.
    * Purpose: Avoid setting network short Name to opaque handle-like values.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} value - Candidate name.
    * @returns {boolean} True when the value looks autogenerated/handle-like.
    */
@@ -2258,7 +2273,7 @@
   *   - "PERSON trading as COMPANY", "PERSON t/a COMPANY", or "PERSON dba COMPANY" → extracts "COMPANY"
    *   - "Name, remarks: GARBAGE" → extracts "Name"
    *   - Leading/trailing whitespace and punctuation cleanup
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} name - Organization name possibly containing corruption.
    * @returns {string} Cleaned organization name, or original if no corruption detected.
    */
@@ -2305,7 +2320,7 @@
   * trading-as patterns (e.g., "trading as", "t/a", "dba").
    * Purpose: Split legal/person prefix into AKA while keeping company name as canonical name.
    * Example: "Remzi Toker trading as VENTURESDC" -> { name: "VENTURESDC", knownAs: "Remzi Toker" }
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} name - Raw organization name.
    * @returns {{ name: string, knownAs: string }} Parsed identity values.
    */
@@ -2336,7 +2351,7 @@
    * Example:
   * "NET-KONT@KT S.C. <PARTNER_1> <PARTNER_2>"
   * -> { name: "NET-KONT@KT S.C.", knownAs: "<PARTNER_1> <PARTNER_2>" }
-   * AI Maintenance: Preserve normalization/parsing rules and backward-compatible output formats.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {string} name - Raw organization name.
    * @returns {{ name: string, knownAs: string }} Parsed identity values.
    */
@@ -2373,7 +2388,7 @@
   /**
    * Resolves canonical name + AKA identity from known malformed/alias patterns.
    * Purpose: Keep all AKA extraction rules in one place.
-   * AI Maintenance: Preserve normalization/parsing rules and backward-compatible output formats.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {string} name - Raw organization name.
    * @returns {{ name: string, knownAs: string }} Parsed identity values.
    */
@@ -2395,7 +2410,7 @@
    * Generates a deterministic non-AS fallback network name with optional suffix.
    * Purpose: Keep required name fields populated when higher-quality sources fail.
    * Necessity: Explicitly avoids AS<id>/AS<asn> placeholder formats.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string|number} _asn - Unused (kept for signature compatibility).
    * @param {string|number} networkId - CP network record ID used as fallback.
    * @param {string} [suffix=""] - Optional suffix to append (e.g., " #42" for deleted records).
@@ -2409,7 +2424,7 @@
   /**
    * Selects the first meaningful non-handle network name from candidate strings.
    * Purpose: Prefer human-readable naming before falling back to deterministic placeholders.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string[]} candidates - Raw candidate name strings ordered by preference.
    * @returns {string} Best compacted non-handle name, or empty string when none found.
    */
@@ -2429,7 +2444,7 @@
    * Returns the PeeringDB frontend URL slug for a given CP entity type.
    * Purpose: Translate internal CP entity names to their public frontend URL segments.
    * Necessity: Centralizes the entity→slug mapping shared by frontend links and API paths.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} entity - Lowercase CP entity type (e.g., "internetexchange").
    * @returns {string} Frontend URL slug (e.g., "ix"), or empty string if unmapped.
    */
@@ -2442,7 +2457,7 @@
    * Purpose: Generate the canonical frontend path used for toolbar link href values.
    * Necessity: Centralizes path construction from entity type + ID to avoid slug/ID drift
    * across separate call sites that build frontend links.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ entity: string, entityId: string }} ctx - Route context from getRouteContext().
    * @returns {string} Root-relative path such as "/ix/42", or empty string on failure.
    */
@@ -2456,7 +2471,7 @@
    * Resolves PeeringDB API resource slug for a CP entity type.
    * Purpose: Build direct JSON API links for the current entity page.
    * Necessity: CP workflows often require quick access to canonical API payloads.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} entity - Lowercase CP entity type (e.g., "internetexchange").
    * @returns {string} API resource slug (e.g., "ix"), or empty string if unmapped.
    */
@@ -2468,7 +2483,7 @@
    * Builds full API JSON URL for the current CP entity context.
    * Purpose: Provide one-click navigation to the matching API record.
    * Necessity: Avoid manual URL crafting when validating backend/source-of-truth data.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ entity: string, entityId: string }} ctx - Route context from getRouteContext().
    * @returns {string} Full API URL (e.g., "https://www.peeringdb.com/api/ix/42"), or empty string.
    */
@@ -2483,7 +2498,7 @@
    * Builds a canonical PeeringDB API object URL for resource/id pairs.
    * Purpose: Keep API endpoint construction centralized and consistent.
    * Necessity: Avoids hardcoded URL drift across modules.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} resource - API resource slug (e.g., "org", "ix").
    * @param {string|number} entityId - Entity record ID.
    * @returns {string} Full API URL, or empty string if either argument is invalid.
@@ -2500,7 +2515,7 @@
    * Purpose: Surface API contract violations in debug mode without flooding the console.
    * Necessity: The same endpoint can be called many times per session; deduplication
    * via a Set ensures the warning fires only once per source URL.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} source - Endpoint URL or identifier where the payload was received.
    * @param {*} payload - The malformed payload value forwarded to console.warn.
    */
@@ -2526,7 +2541,7 @@
    * Records the most recent fetch failure details for a URL.
    * Purpose: Improve malformed payload diagnostics with concrete transport/parse reasons.
    * Necessity: Null payload alone is ambiguous during troubleshooting.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} url - Request URL key.
    * @param {object} details - Structured failure metadata.
    */
@@ -2541,7 +2556,7 @@
 
   /**
    * Clears tracked fetch-failure metadata for a URL after a successful fetch.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} url - Request URL key.
    */
   function clearFetchFailure(url) {
@@ -2555,7 +2570,7 @@
    * Purpose: Standardize extraction of the first `data` entry from API payloads.
    * Necessity: Reduces repeated optional-chaining and handles malformed shapes uniformly
    * by delegating shape warnings to warnMalformedApiPayloadOnce.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {*} payload - Raw JSON response object from a PeeringDB list endpoint.
    * @param {string} [source="unknown"] - Endpoint URL for diagnostic messages.
    * @returns {object|null} First item in `payload.data`, or null on any shape mismatch.
@@ -2579,7 +2594,7 @@
    * Returns a reason code when API JSON action should be blocked.
    * Purpose: Keep visibility and click-policy checks consistent.
    * Necessity: Some entities may not expose status reliably; block only when policy-relevant.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ entity: string, entityId: string }} ctx - Route context from getRouteContext().
    * @returns {string} Empty string when allowed; "missing-endpoint" or "status:<value>" otherwise.
    */
@@ -2600,7 +2615,7 @@
    * Determines whether the API JSON action should be visible for current context.
    * Purpose: Avoid showing the button when action policy does not allow opening.
    * Necessity: Prevent no-op UI affordances for non-OK entities.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ entity: string, entityId: string }} ctx - Route context from getRouteContext().
    * @returns {boolean} True when the API JSON toolbar action should be shown.
    */
@@ -2612,7 +2627,7 @@
    * Debug-only OpenAPI coverage check for mapped CP API resources.
    * Purpose: Catch accidental resource-slug typos or drift early in diagnostics mode.
    * Necessity: ENTITY_API_RESOURCE_MAP is a critical integration point for API links/fetches.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    */
   function runApiResourceCoverageCheck() {
     if (!isDebugEnabled()) return;
@@ -2638,7 +2653,7 @@
    * Purpose: Make copy button labels contextually explicit (e.g., "Copy IX URL").
    * Necessity: A generic "Copy URL" label is ambiguous when Org and Entity
    * copy buttons both appear on the same secondary action row.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} entity - Lowercase CP entity type (e.g., "internetexchange").
    * @returns {string} Human-readable label string for the copy action.
    */
@@ -2659,7 +2674,7 @@
    * Returns human-friendly website label for the current object type.
    * Purpose: Keep header website action labels concise and entity-specific.
    * Necessity: Replaces generic "ObjType Website" text with context-aware naming.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} entity - Lowercase CP entity type (e.g., "internetexchange").
    * @returns {string} Human-readable toolbar label (e.g., "IX Website").
    */
@@ -2691,7 +2706,7 @@
    * Returns human-friendly frontend label for a CP entity.
    * Purpose: Make the main frontend action explicit about the destination entity type.
    * Necessity: Replaces generic "Frontend" text with entity-specific naming.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} entity - Lowercase CP entity type (e.g., "internetexchange").
   * @returns {string} Human-readable label (e.g., "IX (FP)").
    */
@@ -2722,7 +2737,7 @@
   /**
    * Returns human-friendly CP label for a CP entity.
    * Purpose: Keep CP-toolbar labels consistent across modules.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} entity - Lowercase CP entity type (e.g., "internetexchange").
    * @returns {string} Human-readable label (e.g., "IX (CP)").
    */
@@ -2757,7 +2772,7 @@
    * or the #id_org field for all other entity types.
    * Necessity: Organization pages use their own entity ID as the org reference;
    * child entities (networks, carriers, etc.) need the parent org from the form.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ isEntityChangePage: boolean, entity: string, entityId: string }} ctx
    * @returns {string} Organization ID string, or empty string if unresolvable.
    */
@@ -2772,7 +2787,7 @@
    * Purpose: Provide a single point of access for the main toolbar list.
    * Necessity: Toolbar selectors differ across Grappelli versions; a unified locator
    * with multiple fallback selectors avoids duplicate selector logic in every module.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @returns {HTMLUListElement|null} The primary toolbar list element, or null if absent.
    */
   function getToolbarList() {
@@ -2788,7 +2803,7 @@
    * Removes deprecated primary action row from legacy versions.
    * Purpose: Clean up stale DOM elements from previous script versions.
    * Necessity: Ensures backward compatibility when script updates; prevents duplicate action rows.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function cleanupLegacyPrimaryActionRow() {
     const legacyRow = qs(`#${MODULE_PREFIX}PrimaryActionRow`);
@@ -2802,7 +2817,7 @@
    * Purpose: Prevent overlap between primary toolbar and secondary action row.
    * Necessity: Secondary row appears below primary toolbar; must account for toolbar height
    * which varies by content. Uses BoundingClientRect to detect actual overlap.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLUListElement} row - The secondary action row element to adjust.
    */
   function applySecondaryRowVerticalOffset(row) {
@@ -2827,7 +2842,7 @@
    * Purpose: Standardized way to add custom buttons (Google Maps, Frontend links, etc.).
    * Necessity: Ensures consistent styling, idempotency (prevents duplicates), and placement.
    * Marks buttons with data-pdb-cp-action attribute for reordering and identification.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {{ id: string, label: string, href?: string, onClick?: Function,
    *           target?: string|null, insertLeft?: boolean }} opts
    * @returns {HTMLAnchorElement|null} The created anchor element, or null on failure.
@@ -2909,7 +2924,7 @@
    * Purpose: Build the shared DOM structure for multi-item toolbar and secondary-row menus.
    * Necessity: Both toolbar and secondary-row dropdown helpers use the same toggle/flyout
    * HTML pattern; centralizing avoids DOM duplication and styling drift.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {{ id: string, label: string, items: Array<{label: string, href: string, target?: string}>,
    *           resolveItemTarget?: Function }} opts
    * @returns {{ li: HTMLLIElement, toggle: HTMLAnchorElement }|null}
@@ -3001,7 +3016,7 @@
    * Purpose: Add multi-item expandable menus (e.g., Maps) to the main toolbar UL.
    * Necessity: Toolbar insertion semantics differ from the secondary row; wrapping
    * createDropdownActionListItem ensures correct placement and data-pdb-cp-action tagging.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {{ id: string, label: string, items: Array<{label: string, href: string}>,
    *           insertLeft?: boolean }} opts
    * @returns {HTMLAnchorElement|null} The dropdown toggle anchor element, or null on failure.
@@ -3062,7 +3077,7 @@
    * Purpose: Provide a persistent secondary UL row below the primary toolbar for custom buttons.
    * Necessity: Multiple modules inject secondary buttons; a shared row avoids
    * multiple disconnected rows and centralizes vertical offset handling.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {HTMLUListElement|null} The secondary action row element, or null on DOM failure.
    */
   function getOrCreateSecondaryActionRow() {
@@ -3113,7 +3128,7 @@
    * Creates and appends a button to the secondary action row.
    * Purpose: Add custom actions to secondary row with consistent styling.
    * Necessity: Secondary row actions need inline-block styling and spacing different from primary toolbar.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ id: string, label: string, href?: string, title?: string, onClick: Function }} opts
    * @returns {HTMLAnchorElement|null} The created anchor element, or null on failure.
    */
@@ -3161,7 +3176,7 @@
    * Purpose: Add multi-item expandable actions (e.g., Maps) to the secondary row.
    * Necessity: Secondary row insertion semantics and item target resolution differ from
    * the primary toolbar; a dedicated helper keeps module code concise.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {{ id: string, label: string, items: Array<{label: string, href: string}> }} opts
    * @returns {HTMLAnchorElement|null} The dropdown toggle anchor element, or null on failure.
    */
@@ -3191,7 +3206,7 @@
    * Purpose: Support both CSS-selector strings and predicate functions in TOOLBAR_*_ORDER arrays.
    * Necessity: History item uses a function matcher; custom items use CSS attribute selectors;
    * a unified tester lets one reorder loop handle both types without branching.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {Element} child - DOM child element to test.
    * @param {string|Function} priority - CSS selector string or boolean predicate function.
    * @returns {boolean} True if `child` matches the given priority descriptor.
@@ -3218,7 +3233,7 @@
    * Identifies if a toolbar item is the History button.
    * Purpose: Handle History button specially in reordering (position it before custom actions).
    * Necessity: History button is Django admin native; needs position priority awareness.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {Element} child - Toolbar LI element to test.
    * @returns {boolean} True when the element is the native History button.
    */
@@ -3238,7 +3253,7 @@
    * Purpose: Establish deterministic button order (Frontend before Org links, History before custom).
    * Necessity: Ensures consistent UI layout across page variations and module load orders.
    * Unmatched children stay in original order at the end.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLElement} container - Parent element whose children will be reordered.
    * @param {Array<string|Function>} priorities - Ordered list of CSS selectors or predicate functions.
    */
@@ -3270,7 +3285,7 @@
    * Purpose: Coordinate reordering of all network page toolbar buttons.
    * Necessity: Network pages have most custom actions; reordering provides consistent UX.
    * For other entity types, no special ordering applied (preserves natural order).
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {{ isEntityChangePage: boolean, entity: string }} ctx - Route context.
    */
   function enforceToolbarButtonOrder(ctx) {
@@ -3294,7 +3309,7 @@
    * GM_xmlhttpRequest) call sites.
    * Necessity: Prevents N ad-hoc GM_xmlhttpRequest patterns from diverging on
    * timeout handling or header construction.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} url - Absolute URL to fetch.
    * @param {{ headers?: object, timeout?: number, retries?: number }} [options]
    * @returns {Promise<object|null>} Parsed JSON or null on any failure.
@@ -3468,7 +3483,7 @@
    * Supports same-origin fetch and cross-origin GM_xmlhttpRequest delegation.
   * Returns mutation metadata including HTTP status, parsed JSON body (if any),
   * raw response text, and x-auth-status (when present).
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} url - API endpoint URL.
    * @param {string} method - HTTP method (POST, PUT, PATCH, DELETE).
    * @param {string|object} body - Request body (string or JSON object).
@@ -3608,7 +3623,7 @@
    * from the entity response instead of making a separate /api/org/{id} call.
    * Necessity: Carrier and Campus schemas include org_name as a readOnly field.
    * Returns null on network error or missing data (graceful degradation).
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} entity - Lowercase CP entity type (e.g., "carrier").
    * @param {string|number} entityId - CP entity record ID.
    * @returns {Promise<string|null>} Resolved organization name, or null on failure.
@@ -3642,7 +3657,7 @@
   /**
    * Detects if an organization name has RDAP corruption patterns.
    * Purpose: Identify org names that need sanitization/update.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} name - Organization name to test.
    * @returns {boolean} True if corruption patterns are detected.
    */
@@ -3668,7 +3683,7 @@
   /**
    * Fetches organization name and detects if it has RDAP corruption patterns.
    * Purpose: Identify and flag malformed org names for user awareness.
-   * AI Maintenance: Preserve normalization/parsing rules and backward-compatible output formats.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {string|number} orgId - Organization ID to fetch.
    * @returns {Promise<{name: string, wasMalformed: boolean, knownAs: string}>} Name, malformation flag, and extracted AKA.
    */
@@ -3700,7 +3715,7 @@
   /**
    * Fetches and caches organization name by organization ID.
    * Purpose: Provide a simple org-name resolver for flows that do not require malformation metadata.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string|number} orgId - Organization ID to resolve.
    * @returns {Promise<string|null>} Sanitized organization name or null on failure.
    */
@@ -3737,7 +3752,7 @@
    * Updates organization name via PeeringDB API.
    * Purpose: Persist sanitized org names back to the database so all related entities benefit.
    * Necessity: When org names have RDAP corruption, updating the org ensures all networks/carriers/etc. under it reference the corrected name.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string|number} orgId - Organization ID to update.
    * @param {string} newName - New organization name to save.
    * @param {string} [knownAs=""] - Optional AKA/legal owner name extracted from trading-as patterns.
@@ -3832,7 +3847,7 @@
    * Programmatically clicks the "Save and continue editing" button.
    * Purpose: Auto-submit form after automated edits (Reset Information, Update Name).
    * Necessity: Script-driven form changes need programmatic submission; improves UX.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @returns {boolean} True when the save button was found and clicked.
    */
   function clickSaveAndContinue() {
@@ -3857,7 +3872,7 @@
   /**
    * Stores one-shot redirect intent for Update Name flow.
    * Purpose: Redirect to history only after next successful save round-trip.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ entity: string, entityId: string }} ctx - Route context.
    */
   function setPendingPostUpdateNameHistoryRedirect(ctx) {
@@ -3881,7 +3896,7 @@
 
   /**
    * Clears one-shot redirect intent for Update Name flow.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    */
   function clearPendingPostUpdateNameHistoryRedirect() {
     try {
@@ -3893,7 +3908,7 @@
 
   /**
    * Reads pending one-shot redirect intent.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @returns {{ entity: string, entityId: string, createdAt: number, expiresAt: number }|null} Parsed payload or null.
    */
   function getPendingPostUpdateNameHistoryRedirect() {
@@ -3925,7 +3940,7 @@
 
   /**
    * Determines whether current change page shows a successful save message.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {boolean} True when Django success message is present and no error notes are visible.
    */
   function hasSuccessfulChangeSaveMessage() {
@@ -3943,7 +3958,7 @@
 
   /**
    * Fallback detector for successful post-submit round-trip when message markup differs.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ entity: string, entityId: string, createdAt: number }} pending - Pending redirect marker.
    * @returns {boolean} True when current page likely came from a successful same-page submit.
    */
@@ -3968,7 +3983,7 @@
 
   /**
    * Redirects one time from change page to history page after successful Update Name save.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ entity: string, entityId: string, isEntityChangePage: boolean }} ctx - Route context.
    * @returns {boolean} True when redirect is triggered.
    */
@@ -4001,7 +4016,7 @@
    * Prompts user to confirm dangerous network reset operation.
    * Purpose: Prevent accidental data loss from Reset Information action.
    * Necessity: Shows user which network is being reset (by ID, ASN, name) for confirmation.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} asn - ASN string for the network being reset.
    * @param {string} networkName - Current network name shown in the confirmation prompt.
    * @param {string|number} networkId - CP network record ID.
@@ -4029,7 +4044,7 @@
    * Copies text to clipboard with modern and fallback implementations.
    * Purpose: Enable "Copy URL" actions for user convenience.
    * Necessity: Handles browsers with and without Clipboard API support.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} text - Text content to write to the system clipboard.
    * @returns {Promise<boolean>} Resolves true when copy succeeded; false otherwise.
    */
@@ -4076,7 +4091,7 @@
    * Purpose: Support one-click copying of every visible change-page URL from a filtered list.
    * Necessity: Admin overview pages often expose many object rows and copying them manually
    * is tedious; harvesting current row links preserves the user's active filter/pagination view.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {string[]} Ordered, de-duplicated absolute change URLs currently present in the content area.
    */
   function getCurrentOverviewChangeLinks() {
@@ -4117,7 +4132,7 @@
    * Builds a PeeringDB list API URL with query parameters.
    * Purpose: Centralize URL construction for sparse list retrieval calls.
    * Necessity: Reused by REST fallback and future bulk list scanners.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} resource - API resource slug (e.g., "net").
    * @param {Record<string, string|number|boolean|undefined|null>} [params={}] - Query parameter map.
    * @returns {string} Absolute URL string.
@@ -4138,7 +4153,7 @@
    * Normalizes API row objects into minimal network scan records.
    * Purpose: Keep name-pattern analysis independent of source transport shape.
    * Necessity: GraphQL and REST rows can differ slightly in key casing/types.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {object} row - Source row object.
    * @returns {{ id: string, name: string }|null} Normalized record or null.
    */
@@ -4154,7 +4169,7 @@
    * Parses GraphQL response payload into normalized network records.
    * Purpose: Support multiple plausible GraphQL response envelopes safely.
    * Necessity: GraphQL schema details can vary; parser must be tolerant.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {object|null} payload - GraphQL response payload.
    * @returns {{ id: string, name: string }[]} Parsed records.
    */
@@ -4201,7 +4216,7 @@
    * Executes one GraphQL network-name batch query via GET.
    * Purpose: Retrieve only id/name fields with schema-driven sparse selection.
    * Necessity: Keeps payload minimal and reusable for future GraphQL extensions.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ offset: number, limit: number }} opts - Pagination options.
    * @returns {Promise<{ id: string, name: string }[]|null>} Parsed rows or null when unavailable.
    */
@@ -4229,7 +4244,7 @@
    * Executes one REST network-name batch query with sparse fields.
    * Purpose: Reliable fallback when GraphQL endpoint is unavailable.
    * Necessity: Guarantees completion under strict request budgets.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ offset: number, limit: number }} opts - Pagination options.
    * @returns {Promise<{ id: string, name: string }[]>} Parsed rows.
    */
@@ -4262,7 +4277,7 @@
    * Purpose: Fetch up to 3000 names in 6 requests (500 each) under strict rate limits.
    * Necessity: Supports CP-side operational audits without backend tooling.
    * GraphQL is attempted once first; automatic REST fallback is used thereafter.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{
    *   targetCount?: number,
    *   pageSize?: number,
@@ -4348,7 +4363,7 @@
    * Classifies one network name for likely auto-generated patterns.
    * Purpose: Prioritize names likely requiring manual "Update Name" remediation.
    * Necessity: Provides deterministic, extensible heuristics for operational triage.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
   * @param {string} name - Network name string.
   * @returns {{ score: number, reasons: string[] }} Classification result.
    */
@@ -4467,7 +4482,7 @@
    * Analyzes network-name records and returns pattern diagnostics.
    * Purpose: Produce ranked candidate set and aggregate reason counts.
    * Necessity: Converts raw names into actionable remediation targets.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {Array<{id: string, name: string}>} records - Retrieved network records.
    * @returns {{
    *   scannedAt: string,
@@ -4551,7 +4566,7 @@
    * Returns a compact human-readable summary for notifications/logging.
    * Purpose: Surface key scan outcomes without requiring table inspection.
    * Necessity: Enables quick operator feedback after long-running scans.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {object} result - Combined retrieval + analysis result.
    * @returns {string} One-line summary.
    */
@@ -4570,7 +4585,7 @@
    * Reads cached network-name retrieval payload when still fresh.
    * Purpose: Reuse previously fetched network rows without re-calling list endpoints.
    * Necessity: Scan-logic changes should not force a refetch of the same network-name data.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @returns {object|null} Cached retrieval payload or null.
    */
   function getCachedNetworkNameData() {
@@ -4608,7 +4623,7 @@
    * Stores fetched network-name retrieval payload in short-lived domain cache.
    * Purpose: Cache full fetched row list once, then reuse for repeated analysis runs.
    * Necessity: Keeps scan cost low while allowing scan-logic reruns within TTL.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {object} payload - Retrieval payload including records + transport metadata.
    */
   function setCachedNetworkNameData(payload) {
@@ -4633,7 +4648,7 @@
    * Builds a stable signature for fetched network-name rows.
    * Purpose: Tie derived scan analysis to the exact cached dataset it was computed from.
    * Necessity: Separating data-cache and analysis-cache requires safe reuse boundaries.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {Array<{id: string, name: string}>} records - Normalized or raw network records.
    * @returns {string} Compact deterministic signature.
    */
@@ -4657,7 +4672,7 @@
    * Builds the cache signature for derived network-name scan analysis.
    * Purpose: Invalidate analysis whenever either the fetched dataset or scan logic changes.
    * Necessity: Logic changes should not force data refetches, but must prevent stale analysis reuse.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {object} retrieval - Retrieval payload containing fetched network records.
    * @returns {string} Deterministic analysis-cache signature.
    */
@@ -4679,7 +4694,7 @@
    * Reads cached derived network-name scan analysis when it matches current data and logic.
    * Purpose: Avoid re-running analysis while keeping scan-logic changes isolated from fetch cache.
    * Necessity: Operators may iterate on scan rules often; only derived results should churn.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {object} retrieval - Retrieval payload containing fetched network rows.
    * @returns {object|null} Cached analysis payload or null.
    */
@@ -4721,7 +4736,7 @@
    * Stores derived network-name scan analysis in short-lived domain cache.
    * Purpose: Reuse analysis results independently from the fetched row cache.
    * Necessity: Splitting caches allows scan logic to churn without invalidating network-name data.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {object} retrieval - Retrieval payload containing fetched network rows.
    * @param {object} analysis - Derived analysis payload.
    */
@@ -4749,7 +4764,7 @@
    * Builds TSV text for suspicious network-name candidates.
    * Purpose: Provide copy-pastable remediation worklist for manual update runs.
    * Necessity: Operators frequently move candidate sets between browser and spreadsheets.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ suspicious: Array<{id: string, name: string, reasons: string[], changeUrl: string}> }} analysis - Analysis payload.
    * @returns {string} TSV output string.
    */
@@ -4772,7 +4787,7 @@
    * Emits structured network-name diagnostics to the console.
    * Purpose: Keep detailed pattern evidence available without cluttering notifications.
    * Necessity: Manual cleanup planning benefits from sortable tables and reason distributions.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{
    *   requestCount: number,
    *   transport: string,
@@ -4827,7 +4842,7 @@
    * Shows a non-blocking userscript notification when supported.
    * Purpose: Surface completion/failure status for long-running CP actions.
    * Necessity: Async updates may complete after several network calls and benefit from toasts.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ title?: string, text: string, timeout?: number }} opts - Notification options.
    */
   function notifyUser({ title, text, timeout = 2500 }) {
@@ -4852,7 +4867,7 @@
    * Temporarily changes button text then reverts after a delay.
    * Purpose: Provide user feedback that copy action succeeded.
    * Necessity: "Copied" feedback improves UX for copy-to-clipboard buttons.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {HTMLAnchorElement} anchor - The toolbar button anchor whose text will pulse.
    * @param {string} [successLabel="Copied"] - Temporary label shown during the pulse.
    */
@@ -4870,7 +4885,7 @@
    * Temporarily changes copy-icon button text then reverts after a delay.
    * Purpose: Give immediate feedback for field-level copy actions.
    * Necessity: Field copy buttons are icon-only by default and need success confirmation.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLButtonElement} button - The copy icon button whose text will pulse.
    * @param {string} [successLabel="Copied"] - Temporary label shown during the pulse.
    */
@@ -4888,7 +4903,7 @@
    * Ensures copy button CSS is available for field-level copy buttons.
    * Purpose: Keep button visuals consistent and lightweight without external CSS dependencies.
    * Necessity: The userscript runs in-page and must inject styles itself.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function ensureFieldCopyButtonStyles() {
     const styleId = `${MODULE_PREFIX}CopyFieldStyle`;
@@ -4920,7 +4935,7 @@
    * Ensures CSS styles are available for inline rows marked for deletion.
    * Purpose: Make pending inline deletions visually obvious before save.
    * Necessity: Grappelli delete checkboxes can be easy to miss in dense tabular inlines.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function ensureInlineDeleteHighlightStyles() {
     const styleId = `${MODULE_PREFIX}InlineDeleteHighlightStyle`;
@@ -4953,7 +4968,7 @@
 
   /**
    * Returns the owning inline row element for a delete control.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {Element|null} element - Delete checkbox or delete icon descendant.
    * @returns {HTMLElement|null} Owning `.form-row.grp-dynamic-form` element.
    */
@@ -4963,7 +4978,7 @@
 
   /**
    * Applies/removes the marked-for-deletion visual state on an inline row.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLElement|null} row - Inline row element.
    * @param {boolean} isMarkedForDelete - Whether delete checkbox is active.
    */
@@ -4974,7 +4989,7 @@
 
   /**
    * Syncs highlight state for one inline row based on its DELETE checkbox value.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLElement|null} row - Inline row element.
    */
   function syncInlineDeleteRowHighlight(row) {
@@ -4987,7 +5002,7 @@
    * Binds delegated listeners that highlight rows when inline delete is toggled.
    * Purpose: Make delete actions (cross icon/checkbox) highly visible instantly.
    * Necessity: Inline rows are dynamic; delegated binding covers existing and added rows.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @returns {Function|null} Dispose function that removes listeners.
    */
   function bindInlineDeleteHighlightReactivity() {
@@ -5034,7 +5049,7 @@
    * Normalizes text copied from rendered field contents.
    * Purpose: Remove excessive whitespace while preserving readable one-line output.
    * Necessity: Rendered HTML often contains line breaks and spacing artifacts.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {string} text - Raw text content extracted from the DOM.
    * @returns {string} Normalized single-line string with trimmed whitespace.
    */
@@ -5049,7 +5064,7 @@
    * Finds the field label text for a value container.
    * Purpose: Support field-level filtering rules by human-visible label.
    * Necessity: Some CP rows are metadata or helper rows and should not get copy icons.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLElement} valueCell - The `.c-2` value cell whose parent row label is read.
    * @returns {string} Lowercase label text, or empty string if no label found.
    */
@@ -5065,7 +5080,7 @@
    * Resolves best non-help data value from direct controls inside a field value cell.
    * Purpose: Distinguish actual field data from explanatory helper text.
    * Necessity: Prevents copy buttons from appearing when only help text is present.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLElement} valueCell - The `.c-2` value cell to inspect.
    * @returns {string} Best available data value string, or empty string if none.
    */
@@ -5117,7 +5132,7 @@
    * Determines whether a value container should receive a copy button.
    * Purpose: Exclude helper/metadata/lookup-only rows while keeping real data fields copiable.
    * Necessity: Avoids noisy icons on rows that do not represent useful copyable values.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLElement} valueCell - The `.c-2` cell to evaluate.
    * @returns {boolean} True when a copy button should be injected into this cell.
    */
@@ -5150,7 +5165,7 @@
    * Resolves the best rendered value from a Django admin field value container.
    * Purpose: Prefer human-visible values (grp-readonly, selected option labels) over raw markup.
    * Necessity: Different field types render values differently in CP forms and inline forms.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {HTMLElement} container - The `.c-2` or similar value container element.
    * @returns {string} Best human-visible text value from the container.
    */
@@ -5170,7 +5185,7 @@
    * Adds a copy icon button to each rendered form value container.
    * Purpose: Make every visible field value directly copiable from the CP UI.
    * Necessity: Admin workflows often require copying readonly values such as Prefixes.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function addCopyButtonsToRenderedFields() {
     ensureFieldCopyButtonStyles();
@@ -5212,7 +5227,7 @@
    * Determines the frontend URL path for a CP entity (network, carrier, ix).
    * Purpose: Generate correct copy-to-clipboard URL for the current entity type.
    * Necessity: Different entity types map to different URL paths.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ entity: string, entityId: string }} ctx - Route context from getRouteContext().
    * @returns {string} Root-relative frontend path (e.g., "/net/42").
    */
@@ -5232,7 +5247,7 @@
    * Retrieves currently selected status from the status dropdown.
    * Purpose: Determine if network/entity is marked as deleted.
    * Necessity: Used to add " #deleted" suffix to entity names for deleted records.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {string} Lowercase status value (e.g., "ok", "deleted"), or empty string.
    */
   function getSelectedStatus() {
@@ -5258,7 +5273,7 @@
 
   /**
    * Builds storage key for one-time pending network delete confirmation flow.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string|number} networkId - CP network record ID.
    * @returns {string} Namespaced storage key.
    */
@@ -5270,7 +5285,7 @@
 
   /**
    * Persists one-time pending confirmation state for network delete page.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string|number} networkId - CP network record ID.
    */
   function setPendingNetworkDeleteConfirm(networkId) {
@@ -5293,7 +5308,7 @@
 
   /**
    * Reads pending network delete confirmation state when still valid.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string|number} networkId - CP network record ID.
    * @returns {{ networkId: string }|null} Pending state or null.
    */
@@ -5321,7 +5336,7 @@
 
   /**
    * Clears pending network delete confirmation state.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string|number} networkId - CP network record ID.
    */
   function clearPendingNetworkDeleteConfirm(networkId) {
@@ -5339,7 +5354,7 @@
   /**
    * Starts network delete via the footer delete link on network change page.
    * Purpose: Use native Django/Grappelli delete flow (includes confirmation page).
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string|number} networkId - CP network record ID.
    * @returns {boolean} True when delete navigation was triggered.
    */
@@ -5359,7 +5374,7 @@
    * Purpose: Append the entity ID to names of deleted records for disambiguation.
    * Necessity: Deleted entities may share similar names; a stable ID suffix makes
    * them distinguishable during audits and prevents duplicate-name collisions.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string|number} entityId - The current entity's CP record ID.
    * @returns {string} ` #<entityId>` when status is "deleted", otherwise empty string.
    */
@@ -5371,7 +5386,7 @@
    * Builds storage key for persisted one-time network update-name retry state.
    * Purpose: Keep retry metadata isolated per network record.
    * Necessity: Enables safe post-submit retry on the next page load.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string|number} networkId - CP network record ID.
    * @returns {string} Namespaced storage key.
    */
@@ -5385,7 +5400,7 @@
    * Extracts ASN digits from user/API values.
    * Purpose: Normalize ASN for deterministic retry suffixes.
    * Necessity: ASN values can include spaces or optional AS prefixes.
-   * AI Maintenance: Preserve normalization/parsing rules and backward-compatible output formats.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {string|number} asnInput - Raw ASN value.
    * @returns {string} Numeric ASN text, or empty string when invalid.
    */
@@ -5400,7 +5415,7 @@
    * Builds one retry variant by appending ` (AS<asn>)` when possible.
    * Purpose: Resolve duplicate-name validation conflicts deterministically.
    * Necessity: Some names collide only after submit-side uniqueness checks.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} name - Candidate network name.
    * @param {string|number} asnInput - ASN source value.
    * @returns {string} Retry candidate name, or empty string when unavailable.
@@ -5423,7 +5438,7 @@
    * during the first Update Name submit, not only after duplicate retries.
    * Necessity: Certain names (for example IPv4-leading labels) are likely to
    * collide operationally and benefit from explicit ASN suffixing immediately.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} name - Candidate network name before forced suffixing.
    * @returns {boolean} True when ASN suffix should be forced.
    */
@@ -5446,7 +5461,7 @@
   * Persists one-time retry metadata for network Update Name submit flow.
   * Purpose: Bridge state across page reload after first save attempt.
   * Necessity: Duplicate-name validation appears only after form submit.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{
    *   networkId: string|number,
    *   originalName: string,
@@ -5485,7 +5500,7 @@
   * Reads pending network update-name retry metadata when still valid.
   * Purpose: Resume one-time retry workflow after save-triggered page reload.
   * Necessity: Expired/stale payloads must be ignored to prevent unintended edits.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string|number} networkId - CP network record ID.
    * @returns {{networkId: string, originalName: string, retryName: string, attempts: number}|null}
    */
@@ -5527,7 +5542,7 @@
   * Clears pending network update-name retry metadata.
   * Purpose: Stop retry loop once success/failure outcome is known.
   * Necessity: Prevents stale retries from affecting later manual edits.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string|number} networkId - CP network record ID.
    */
   function clearPendingNetworkUpdateNameRetry(networkId) {
@@ -5546,7 +5561,7 @@
    * Detects duplicate network-name validation errors on the current form.
    * Purpose: Trigger retry only for the specific uniqueness validation failure.
    * Necessity: Avoids overriding names for unrelated form errors.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @returns {boolean} True when duplicate-name validation is present.
    */
   function hasDuplicateNetworkNameValidationError() {
@@ -5561,7 +5576,7 @@
   /**
    * Detects validation errors caused by deprecated private POC visibility.
    * Purpose: Trigger automatic remediation from Private -> Users visibility.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {boolean} True when private-contacts validation error is present.
    */
   function hasPrivateContactsUnsupportedValidationError() {
@@ -5578,7 +5593,7 @@
   /**
    * Converts POC inline visibility from Private to Users where supported.
    * Purpose: Auto-remediate obsolete visibility mode rejected by backend validation.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @returns {number} Number of inline rows modified.
    */
   function normalizeNetworkPocVisibilityPrivateToUsers() {
@@ -5646,7 +5661,7 @@
   /**
    * Auto-remediates private-contact visibility errors and retries save once.
    * Purpose: Recover from backend rejection without manual inline edits.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ entity: string, entityId: string, isEntityChangePage: boolean }} ctx - Route context.
    * @returns {boolean} True when a retry save was triggered.
    */
@@ -5681,7 +5696,7 @@
    * Applies one automatic retry for Update Name when duplicate-name error appears.
    * Purpose: Retry with ` (AS<asn>)` suffix after server-side uniqueness rejection.
    * Necessity: Duplicate validation is only known after submit, requiring reload-time retry.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ entity: string, entityId: string, isEntityChangePage: boolean }} ctx - Route context.
    * @returns {boolean} True when retry save was triggered.
    */
@@ -5745,7 +5760,7 @@
    * Reads a readonly field value from a form row by its visible label text.
    * Purpose: Prefer values already rendered on the change form over stale API payloads.
    * Necessity: Some readonly values can differ from API fetch timing/state on page load.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} labelText - Visible row label text (case-insensitive match).
    * @returns {string} Trimmed text content of the `.grp-readonly` element, or empty string.
    */
@@ -5767,7 +5782,7 @@
    * Reads a readonly link href from a form row by its visible label text.
    * Purpose: Reuse row-level links (e.g. Org website) as header actions.
    * Necessity: Some URLs are rendered as readonly anchors rather than inputs.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} labelText - Visible row label text (case-insensitive match).
    * @returns {string} href attribute value of the first public link in the row, or empty string.
    */
@@ -5789,7 +5804,7 @@
    * Builds a stable link identity derived from Grainy namespace when available.
    * Purpose: Use deterministic per-object identity in window targets and action semantics.
    * Necessity: Avoid fragile IDs while preserving object-level context in opened links.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ entity: string, entityId: string }} ctx - Route context from getRouteContext().
    * @returns {string} Sanitized token derived from Grainy namespace or entity/ID fallback.
    */
@@ -5809,7 +5824,7 @@
    * Normalizes arbitrary text into a deterministic token usable in window target names.
    * Purpose: Guarantee stable, safe target segments for toolbar links.
    * Necessity: Prevents dynamic labels/IDs from creating invalid or inconsistent target names.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} value - Raw string to normalize into a token.
    * @param {string} [fallback="item"] - Token to use when value normalizes to empty.
    * @returns {string} Lowercase alphanumeric-and-underscore token string.
@@ -5828,7 +5843,7 @@
    * Builds deterministic target names for injected primary toolbar links.
    * Purpose: Ensure all nav-header links open in stable, object-scoped tab identities.
    * Necessity: Replaces ad-hoc _new/_blank targets with per-object deterministic targets.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {string} actionId - Action identifier string used to compose the target suffix.
    * @param {{ entity: string, entityId: string }} [ctx] - Route context; defaults to current page.
    * @returns {string} Stable window target name string (e.g., "pdb_ix_42_pdbCpConsolidatedFrontend").
@@ -5843,7 +5858,7 @@
    * Marks inline form rows (POCs, netfacs, netixlans) for deletion if status = 'deleted'.
    * Purpose: Clean up stale inline items when network status is deleted.
    * Necessity: Automatic cleanup prevents orphaned POCs/facilities when network is marked deleted.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function clickDeleteHandlersForInlineSet(inlineSetPrefix) {
     let markedCount = 0;
@@ -5887,7 +5902,7 @@
    * Marks all deleted-status inline items for deletion across all inline sets.
    * Purpose: Centralize deletion of all stale inline items (POCs, facilities, ixlans).
    * Necessity: Ensures consistent cleanup of deleted network members across all relation types.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    */
   function markDeletedNetworkInlinesForDeletion() {
     let totalMarked = 0;
@@ -5901,7 +5916,7 @@
    * Binds native save actions on network change pages to auto-mark child rows for deletion.
    * Purpose: Avoid save validation blocks when existing inline child rows already have status=deleted.
    * Necessity: Admins may use any native save action (Save, Save and add another, Save and continue).
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @returns {Function|null} Dispose function removing listeners, or null when form not found.
    */
   function bindNetworkSaveActionInlineDeletionGuard() {
@@ -5954,7 +5969,7 @@
    * Purpose: Provide fallback organization name lookup via IANA RDAP bootstrap.
    * Necessity: When org lookup fails (org_id invalid), RDAP provides ASN-based name resolution.
    * Bootstraps RDAP service URLs from IANA registry with 6-hour TTL cache.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    */
   const rdapAutnumClient = (() => {
     const BOOTSTRAP_ASN_URL = "https://data.iana.org/rdap/asn.json"; // RFC 9224 bootstrap registry
@@ -5972,6 +5987,9 @@
      * Parses and validates ASN from string input.
      * Purpose: Convert ASN string (with or without "AS" prefix) to integer.
      * Necessity: Validates ASN format before RDAP queries.
+      * @ai Preserve the permissive `AS`-prefix stripping and positive-integer guard so RDAP lookups reject malformed identifiers without throwing.
+      * @param {string|number} value - Raw ASN input from UI fields or callers.
+      * @returns {number|null} Parsed ASN integer, or null when invalid.
      */
     function parseAsn(value) {
       const normalized = String(value || "").replace(/^AS\s*/i, "").trim();
@@ -5984,6 +6002,9 @@
      * Normalizes RDAP base URL by removing trailing slashes.
      * Purpose: Create consistent URLs for RDAP endpoint construction.
      * Necessity: Base URLs may have trailing slashes; normalization prevents double slashes.
+      * @ai Keep this normalization limited to trailing slashes only so bootstrap hostnames and paths are preserved exactly as published.
+      * @param {string} baseUrl - Candidate RDAP service base URL.
+      * @returns {string|null} Normalized base URL, or null when empty.
      */
     function normalizeBaseUrl(baseUrl) {
       if (!baseUrl) return null;
@@ -5994,6 +6015,9 @@
      * Fetches JSON from URL using the shared pdbFetch client.
      * Purpose: Delegate cross-origin RDAP requests to the unified network abstraction.
      * Necessity: Centralises timeout, retry, and User-Agent header construction.
+      * @ai Preserve delegation to `pdbFetch` with the RDAP Accept header so RDAP traffic keeps the same retry, timeout, and header behavior as the rest of the script.
+      * @param {string} url - Absolute RDAP or bootstrap URL.
+      * @returns {Promise<object|null>} Parsed JSON payload, or null when the request fails.
      */
     function requestJson(url) {
       return pdbFetch(url, { headers: { Accept: RDAP_ACCEPT_HEADER } });
@@ -6004,6 +6028,8 @@
      * Purpose: Get list of RDAP service providers for various ASN ranges.
      * Necessity: Bootstrap registry maps ASN ranges to RDAP endpoints; 6-hour TTL cache
      * reduces load on IANA servers. Required before any RDAP autnum queries.
+      * @ai Preserve the TTL cache semantics and null-on-failure behavior so RDAP resolution degrades safely without thrashing IANA bootstrap requests.
+      * @returns {Promise<object|null>} Bootstrap payload, or null when unavailable.
      */
     async function getBootstrap() {
       const now = Date.now();
@@ -6028,6 +6054,10 @@
      * Purpose: Determine if given ASN matches a bootstrap range.
      * Necessity: Bootstrap registry uses ranges like "1-23456"; membership test needed
      * to find correct RDAP endpoint provider.
+      * @ai Keep range parsing strict and side-effect free because bootstrap data can contain unexpected values and callers depend on a simple boolean result.
+      * @param {number} asn - Parsed ASN integer.
+      * @param {string} rangeText - Hyphen-separated range from the bootstrap payload.
+      * @returns {boolean} True when the ASN falls inside the range.
      */
     function isAsnInRange(asn, rangeText) {
       const range = String(rangeText || "").trim();
@@ -6045,6 +6075,10 @@
      * Finds the appropriate RDAP base URL for an ASN from bootstrap registry.
      * Purpose: Look up correct RDAP service endpoint (RIPE, APNIC, ARIN, etc.) by ASN.
      * Necessity: Different RIRs operate different RDAP endpoints; bootstrap maps ASNs to regions.
+      * @ai Preserve HTTPS preference and the first-match behavior so RDAP endpoint selection remains deterministic across bootstrap provider lists.
+      * @param {object|null} bootstrap - IANA bootstrap payload.
+      * @param {number} asn - Parsed ASN integer.
+      * @returns {string|null} Normalized RDAP base URL, or null when no match exists.
      */
     function getAutnumBaseUrlFromBootstrap(bootstrap, asn) {
       const services = Array.isArray(bootstrap?.services) ? bootstrap.services : [];
@@ -6066,6 +6100,9 @@
      * Fetches RDAP AutNum record for a given ASN.
      * Purpose: Retrieve organization and contact data from authoritative RDAP source.
      * Necessity: RDAP provides RFC 7483 standard organization data including vcard info.
+      * @ai Preserve the bootstrap lookup step before the record fetch so requests stay aligned with the current authoritative RIR endpoint for the ASN.
+      * @param {number} asn - Parsed ASN integer.
+      * @returns {Promise<object|null>} RDAP autnum payload, or null when lookup fails.
      */
     async function fetchAutnumRecord(asn) {
       const bootstrap = await getBootstrap();
@@ -6079,6 +6116,10 @@
      * Extracts property value from RDAP vCard array.
      * Purpose: Safely retrieve vCard properties (fn=full name, org=organization).
      * Necessity: vCard is RFC 6350 format array; property names are lowercase.
+      * @ai Keep this accessor tolerant of malformed RDAP arrays and always return a string so candidate scoring stays defensive.
+      * @param {*} vcardArray - RDAP vCard array payload.
+      * @param {string} propertyName - Lowercase property name to read.
+      * @returns {string} Trimmed property value, or an empty string.
      */
     function getVcardProperty(vcardArray, propertyName) {
       const cards = Array.isArray(vcardArray?.[1]) ? vcardArray[1] : [];
@@ -6095,6 +6136,11 @@
      * Purpose: Build ranked list of organization name candidates.
      * Necessity: RDAP can have multiple entities (registrant, admin, billing, etc.);
      * scoring prioritizes registrant > administrative roles, organizations > people.
+      * @ai Preserve the recursive accumulation and relative scoring weights because downstream organization resolution assumes this ranking model when multiple RDAP entities are present.
+      * @param {Array} entities - RDAP entity array to traverse.
+      * @param {Array<{ value: string, score: number }>} [candidates=[]] - Accumulator for scored candidates.
+      * @param {number} [depth=0] - Current recursion depth used to down-rank nested entities.
+      * @returns {Array<{ value: string, score: number }>} Candidate list sorted later by the caller.
      */
     function collectEntityCandidates(entities, candidates = [], depth = 0) {
       if (!Array.isArray(entities)) return candidates;
@@ -6131,6 +6177,9 @@
      * Purpose: Determine most likely official name for network entity.
      * Necessity: Collects entities, scores by role/type, returns highest-scored name.
      * Also sanitizes RDAP corruption patterns (remarks, trading as, etc.).
+      * @ai Preserve the sanitize-after-ranking flow so RDAP cleanup does not change candidate scoring inputs or mask the best raw match.
+      * @param {object|null} payload - RDAP autnum payload.
+      * @returns {string|null} Best sanitized organization name, or null when no candidate is found.
      */
     function resolveOrganizationNameFromAutnumPayload(payload) {
       const candidates = collectEntityCandidates(payload?.entities, []);
@@ -6146,6 +6195,9 @@
      * Purpose: Fallback organization name resolution when direct org ID lookup fails.
      * Necessity: Enables Reset Information to work even if org_id field is invalid/empty.
      * Returns null on network error or missing organization data (graceful degradation).
+      * @ai Preserve the cache semantics and null-on-failure contract because callers treat this as an optional enrichment step rather than a hard dependency.
+      * @param {string|number} asnInput - Raw ASN value from the current workflow.
+      * @returns {Promise<string|null>} Resolved organization name, or null when unavailable.
      */
     async function resolveOrganizationNameByAsn(asnInput) {
       const asn = parseAsn(asnInput);
@@ -6185,6 +6237,8 @@
      * Clears RDAP bootstrap and resolved-name caches.
      * Purpose: Allow explicit invalidation from user commands after external data changes.
      * Necessity: Manual cache reset is useful for debugging and immediate refresh scenarios.
+      * @ai Keep cache clearing limited to in-memory RDAP state so manual invalidation does not unexpectedly affect unrelated CP caches.
+      * @returns {void}
      */
     function clearCache() {
       bootstrapCache.loadedAt = 0;
@@ -6203,7 +6257,7 @@
    * Purpose: Prepare network record for re-initialization (especially for RDAP lookups).
    * Necessity: Reset Information action clears stale data before re-populating from API sources.
    * Preserves critical fields (name handles separately) and marks deleted inlines for removal.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    */
   function runNetworkResetActions() {
     const formArea = qs("#network_form > div > fieldset:nth-child(2)");
@@ -7676,7 +7730,7 @@
    * Purpose: Central dispatcher that activates modules for the current page.
    * Necessity: Implements modular architecture; checks both enabled status and page match
    * before running each module. Catches and logs errors to prevent cascade failures.
-   * AI Maintenance: Preserve execution ordering, locks, and route/module boundaries.
+   * @ai Preserve execution ordering, locks, and route/module boundaries.
    * @param {{ entity: string, entityId: string, isEntityChangePage: boolean }} ctx - Route context.
    */
   function dispatchModules(ctx) {
@@ -7728,7 +7782,7 @@
    * Registers one-time Tampermonkey menu commands for common CP actions.
    * Purpose: Provide keyboard/popup access to frequent actions without toolbar clicks.
    * Necessity: Power users benefit from script actions in the Tampermonkey command menu.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function registerCpMenuCommands() {
     if (cpMenuCommandsRegistered) return;
@@ -7921,7 +7975,7 @@
    * a self-check surfaces breakage before a user triggers an action.
    * Always logs to console.warn for any failed check; emits console.debug
    * details in debug mode. Runs at most once per page load.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ entity: string, entityId: string, pathName: string }} ctx - Route context.
    */
   function runSelfCheck(ctx) {
@@ -7973,7 +8027,7 @@
    * self-check, legacy cleanup, module dispatch, toolbar ordering, and TM menu registration.
    * Necessity: A single entry point ensures sequential, predictable initialization
    * regardless of DOMContentLoaded timing or future module additions.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function runConsolidatedInit() {
     const ctx = getRouteContext();

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.1.22.20260501
+// @version      1.1.29.20260504
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
@@ -30,7 +30,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbFpConsolidated";
-  const SCRIPT_VERSION = "1.1.22.20260501";
+  const SCRIPT_VERSION = "1.1.29.20260504";
   // RDAP fallback client is intentionally CP-only; FP does not implement RDAP lookups.
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
@@ -99,6 +99,21 @@
     carrier: "carrier",
     campus: "campus",
   };
+  const displayTypeMap = {
+    fac: "fac",
+    facility: "fac",
+    net: "net",
+    network: "net",
+    asn: "net",
+    org: "org",
+    organization: "org",
+    carrier: "carrier",
+    ix: "ix",
+    internetexchange: "ix",
+    campus: "campus",
+    user: "user",
+    oauthapplication: "oauth",
+  };
   const activeActionLocks = new Set();
   const pendingDomUpdates = new Map();
   const lastFetchFailureByUrl = new Map();
@@ -115,7 +130,7 @@
 
   /**
    * Reads JSON feature-flag overrides from localStorage.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {object} Parsed override map, or empty object when unavailable/invalid.
    */
   function getFeatureFlagOverrides() {
@@ -131,7 +146,7 @@
 
   /**
    * Returns resolved feature-flag value using defaults plus localStorage overrides.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} flagName - Flag key inside FEATURE_FLAGS.
    * @returns {boolean} Resolved boolean state.
    */
@@ -148,7 +163,7 @@
 
   /**
    * Returns feature-flag default/override/resolved state.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} flagName - Flag key inside FEATURE_FLAGS.
    * @returns {{ defaultValue: boolean, overrideValue: boolean|null, enabled: boolean }|null} Flag state.
    */
@@ -164,7 +179,7 @@
 
   /**
    * Sets a feature-flag override and removes redundant entries.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} flagName - Flag key inside FEATURE_FLAGS.
    * @param {boolean} enabled - Resolved target state.
    */
@@ -192,7 +207,7 @@
 
   /**
    * Removes all feature-flag overrides and restores defaults.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function resetFeatureFlagOverrides() {
     try {
@@ -210,7 +225,7 @@
    * Purpose: Allows individual modules to be toggled on/off without code changes.
    * Necessity: Provides user-level module control for the modular architecture.
    * Supports both JSON array and comma-separated formats for backward compatibility.
-   * AI Maintenance: Preserve execution ordering, locks, and route/module boundaries.
+   * @ai Preserve execution ordering, locks, and route/module boundaries.
    */
   function getDisabledModules() {
     const raw = String(window.localStorage?.getItem(DISABLED_MODULES_STORAGE_KEY) || "").trim();
@@ -237,7 +252,7 @@
    * Checks if a module is enabled (not in the disabled set).
    * Purpose: Gate-keeper for module execution in dispatchModules().
    * Necessity: Implements selective module control without removing code.
-   * AI Maintenance: Preserve execution ordering, locks, and route/module boundaries.
+   * @ai Preserve execution ordering, locks, and route/module boundaries.
    */
   function isModuleEnabled(moduleId, disabledModules) {
     if (!moduleId) return false;
@@ -248,7 +263,7 @@
   /**
    * Returns true when diagnostics/debug mode is enabled via localStorage.
    * Purpose: Gate verbose console output behind an opt-in flag.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function isDebugEnabled() {
     return isFeatureEnabled("debugMode") && window.localStorage?.getItem(DIAGNOSTICS_STORAGE_KEY) === "1";
@@ -256,7 +271,7 @@
 
   /**
    * Returns true when Admin Ops mode is enabled via localStorage.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function isAdminOpsModeEnabled() {
     if (!isFeatureEnabled("adminOpsMode")) return false;
@@ -265,7 +280,7 @@
 
   /**
    * Structured debug logger — no-ops unless debug mode is active.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function dbg(tag, msg, ...rest) {
     if (!isDebugEnabled()) return;
@@ -274,7 +289,7 @@
 
   /**
    * Shows a user-facing notification with a console fallback.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function notifyUser({ title, text, timeout = 2500 }) {
     if (typeof GM_notification === "function") {
@@ -293,7 +308,7 @@
    * Returns storage for domain-scoped persistent values.
    * Purpose: Centralize guarded access to localStorage for shared helper logic.
    * Necessity: Keeps FP storage access patterns aligned with CP helper structure.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    */
   function getDomainCacheStorage() {
     try {
@@ -307,7 +322,7 @@
 
   /**
    * Returns storage for tab-scoped transient values.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    */
   function getTabSessionStorage() {
     try {
@@ -324,7 +339,7 @@
    * Purpose: Provides a unique identifier for correlating requests within a session.
    * Necessity: Enables server-side analytics and request tracking without exposing device fingerprint.
    * UUID persists across reloads and tabs via shared domain storage.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    */
   function getSessionUuid() {
     const sessionKey = SESSION_UUID_STORAGE_KEY;
@@ -344,7 +359,7 @@
    * Purpose: Creates a privacy-preserving identifier for requests from untrusted domains.
    * Necessity: Balances analytics tracking with user privacy for non-trusted networks.
    * Returns a 16-character hex string derived from UA, platform, language, CPU count, memory.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function computeClientFingerprint() {
     const parts = [
@@ -370,7 +385,7 @@
    * Necessity: Distinguishes between trusted (localhost, peeringdb.com) and untrusted domains
    * to decide whether to use full browser info or privacy-preserving fingerprint.
    * Also normalizes IPv6 URIs with bracket notation ([::1]) for transparent matching.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function isDomainTrusted(domain) {
     if (!domain) return false;
@@ -401,7 +416,7 @@
    * Necessity: For trusted domains (development, peeringdb.com), includes browser/platform for debugging;
    * for untrusted domains, uses fingerprint only to minimize data exposure.
    * Includes session UUID in both cases for request correlation.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function buildTrustBasedUserAgent(domain) {
     const isTrusted = isDomainTrusted(domain);
@@ -420,7 +435,7 @@
    * Retrieves explicit or auto-computed User-Agent for this session.
    * Purpose: Provide flexible UA configuration with fallback to trust-based generation.
    * Necessity: Allows manual override via localStorage while auto-computing from domain trust.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    */
   function getCustomRequestUserAgent() {
     const sharedConfigured = String(window.localStorage?.getItem(SHARED_USER_AGENT_STORAGE_KEY) || "").trim();
@@ -430,7 +445,7 @@
 
   /**
    * Emits current User-Agent details when diagnostics are enabled.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {boolean} True when emitted.
    */
   function logCurrentUserAgentDebug() {
@@ -453,7 +468,7 @@
 
   /**
    * Emits debug diagnostics for outbound requests.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    */
   function logExternalRequestUserAgent(meta) {
     if (!isDebugEnabled()) return;
@@ -487,7 +502,7 @@
 
   /**
    * Stores the latest fetch failure details by URL for diagnostics.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    */
   function recordFetchFailure(url, details) {
     const key = String(url || "").trim();
@@ -501,7 +516,7 @@
 
   /**
    * Clears any stored fetch failure details for URL.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    */
   function clearFetchFailure(url) {
     const key = String(url || "").trim();
@@ -513,7 +528,7 @@
    * Constructs HTTP headers for Tampermonkey requests with User-Agent.
    * Purpose: Centralize header building for all script-initiated requests.
    * Necessity: Ensures consistent User-Agent and other important headers across all API calls.
-   * AI Maintenance: Preserve shared storage/cache key contracts and TTL behavior.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    */
   function buildTampermonkeyRequestHeaders(baseHeaders = {}) {
     const headers = { ...baseHeaders };
@@ -531,7 +546,7 @@
 
   /**
    * Installs lightweight fetch instrumentation for debug diagnostics.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    */
   function installFetchDiagnostics() {
     if (fetchInstrumentationInstalled || typeof window.fetch !== "function") return;
@@ -596,7 +611,7 @@
 
   /**
    * Attempts to acquire a named action lock.
-   * AI Maintenance: Preserve execution ordering, locks, and route/module boundaries.
+   * @ai Preserve execution ordering, locks, and route/module boundaries.
    */
   function tryBeginActionLock(lockKey) {
     const normalizedKey = String(lockKey || "").trim();
@@ -610,7 +625,7 @@
 
   /**
    * Releases a previously acquired action lock.
-   * AI Maintenance: Preserve execution ordering, locks, and route/module boundaries.
+   * @ai Preserve execution ordering, locks, and route/module boundaries.
    */
   function endActionLock(lockKey) {
     const normalizedKey = String(lockKey || "").trim();
@@ -620,7 +635,7 @@
 
   /**
    * Runs async action while holding an action lock.
-   * AI Maintenance: Preserve execution ordering, locks, and route/module boundaries.
+   * @ai Preserve execution ordering, locks, and route/module boundaries.
    */
   async function withActionLock(lockKey, fn) {
     if (!tryBeginActionLock(lockKey)) {
@@ -638,7 +653,7 @@
 
   /**
    * Schedules keyed DOM updates and coalesces multiple writes into one frame.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function scheduleDomUpdate(key, fn) {
     const normalizedKey = String(key || "").trim();
@@ -668,7 +683,7 @@
    * Purpose: Provide route info to modules for conditional execution.
    * Necessity: Enables modules to match specific pages (e.g., /net/1234) and determine
    * whether to run. Used by all modules' match() function.
-   * AI Maintenance: Preserve execution ordering, locks, and route/module boundaries.
+   * @ai Preserve execution ordering, locks, and route/module boundaries.
    */
   function getRouteContext() {
     const path = window.location.pathname;
@@ -698,7 +713,7 @@
    * Convenience wrapper for querySelector.
    * Purpose: Reduce boilerplate for DOM querying throughout the script.
    * Necessity: Used extensively for finding form fields and toolbar elements.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function qs(selector, root = document) {
     if (!root || typeof root.querySelector !== "function") {
@@ -712,7 +727,7 @@
    * Convenience wrapper for querySelectorAll returning an array.
    * Purpose: Reduce repeated Array.from(querySelectorAll(...)) patterns in FP modules.
    * Necessity: Keeps small DOM iteration helpers aligned with CP utility parity.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function qsa(selector, root = document) {
     try {
@@ -726,7 +741,7 @@
    * Retrieves trimmed innerText from a selected element.
    * Purpose: Safe extraction of display text for form fields and data fields.
    * Necessity: Provides consistent empty-string fallback vs. throwing on missing elements.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getText(selector, root = document) {
     const el = qs(selector, root);
@@ -737,7 +752,7 @@
    * Retrieves trimmed value from form input elements (input, select, textarea).
    * Purpose: Unified value extraction that handles both .value property and data attributes.
    * Necessity: Normalizes form field reading across different input types.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getInputValue(selector, root = document) {
     const el = qs(selector, root);
@@ -752,7 +767,7 @@
 
   /**
    * Reads a normalized value from a data-edit field in the current page.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getDataEditValue(name, root = document) {
     const el = qs(`[data-edit-name="${name}"]`, root);
@@ -762,7 +777,7 @@
 
   /**
    * Parses a value into a finite number, returning null when invalid.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function toNumeric(value) {
     const n = Number(String(value || "").replace(/[^\d.-]/g, ""));
@@ -771,7 +786,7 @@
 
   /**
    * Resolves current entity type/id from route context, with ASN->network fallback.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getCurrentEntityTypeAndId(ctx = null) {
     const route = ctx || getRouteContext();
@@ -790,7 +805,7 @@
 
   /**
    * Normalizes frontend route entity aliases to canonical hard-exclude keys.
-   * AI Maintenance: Preserve normalization/parsing rules and backward-compatible output formats.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    */
   function normalizeEntityTypeForHardExclude(type) {
     const normalized = String(type || "").trim().toLowerCase();
@@ -799,7 +814,7 @@
 
   /**
    * Returns hard-exclusion metadata for the current entity, or null.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getHardExcludedEntityInfo(ctx = null) {
     const { type, id } = getCurrentEntityTypeAndId(ctx);
@@ -816,7 +831,7 @@
 
   /**
    * Attempts to resolve the parent organization ID from route, fields, or links.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getParentOrgId(ctx = null) {
     const route = ctx || getRouteContext();
@@ -844,7 +859,7 @@
 
   /**
    * Builds the API URL for the current entity context.
-   * AI Maintenance: Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    */
   function getCurrentEntityApiUrl(ctx = null) {
     const { type, id } = getCurrentEntityTypeAndId(ctx);
@@ -854,7 +869,7 @@
 
   /**
    * Maps frontend entity slugs to CP model names.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getCpEntityNameByType(type) {
     const map = {
@@ -869,7 +884,7 @@
 
   /**
    * Builds a CP organization change-page URL from org ID.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function buildCpOrgChangeUrl(orgId) {
     if (!/^\d+$/.test(String(orgId || "").trim())) return "";
@@ -878,7 +893,7 @@
 
   /**
    * Builds a CP organization user-manager anchor URL from org ID.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function buildCpUserManagerUrl(orgId) {
     const base = buildCpOrgChangeUrl(orgId);
@@ -888,7 +903,7 @@
 
   /**
    * Builds a CP list-search URL for an entity type and identifier.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function buildCpEntitySearchUrl(type, id) {
     const cpName = getCpEntityNameByType(type);
@@ -899,7 +914,7 @@
 
   /**
    * Builds a CP network search URL from an ASN value.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function buildCpNetworkSearchUrlByAsn(asn) {
     const normalizedAsn = String(asn || "").replace(/\D/g, "");
@@ -909,7 +924,7 @@
 
   /**
    * Returns true when current page appears to be a frontend 404 document.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function isFrontendNotFoundPage() {
     const title = String(document.title || "").toLowerCase();
@@ -924,7 +939,7 @@
 
   /**
    * Builds a CP account email-address search URL.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function buildCpAccountSearchUrl(query) {
     const q = String(query || "").trim();
@@ -934,7 +949,7 @@
 
   /**
    * Returns the best-effort current entity name from rendered/editable fields.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getCurrentEntityName() {
     return (
@@ -946,7 +961,7 @@
 
   /**
    * Extracts the current ASN as digits only.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getCurrentAsn() {
     const raw = getDataEditValue("asn") || getText('div[data-edit-name="asn"]') || getInputValue("#id_asn");
@@ -956,7 +971,7 @@
 
   /**
    * Collects visible usernames, emails, and email domains from org user manager rows.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getVisibleUserIdentityData() {
     const rows = qsa('#org-user-manager > div[data-edit-template="user-item"] > .editable');
@@ -987,7 +1002,7 @@
 
   /**
    * Collects related object IDs from visible API listing sections on the page.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getRelatedObjectIds() {
     const result = {
@@ -1019,7 +1034,7 @@
 
   /**
    * Formats a compact semicolon-separated summary of key entity identifiers.
-   * AI Maintenance: Preserve normalization/parsing rules and backward-compatible output formats.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    */
   function formatEntityIdsBundle(ctx = null) {
     const route = ctx || getRouteContext();
@@ -1042,7 +1057,7 @@
 
   /**
    * Formats a multiline triage summary for quick admin review/copy workflows.
-   * AI Maintenance: Preserve normalization/parsing rules and backward-compatible output formats.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    */
   function formatAdminTriageSummary(ctx = null) {
     const route = ctx || getRouteContext();
@@ -1068,7 +1083,7 @@
 
   /**
    * Collects unique external links from known fields and visible anchor tags.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function collectExternalLinks() {
     const links = new Set();
@@ -1089,7 +1104,7 @@
 
   /**
    * Opens validated URLs in new tabs, prompting confirmation for large batches.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function openUrlsWithConfirm(urls, threshold = 3) {
     const valid = Array.from(new Set((urls || []).map((u) => String(u || "").trim()).filter(Boolean)));
@@ -1110,7 +1125,7 @@
    * Copies text to clipboard with modern and fallback implementations.
    * Purpose: Enable "Copy URL" and similar copy actions for user convenience.
    * Necessity: Handles browsers with and without Clipboard API support.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   async function copyToClipboard(text) {
     const normalizedText = String(text ?? "");
@@ -1150,7 +1165,7 @@
    * Retrieves the container element for top-right toolbar buttons.
    * Purpose: Centralize toolbar element selection with fallback selectors.
    * Necessity: Top-right button area varies in PeeringDB pages; needs fallback chain.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function getTopRightToolbarContainer(parentSelector = "div.right.button-bar > div:first-child") {
     return qs(parentSelector);
@@ -1163,7 +1178,7 @@
    * replaces vnode. Capture-phase delegation on document runs before framework bubble handlers,
    * so stopPropagation can prevent PeeringDB from intercepting our button clicks.
    * Guard: installed at most once per page lifetime via _pdbFpDelegationInstalled.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function ensureFpClickDelegation() {
     if (document._pdbFpDelegationInstalled) return;
@@ -1200,7 +1215,7 @@
    * Purpose: Standardized way to add custom links (Admin Console, BGP tools, etc.) to FP pages.
    * Necessity: Ensures consistent styling, idempotency (prevents duplicates), and event handling.
    * Marks buttons with data-pdb-fp-action attribute for later reordering and identification.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function createTopRightAction({
     actionId,
@@ -1267,7 +1282,7 @@
    * Closes a single FP dropdown wrapper and resets toggle accessibility state.
    * Purpose: Centralize close behavior for toolbar overflow menus.
    * Necessity: Shared close logic prevents duplicated per-menu dismissal handling.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function closeDropdownActionItem(wrapper) {
     if (!wrapper) return;
@@ -1292,7 +1307,7 @@
    * Closes all open FP dropdown wrappers except an optional exempt wrapper.
    * Purpose: Enforce single-open-dropdown behavior for FP toolbar overflow menus.
    * Necessity: Keeps UI state predictable when multiple dropdown-capable actions exist.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function closeAllDropdownActionItems(exemptWrapper = null) {
     Array.from(openDropdownActionItems).forEach((wrapper) => {
@@ -1305,7 +1320,7 @@
    * Registers one shared listener pair for FP dropdown close behavior.
    * Purpose: Replace per-menu document listeners with one shared close mechanism.
    * Necessity: Reduces global listener duplication and supports Escape-to-close.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function ensureDropdownGlobalCloseListener() {
     if (dropdownGlobalCloseListenerBound) return;
@@ -1333,7 +1348,7 @@
    * Purpose: Provide a compact menu for multiple related tools (RIPEstat, BGPView, CIDR Report, etc.).
    * Necessity: Prevents toolbar overcrowding by grouping secondary network analysis tools.
    * Manages menu open/close state and click-outside dismissal.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function createTopRightOverflowMenu({
     actionId,
@@ -1435,7 +1450,7 @@
 
     /**
      * Closes the currently open overflow menu wrapper.
-     * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+     * @ai Preserve selector contracts and idempotent DOM mutation behavior.
      */
     const closeMenu = () => {
       closeDropdownActionItem(wrapper);
@@ -1468,7 +1483,7 @@
    * Tests if a DOM element matches a given priority (CSS selector or function).
    * Purpose: Support flexible matching in reorderChildrenByPriority (handles strings and predicates).
    * Necessity: Enables both CSS-based matching and custom function-based matching in one API.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function isPriorityMatch(child, priority) {
     if (!child || !priority) return false;
@@ -1493,7 +1508,7 @@
    * Purpose: Establish deterministic button order (Admin Console before BGP tools, etc.).
    * Necessity: Ensures consistent UI layout across page variations and module load orders.
    * Unmatched children stay in original order at the end.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function reorderChildrenByPriority(container, priorities) {
     if (!container || !Array.isArray(priorities) || priorities.length === 0) return;
@@ -1522,7 +1537,7 @@
    * Identifies if a child element is PeeringDB's native Edit toggle button.
    * Purpose: Distinguish PeeringDB native structure from custom FP buttons.
    * Necessity: Route native Edit button to separate row position per PeeringDB layout conventions.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function isNativeEditToolbarButton(child) {
     if (!child) return false;
@@ -1549,7 +1564,7 @@
    * Applies flex layout to toolbar container for two-row button arrangement.
    * Purpose: Enable column-based layout with right alignment and gap spacing.
    * Necessity: Foundation for enforceTopRightButtonOrder two-row structure.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function applyTopRightToolbarFlexLayout(parent) {
     if (!parent) return;
@@ -1565,7 +1580,7 @@
    * Ensures a named row container exists in the toolbar.
    * Purpose: Create or reuse row div with data-pdb-fp-row attribute for button grouping.
    * Necessity: Routes buttons to two distinct visual rows (Edit/Admin/Copy-URL, then BGP tools).
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function ensureTopRightRowContainer(parent, rowName) {
     if (!parent || !rowName) return null;
@@ -1591,7 +1606,7 @@
    * Purpose: Implement the two-row layout convention (primary actions row 1, analysis tools row 2).
    * Necessity: Creates visual hierarchy and improves mobile UX by grouping related actions.
    * Hides empty rows to maintain clean toolbar appearance.
-   * AI Maintenance: Preserve execution ordering, locks, and route/module boundaries.
+   * @ai Preserve execution ordering, locks, and route/module boundaries.
    */
   function routeTopRightButtonsToTwoRows(parent) {
     if (!parent) return;
@@ -1627,7 +1642,7 @@
   /**
    * Ensures helper row containers exist for FP action buttons on UI-next pages.
    * Purpose: Keep FP-injected actions visually spaced/aligned without mutating native controls.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function ensureUiNextActionRows(parent) {
     if (!parent) return { host: null, row1: null, row2: null };
@@ -1648,7 +1663,7 @@
 
     /**
      * Ensures a named UI-next helper row exists under the FP action host.
-     * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+     * @ai Preserve selector contracts and idempotent DOM mutation behavior.
      */
     const ensureRow = (rowName) => {
       let row = qs(`:scope > div[data-pdb-fp-action-row="${rowName}"]`, host);
@@ -1676,7 +1691,7 @@
   /**
    * Routes only FP action buttons into two helper rows on UI-next pages.
    * Purpose: Restore visual spacing while leaving native Edit/theme controls untouched.
-   * AI Maintenance: Preserve execution ordering, locks, and route/module boundaries.
+   * @ai Preserve execution ordering, locks, and route/module boundaries.
    */
   function routeUiNextFpActionsToTwoRows(parent) {
     if (!parent) return;
@@ -1686,7 +1701,7 @@
 
     /**
      * Resolves the native edit control while tolerating host DOM reordering.
-     * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+     * @ai Preserve selector contracts and idempotent DOM mutation behavior.
      */
     const findNativeEditButton = () => {
       const directChildren = Array.from(parent.children);
@@ -1723,7 +1738,7 @@
    * Groups custom toolbar items by vertical pixel position (visual rows).
    * Purpose: Detect which buttons wrap to new lines due to narrow viewports.
    * Necessity: Understand natural wrapping behavior for spacing adjustments.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function groupCustomItemsByVisualRow(customItems, topTolerance = 3) {
     const rows = [];
@@ -1753,7 +1768,7 @@
    * Removes individual button margins to rely on container gap for spacing.
    * Purpose: Standardize spacing through flexbox gap instead of element margins.
    * Necessity: Prevents double-spacing and inconsistent gaps from mixed margin/gap sources.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function applyTopRightCustomSpacing(parent) {
     if (!parent) return;
@@ -1774,7 +1789,7 @@
    * Clears top margins on wrapped toolbar items.
    * Purpose: Clean spacing when buttons wrap to multiple rows.
    * Necessity: Prevents excessive vertical gaps when items wrap at narrow viewports.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function applyTopRightWrappedRowOffset(parent) {
     if (!parent) return;
@@ -1793,7 +1808,7 @@
   /**
    * Returns true when PeeringDB UI-next markup is active.
    * Purpose: Keep FP layout code from fighting native UI-next button logic.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function isUiNextPage() {
     const theme = String(document.documentElement?.getAttribute("data-theme") || "").toLowerCase();
@@ -1806,7 +1821,7 @@
   /**
    * Adds a minimal fallback .wrapper node on net pages when UI-next markup omits it.
    * Purpose: Prevent host inline reAdjust() from crashing on $('.wrapper')[0].scrollWidth.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function ensureNetPageWrapperFallback() {
     if (!/^\/net\/\d+/.test(window.location.pathname)) return;
@@ -1833,7 +1848,7 @@
    * Necessity: Main orchestrator for toolbar DOM changes; detects when PeeringDB has already
    * laid out buttons and skips processing to avoid interfering with native layout.
    * Version 1.0.20 adds detection for pre-existing data-pdb-fp-row containers.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function enforceTopRightButtonOrder() {
     const parent = getTopRightToolbarContainer();
@@ -1883,7 +1898,7 @@
    * Convenience wrapper for createTopRightAction with minimal arguments.
    * Purpose: Simplify button creation for module code.
    * Necessity: Reduces boilerplate in module run functions.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function addButton(label, onClick, parentSelector = "div.right.button-bar > div:first-child", actionId = "") {
     return createTopRightAction({
@@ -1907,6 +1922,37 @@
           if (rawPath !== cleanPath) {
             window.location.href = url.protocol + "//" + url.hostname + cleanPath + url.search + url.hash;
           }
+        }
+      },
+    },
+    {
+      id: "navbar-cp-link",
+      match: () => isUiNextPage(),
+      run: () => {
+        if (!isUiNextPage()) return;
+
+        const cpUrl = "https://www.peeringdb.com/cp/";
+        
+        // Handle expanded nav (#extra-nav-expanded - flex-direction: row-reverse, so prepend)
+        const expandedNav = qs("#extra-nav-expanded");
+        if (expandedNav && !expandedNav.querySelector('[data-pdb-fp-navbar-cp-link="expanded"]')) {
+          const cpLink = document.createElement("a");
+          cpLink.href = cpUrl;
+          cpLink.className = "nav-link";
+          cpLink.textContent = "CP";
+          cpLink.setAttribute("data-pdb-fp-navbar-cp-link", "expanded");
+          expandedNav.prepend(cpLink);
+        }
+
+        // Handle collapsed nav (#extra-nav-collapsed .dropdown-menu - append)
+        const collapsedMenu = qs("#extra-nav-collapsed .dropdown-menu");
+        if (collapsedMenu && !collapsedMenu.querySelector('[data-pdb-fp-navbar-cp-link="collapsed"]')) {
+          const cpItem = document.createElement("a");
+          cpItem.href = cpUrl;
+          cpItem.className = "dropdown-item";
+          cpItem.textContent = "CP";
+          cpItem.setAttribute("data-pdb-fp-navbar-cp-link", "collapsed");
+          collapsedMenu.appendChild(cpItem);
         }
       },
     },
@@ -2004,7 +2050,8 @@
         };
 
         const cpType = typeMap[ctx.type];
-        if (!cpType) return;
+        const displayType = displayTypeMap[ctx.type];
+        if (!cpType || !displayType) return;
 
         // Determine ID (handle ASN vs Net ID nuances)
         let cpId = ctx.id;
@@ -2020,7 +2067,7 @@
 
         createTopRightAction({
           actionId: "admin-console",
-          label: "Admin Console",
+          label: `CP (${displayType}:${cpId})`,
           href: cpUrl,
           target: "_blank",
         });
@@ -2545,9 +2592,16 @@
         const CP_EMAIL_SEARCH_BASE = "https://www.peeringdb.com/cp/account/emailaddress/?q=";
         const CP_USER_CHANGE_BASE = "https://www.peeringdb.com/cp/peeringdb_server/user";
         const EMAIL_REGEX = /[A-Z0-9._+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
+        const ASN_REQUEST_REGEX = /\b(?:(?:they\s+also\s+)?provided this ASN in their request)\s*[:#=-]?\s*(\d{3,10})\b/i;
 
         /**
-         * Creates a CP account search anchor for an email/username query.
+         * Creates a CP account search anchor for an email or username query.
+         * Purpose: Provide a compact jump from visible org-user data to the CP account-email search UI.
+         * Necessity: Keeps moderation workflows on the org page without requiring manual query construction.
+         * @ai Preserve the CP email-search endpoint, inline-link styling, and accessibility attributes because callers rely on this helper returning a ready-to-append anchor.
+         * @param {string} queryText - Email address or username to search for.
+         * @param {string} titleText - Tooltip and accessible-label text for the generated anchor.
+         * @returns {HTMLAnchorElement} Configured CP search anchor.
          */
         function createCpSearchLink(queryText, titleText) {
           const link = document.createElement("a");
@@ -2565,6 +2619,11 @@
 
         /**
          * Creates a CP user change-page anchor for a numeric user ID.
+         * Purpose: Give moderators a direct jump from an org-page identity row to the backing CP user record.
+         * Necessity: Avoids duplicate inline URL-building logic in each row-decoration branch.
+         * @ai Keep the numeric guard and return-null behavior intact so callers can safely skip rendering when the source row does not expose a stable user id.
+         * @param {string|number} userId - Candidate user identifier extracted from the row.
+         * @returns {HTMLAnchorElement|null} Configured CP user-record anchor, or null when the id is invalid.
          */
         function createCpUserRecordLink(userId) {
           if (!/^\d+$/.test(String(userId || "").trim())) return null;
@@ -2584,7 +2643,43 @@
         }
 
         /**
+         * Creates a clipboard copy link for ASN digits.
+         * Purpose: Let moderators copy request-supplied ASN values directly from org-user manager rows.
+         * Necessity: Centralizes tooltip reset behavior and click interception for repeated inline ASN actions.
+         * @ai Preserve the digits-only clipboard payload and title-reset timing so repeated row re-renders remain idempotent and low-noise for operators.
+         * @param {string} asn - Normalized ASN digits to copy.
+         * @returns {HTMLAnchorElement} Clipboard action anchor for the ASN value.
+         */
+        function createAsnCopyLink(asn) {
+          const link = document.createElement("a");
+          link.href = "#";
+          link.textContent = "📋";
+          link.title = `Copy ASN ${asn}`;
+          link.setAttribute("aria-label", `Copy ASN ${asn}`);
+          link.setAttribute("data-pdb-fp-asn-copy", "true");
+          link.style.display = "inline-block";
+          link.style.marginLeft = "6px";
+          link.style.textDecoration = "none";
+          link.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            void copyToClipboard(asn).then((copied) => {
+              if (!copied) return;
+              const prev = link.getAttribute("title");
+              link.setAttribute("title", `Copied: ${asn}`);
+              setTimeout(() => link.setAttribute("title", prev), 1200);
+            }).catch(() => {});
+          });
+          return link;
+        }
+
+        /**
          * Normalizes inline 2FA badge visuals to a compact icon-only style.
+         * Purpose: Reduce visual noise in dense org-user listings while preserving the 2FA signal.
+         * Necessity: The host UI emits larger badge styling that competes with the added action-link cluster.
+         * @ai Preserve the idempotent data attribute and icon semantics so repeated module runs do not restyle the same badge or drop its accessibility metadata.
+         * @param {HTMLElement|null} badge - Badge element rendered by the host UI.
+         * @returns {void}
          */
         function normalizeTwoFaBadge(badge) {
           if (!badge || badge.getAttribute("data-pdb-fp-2fa-inline") === "true") return;
@@ -2606,6 +2701,15 @@
           badge.style.verticalAlign = "middle";
         }
 
+        /**
+         * Decorates org-user rows with CP shortcuts, copy helpers, and compact badge normalization.
+         * Purpose: Apply one consistent enhancement pass to both the active-user list and pending-affiliation rows.
+         * Necessity: Consolidates row parsing, duplicate-link guards, and inline action insertion in one place.
+         * @ai Preserve the duplicate-guard selectors and `allowDirectLink` branching because initialization reruns frequently and the affiliation-request list intentionally omits direct CP user-record links.
+         * @param {Element[]|NodeListOf<Element>} items - Row roots or containers that hold `.item` user rows.
+         * @param {{ allowDirectLink?: boolean }} [options={}] - Decoration options for row-specific behavior.
+         * @returns {void}
+         */
         function decorateUserRows(items, options = {}) {
           const allowDirectLink = Boolean(options.allowDirectLink);
 
@@ -2678,37 +2782,49 @@
 
           const emailRows = emailCell.querySelectorAll(":scope > div");
           emailRows.forEach((emailRow) => {
-            const emailMatch = String(emailRow.textContent || "").match(EMAIL_REGEX);
+            const rowText = String(emailRow.textContent || "");
+            const emailMatch = rowText.match(EMAIL_REGEX);
             const email = emailMatch ? emailMatch[0].trim() : "";
 
             // Add quick CP email search link for each email line in the same column.
-            if (!email || emailRow.querySelector("a[data-pdb-fp-email-search]")) return;
+            if (email && !emailRow.querySelector("a[data-pdb-fp-email-search]")) {
+              const searchLink = createCpSearchLink(email, "Search user by email in CP");
+              searchLink.setAttribute("data-pdb-fp-email-search", "true");
+              emailRow.appendChild(searchLink);
 
-            const searchLink = createCpSearchLink(email, "Search user by email in CP");
-            searchLink.setAttribute("data-pdb-fp-email-search", "true");
-            emailRow.appendChild(searchLink);
+              // Add clipboard copy link alongside the search link.
+              if (!emailRow.querySelector("a[data-pdb-fp-email-copy]")) {
+                const copyLink = document.createElement("a");
+                copyLink.href = "#";
+                copyLink.textContent = "📋";
+                copyLink.title = `Copy ${email}`;
+                copyLink.setAttribute("aria-label", `Copy ${email}`);
+                copyLink.setAttribute("data-pdb-fp-email-copy", "true");
+                copyLink.style.display = "inline-block";
+                copyLink.style.marginLeft = "6px";
+                copyLink.style.textDecoration = "none";
+                copyLink.addEventListener("click", (event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  void copyToClipboard(email).then((copied) => {
+                    if (!copied) return;
+                    const prev = copyLink.getAttribute("title");
+                    copyLink.setAttribute("title", `Copied: ${email}`);
+                    setTimeout(() => copyLink.setAttribute("title", prev), 1200);
+                  }).catch(() => {});
+                });
+                emailRow.appendChild(copyLink);
+              }
+            }
 
-            // Add clipboard copy link alongside the search link.
-            const copyLink = document.createElement("a");
-            copyLink.href = "#";
-            copyLink.textContent = "📋";
-            copyLink.title = `Copy ${email}`;
-            copyLink.setAttribute("aria-label", `Copy ${email}`);
-            copyLink.setAttribute("data-pdb-fp-email-copy", "true");
-            copyLink.style.display = "inline-block";
-            copyLink.style.marginLeft = "6px";
-            copyLink.style.textDecoration = "none";
-            copyLink.addEventListener("click", (event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              void copyToClipboard(email).then((copied) => {
-                if (!copied) return;
-                const prev = copyLink.getAttribute("title");
-                copyLink.setAttribute("title", `Copied: ${email}`);
-                setTimeout(() => copyLink.setAttribute("title", prev), 1200);
-              }).catch(() => {});
-            });
-            emailRow.appendChild(copyLink);
+            // Add ASN copy link for inline request phrases (digits only).
+            if (!emailRow.querySelector("a[data-pdb-fp-asn-copy]")) {
+              const asnMatch = rowText.match(ASN_REQUEST_REGEX);
+              const asnDigits = asnMatch?.[1] ? String(asnMatch[1]).trim() : "";
+              if (asnDigits) {
+                emailRow.appendChild(createAsnCopyLink(asnDigits));
+              }
+            }
           });
           });
         }
@@ -2812,6 +2928,41 @@
         });
       },
     },
+    {
+      id: "org-oauth-cp-edit-links",
+      match: (ctx) => ctx.type === "org" && ctx.isEntityPage,
+      run: () => {
+        const ATTR = "data-pdb-fp-oauth-cp-edit";
+        const appDetailsHrefRegex = /\/oauth2\/applications\/(\d+)\/?/i;
+
+        qsa("#manage_oauth .list .row .right a.btn").forEach((detailsLink) => {
+          const href = String(detailsLink.getAttribute("href") || "").trim();
+          const match = href.match(appDetailsHrefRegex);
+          const appId = match?.[1] ? String(match[1]).trim() : "";
+          const oauthDisplayType = displayTypeMap.oauthapplication || "oauthapplication";
+          if (!/^\d+$/.test(appId)) return;
+
+          const parent = detailsLink.parentElement;
+          if (!parent) return;
+          if (parent.querySelector(`a[${ATTR}="${appId}"]`)) return;
+
+          const cpUrl = `https://www.peeringdb.com/cp/peeringdb_server/oauthapplication/${appId}/change/`;
+
+          const link = document.createElement("a");
+          link.setAttribute(ATTR, appId);
+          link.href = cpUrl;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.className = detailsLink.className || "btn btn-default";
+          link.textContent = `CP (${oauthDisplayType}:${appId})`;
+          link.title = `Open OAuth application #${appId} in CP`;
+          link.setAttribute("aria-label", `Open OAuth application #${appId} in CP`);
+          link.style.marginRight = "6px";
+
+          parent.insertBefore(link, detailsLink);
+        });
+      },
+    },
   ];
 
   /**
@@ -2819,7 +2970,7 @@
    * Purpose: Central dispatcher that activates modules for the current page.
    * Necessity: Implements modular architecture; checks both enabled status and page match
    * before running each module. Catches and logs errors to prevent cascade failures.
-   * AI Maintenance: Preserve execution ordering, locks, and route/module boundaries.
+   * @ai Preserve execution ordering, locks, and route/module boundaries.
    */
   function dispatchModules(ctx) {
     const disabledModules = getDisabledModules();
@@ -2863,7 +3014,7 @@
 
   /**
    * Registers a menu command and records its ID for future refresh.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function registerFpMenuCommand(label, handler) {
     const commandId = GM_registerMenuCommand(label, handler);
@@ -2874,7 +3025,7 @@
    * Registers one-time Tampermonkey menu commands for common FP actions.
    * Purpose: Provide quick action access via extension menu for frequent workflows.
    * Necessity: Supports keyboard-driven usage and declutters reliance on toolbar clicks.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function registerFpMenuCommands() {
     if (fpMenuCommandsRegistered && typeof GM_unregisterMenuCommand !== "function") return;
@@ -3051,7 +3202,7 @@
 
   /**
    * Runs lightweight precondition checks for key FP DOM landmarks.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function runSelfCheck(ctx) {
     if (selfCheckHasRun) return;
@@ -3098,7 +3249,7 @@
    * Purpose: Use a stable ancestor so the observer survives framework-triggered DOM replacement.
    * Necessity: Rooting at the toolbar container causes the observer to detach silently when
    * PeeringDB's framework replaces that element, making all subsequent mutations invisible.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function getObserverRootNode() {
     return (
@@ -3112,7 +3263,7 @@
    * Disconnects the shared MutationObserver and clears pending disconnect timers.
    * Purpose: Stop observation after page stabilizes to reduce long-lived callback overhead.
    * Necessity: Observer is only needed during dynamic render bursts and route transitions.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function disconnectConsolidatedObserver() {
     if (observerDisconnectTimer) {
@@ -3130,7 +3281,7 @@
    * Schedules observer shutdown after a short idle period.
    * Purpose: Keep observer active during render bursts, then detach automatically.
    * Necessity: Balances responsiveness with lower steady-state CPU usage.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function scheduleObserverDisconnect() {
     if (observerDisconnectTimer) {
@@ -3146,7 +3297,7 @@
    * Ensures a single shared MutationObserver is connected for dynamic page updates.
    * Purpose: Re-attach observer only when needed, using scoped root + filtered callback.
    * Necessity: SPA-like updates on FP pages require temporary observation for toolbar rebuild.
-   * AI Maintenance: Preserve selector contracts and idempotent DOM mutation behavior.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function ensureConsolidatedObserver() {
     if (consolidatedObserver || !document.body) return;
@@ -3183,7 +3334,7 @@
 
   /**
    * Runs the consolidated initialization sequence for the current route context.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function runConsolidatedInit() {
     const ctx = getRouteContext();
@@ -3218,7 +3369,7 @@
 
   /**
    * Schedules one animation-frame initialization run when not already queued/running.
-   * AI Maintenance: Preserve execution ordering, locks, and route/module boundaries.
+   * @ai Preserve execution ordering, locks, and route/module boundaries.
    */
   function scheduleConsolidatedInit() {
     // Prevent triggering while modules are actively running (to avoid duplicate DOM insertions)
@@ -3238,7 +3389,7 @@
    * and causes rapid DOM mutations. Firing init on every mutation creates a fight cycle where
    * we inject buttons that PeeringDB's reconciler immediately removes. The debounce ensures
    * we only run after the last mutation in a burst, when the framework is stable.
-   * AI Maintenance: Preserve execution ordering, locks, and route/module boundaries.
+   * @ai Preserve execution ordering, locks, and route/module boundaries.
    */
   function scheduleConsolidatedInitDebounced() {
     if (initDebouncedTimer) window.clearTimeout(initDebouncedTimer);
@@ -3253,7 +3404,7 @@
    * Purpose: Initialize the script on page load or immediately if DOM is ready.
    * Necessity: Entry point that hooks into DOMContentLoaded, popstate (SPA navigation),
    * and DOM mutations to detect when init should run. Sets up MutationObserver for AJAX/PJAX pages.
-   * AI Maintenance: Keep behavior stable and prefer minimal, localized edits.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function bootstrapConsolidatedInit() {
     ensureNetPageWrapperFallback();
