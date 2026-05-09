@@ -2145,8 +2145,8 @@
         addButton("Copy URL", async (event) => {
           await withActionLock("copy-url", async () => {
             const name = getText('.view_title > div[data-edit-name="name"]');
-            const uri = window.location.href;
-            const copied = await copyToClipboard(`${name} (${uri})`);
+            const uri = window.location.href.split('#')[0];
+            const copied = await copyToClipboard(`${name} | ${uri}`);
             if (!copied) return;
 
             const btn = event?.target;
