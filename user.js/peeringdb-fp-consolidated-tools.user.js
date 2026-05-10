@@ -77,6 +77,11 @@
   const UI_NEXT_ACTION_ROW_GAP_PX = 8;
   const UI_NEXT_ACTION_COLUMN_GAP_PX = 8;
   const UI_NEXT_ACTION_MARGIN_TOP_PX = 8;
+  const API_PAYLOAD_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.apiPayloadCache.`;
+  const API_PAYLOAD_TAB_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.apiPayloadTabCache.`;
+  const API_PAYLOAD_CACHE_TTL_MS = 10 * 60 * 1000;
+  const API_PAYLOAD_TAB_CACHE_TTL_MS = 2 * 60 * 1000;
+  const API_PAYLOAD_CACHE_SCHEMA_VERSION = 1;
 
   /**
    * Hard-excluded entity IDs for Example Organization records.
@@ -332,6 +337,130 @@
     }
 
     return null;
+  }
+
+  /**
+   * Builds a stable cache identity for API payload URLs.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {string} url - Absolute or relative API URL.
+   * @returns {string} Stable cache identity token.
+   */
+  function buildApiPayloadCacheIdentity(url) {
+    return String(url || "").trim();
+  }
+
+  /**
+   * Reads a cached API payload entry from a storage object.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
+   * @param {Storage|null} storage - localStorage or sessionStorage.
+   * @param {string} storageKey - Namespaced cache key.
+   * @returns {object|null} Cached payload object or null.
+   */
+  function readCachedApiPayloadEntry(storage, storageKey) {
+    if (!storage || !storageKey) return null;
+
+    try {
+      const raw = storage.getItem(storageKey);
+      if (!raw) return null;
+
+      const parsed = JSON.parse(raw);
+      const expiresAt = Number(parsed?.expiresAt || 0);
+      const schemaVersion = Number(parsed?.v ?? -1);
+      const payload = parsed?.payload;
+      if (
+        !Number.isFinite(expiresAt) ||
+        expiresAt <= Date.now() ||
+        schemaVersion !== API_PAYLOAD_CACHE_SCHEMA_VERSION ||
+        !payload ||
+        typeof payload !== "object"
+      ) {
+        storage.removeItem(storageKey);
+        return null;
+      }
+
+      return payload;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  /**
+   * Stores API payload entry into a storage object.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
+   * @param {Storage|null} storage - localStorage or sessionStorage.
+   * @param {string} storageKey - Namespaced cache key.
+   * @param {object} payload - API payload to store.
+   * @param {number} ttlMs - Cache TTL in milliseconds.
+   */
+  function writeCachedApiPayloadEntry(storage, storageKey, payload, ttlMs) {
+    if (!storage || !storageKey || !payload || typeof payload !== "object") return;
+
+    try {
+      storage.setItem(
+        storageKey,
+        JSON.stringify({
+          v: API_PAYLOAD_CACHE_SCHEMA_VERSION,
+          expiresAt: Date.now() + ttlMs,
+          payload,
+        }),
+      );
+    } catch (_error) {
+      // Ignore cache write failures.
+    }
+  }
+
+  /**
+   * Resolves API JSON payload with strict cache-chain order.
+   * Order: global cache -> tab cache -> API call -> null fallback.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+   * @param {string} apiUrl - Same-origin API endpoint URL.
+   * @returns {Promise<object|null>} Resolved payload object or null.
+   */
+  async function resolveApiPayloadWithCacheChain(apiUrl) {
+    const cacheIdentity = buildApiPayloadCacheIdentity(apiUrl);
+    if (!cacheIdentity) return null;
+
+    const globalStorageKey = `${API_PAYLOAD_CACHE_STORAGE_PREFIX}${cacheIdentity}`;
+    const tabStorageKey = `${API_PAYLOAD_TAB_CACHE_STORAGE_PREFIX}${cacheIdentity}`;
+
+    const globalCachedPayload = readCachedApiPayloadEntry(getDomainCacheStorage(), globalStorageKey);
+    if (globalCachedPayload) return globalCachedPayload;
+
+    const tabCachedPayload = readCachedApiPayloadEntry(getTabSessionStorage(), tabStorageKey);
+    if (tabCachedPayload) {
+      writeCachedApiPayloadEntry(
+        getDomainCacheStorage(),
+        globalStorageKey,
+        tabCachedPayload,
+        API_PAYLOAD_CACHE_TTL_MS,
+      );
+      return tabCachedPayload;
+    }
+
+    try {
+      const response = await fetch(apiUrl, { credentials: "same-origin" });
+      if (!response.ok) return null;
+      const raw = await response.json();
+      const payload = raw?.data?.[0] || raw || null;
+      if (!payload || typeof payload !== "object") return null;
+
+      writeCachedApiPayloadEntry(
+        getDomainCacheStorage(),
+        globalStorageKey,
+        payload,
+        API_PAYLOAD_CACHE_TTL_MS,
+      );
+      writeCachedApiPayloadEntry(
+        getTabSessionStorage(),
+        tabStorageKey,
+        payload,
+        API_PAYLOAD_TAB_CACHE_TTL_MS,
+      );
+
+      return payload;
+    } catch (_error) {
+      return null;
+    }
   }
 
   /**
@@ -2189,12 +2318,8 @@
             return;
           }
 
-          let payload;
-          try {
-            const response = await fetch(currentApiUrl, { credentials: "same-origin" });
-            const raw = await response.json();
-            payload = raw?.data?.[0] || raw || {};
-          } catch (_error) {
+          const payload = await resolveApiPayloadWithCacheChain(currentApiUrl);
+          if (!payload) {
             notifyUser({ title: "PeeringDB FP", text: "Failed to fetch API payload." });
             return;
           }
