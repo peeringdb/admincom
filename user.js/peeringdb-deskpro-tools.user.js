@@ -1397,6 +1397,9 @@
     "CODE", "PRE",
   ]);
 
+  // Permit explicit ASN label patterns even in preformatted blocks.
+  const PRE_CODE_ASN_LABEL_REGEX = /\b(?:member\s+asn|network\s+asn|asn)\s*[:\uFF1A=#\-\u2013\u2014\u2212]?\s*\d{1,10}\b/i;
+
   /**
    * Builds a favicon image node for FP-style PeeringDB links.
    * @ai Keep this helper limited to visual FP link affordance only.
@@ -2240,7 +2243,7 @@
     },
     {
       // Label-led ASN value — link only the numeric token (e.g. "member ASN: 12345").
-      regex: /\b((?:member\s+asn|network\s+asn|asn)\s*[:=#\-\u2013\u2014\u2212]?\s*)(\d{1,10})\b/gi,
+      regex: /\b((?:member\s+asn|network\s+asn|asn)\s*[:\uFF1A=#\-\u2013\u2014\u2212]?\s*)(\d{1,10})\b/gi,
       buildNodes([, prefix, asn]) {
         if (!isValidAsnForLink(asn)) {
           return [document.createTextNode(prefix), document.createTextNode(asn)];
@@ -2274,7 +2277,7 @@
   ];
 
   // Quick pre-test — text nodes matching none of the rules are rejected early.
-  const QUICK_TEST_REGEX = /\bASN?\d{1,10}\b|\b(?:member\s+asn|network\s+asn|asn)\s*[:=#\-\u2013\u2014\u2212]?\s*\d{1,10}\b|\b(?:(?:they\s+also\s+)?provided this ASN in their request)\s*[:#=\-\u2013\u2014\u2212]?\s*\d{1,10}|wishes to be affiliated to Organization\s+['"\u201c\u201d\u2018\u2019][^'"\u201c\u201d\u2018\u2019\n]+['"\u201c\u201d\u2018\u2019]|(?:^|\n)\s*\d{1,10}\s*(?:\n|$)/i;
+  const QUICK_TEST_REGEX = /\bASN?\d{1,10}\b|\b(?:member\s+asn|network\s+asn|asn)\s*[:\uFF1A=#\-\u2013\u2014\u2212]?\s*\d{1,10}\b|\b(?:(?:they\s+also\s+)?provided this ASN in their request)\s*[:#=\-\u2013\u2014\u2212]?\s*\d{1,10}|wishes to be affiliated to Organization\s+['"\u201c\u201d\u2018\u2019][^'"\u201c\u201d\u2018\u2019\n]+['"\u201c\u201d\u2018\u2019]|(?:^|\n)\s*\d{1,10}\s*(?:\n|$)/i;
 
   /**
    * Finds standalone 3-6 digit ASN candidates only in high-confidence contexts.
@@ -2492,7 +2495,12 @@
   function linkifyTextNode(textNode) {
     const parent = textNode.parentNode;
     if (!parent) return;
-    if (SKIP_TAGS.has(parent.tagName)) return;
+    if (SKIP_TAGS.has(parent.tagName)) {
+      const parentTag = String(parent.tagName || "").toUpperCase();
+      const canLinkifyPreCode =
+        (parentTag === "PRE" || parentTag === "CODE") && PRE_CODE_ASN_LABEL_REGEX.test(textNode.nodeValue || "");
+      if (!canLinkifyPreCode) return;
+    }
     if (parent.closest("a")) return;
 
     const fragment = linkifyText(textNode.nodeValue);
@@ -2515,7 +2523,12 @@
         acceptNode(node) {
           const p = node.parentNode;
           if (!p) return NodeFilter.FILTER_REJECT;
-          if (SKIP_TAGS.has(p.tagName)) return NodeFilter.FILTER_REJECT;
+          if (SKIP_TAGS.has(p.tagName)) {
+            const parentTag = String(p.tagName || "").toUpperCase();
+            const canLinkifyPreCode =
+              (parentTag === "PRE" || parentTag === "CODE") && PRE_CODE_ASN_LABEL_REGEX.test(node.nodeValue || "");
+            if (!canLinkifyPreCode) return NodeFilter.FILTER_REJECT;
+          }
           // Already inside a generated link — skip.
           if (p.closest(`a[${LINKIFIED_ATTR}]`)) return NodeFilter.FILTER_REJECT;
           // Already inside any <a> (external links etc.) — skip.
