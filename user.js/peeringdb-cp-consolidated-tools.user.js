@@ -78,6 +78,8 @@
   const POST_UPDATE_NAME_HISTORY_REDIRECT_STORAGE_KEY = `${MODULE_PREFIX}.postUpdateNameHistoryRedirect`;
   const POST_UPDATE_NAME_HISTORY_REDIRECT_TTL_MS = 10 * 60 * 1000;
   const ORG_NAME_CACHE_TTL_MS = CACHE_TTL_MS;
+  const ORG_NAME_TAB_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.orgNameTabCache.`;
+  const ORG_NAME_TAB_CACHE_TTL_MS = 30 * 60 * 1000;
   const NETWORK_NAME_CACHE_TTL_MS = CACHE_TTL_MS;
   const NETWORK_NAME_SCAN_PAGE_SIZE = 2000;
   const NETWORK_NAME_SCAN_TARGET_COUNT = 0;
@@ -771,6 +773,92 @@
   }
 
   /**
+   * Builds storage key used for tab-scoped org-name cache entries.
+   * Purpose: Keep org-name tab-cache keys namespaced under module prefix.
+   * Necessity: Avoid collisions with unrelated session storage keys.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
+   * @param {string|number} orgId - Organization ID to build the key for.
+   * @returns {string} Namespaced tab-cache key, or empty string if orgId is invalid.
+   */
+  function getOrgNameTabCacheStorageKey(orgId) {
+    const normalizedOrgId = normalizeOrgIdForCache(orgId);
+    if (!normalizedOrgId) return "";
+    return `${ORG_NAME_TAB_CACHE_STORAGE_PREFIX}${normalizedOrgId}`;
+  }
+
+  /**
+   * Reads a valid organization-name cache entry from tab session storage.
+   * Purpose: Reuse very recent org lookups without touching global storage.
+   * Necessity: Supports strict cache order: global -> tab session -> API.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
+   * @param {string|number} orgId - Organization ID to look up.
+   * @returns {string|null} Tab-cached organization name, or null on miss/expiry/malform.
+   */
+  function getSessionCachedOrganizationName(orgId) {
+    const normalizedOrgId = normalizeOrgIdForCache(orgId);
+    if (!normalizedOrgId) return null;
+
+    const storageKey = getOrgNameTabCacheStorageKey(normalizedOrgId);
+    if (!storageKey) return null;
+
+    try {
+      const storage = getTabSessionStorage();
+      const raw = storage?.getItem(storageKey);
+      if (!raw) return null;
+
+      const now = Date.now();
+      const parsed = JSON.parse(raw);
+      const cachedName = String(parsed?.name || "").trim();
+      const expiresAt = Number(parsed?.expiresAt || 0);
+      const schemaVersion = Number(parsed?.v ?? -1);
+      if (
+        !cachedName ||
+        !Number.isFinite(expiresAt) ||
+        expiresAt <= now ||
+        schemaVersion !== ORG_NAME_CACHE_SCHEMA_VERSION
+      ) {
+        storage?.removeItem(storageKey);
+        return null;
+      }
+
+      return cachedName;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  /**
+   * Stores organization-name cache entry in tab session storage.
+   * Purpose: Persist short-lived per-tab org-name lookups.
+   * Necessity: Completes ordered cache chain before API calls.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
+   * @param {string|number} orgId - Organization ID to cache the name for.
+   * @param {string} name - Resolved organization name to persist.
+   */
+  function setSessionCachedOrganizationName(orgId, name) {
+    const normalizedOrgId = normalizeOrgIdForCache(orgId);
+    const normalizedName = String(name || "").trim();
+    if (!normalizedOrgId || !normalizedName) return;
+
+    const storageKey = getOrgNameTabCacheStorageKey(normalizedOrgId);
+    if (!storageKey) return;
+
+    try {
+      const storage = getTabSessionStorage();
+      storage?.setItem(
+        storageKey,
+        JSON.stringify({
+          v: ORG_NAME_CACHE_SCHEMA_VERSION,
+          name: normalizedName,
+          expiresAt: Date.now() + ORG_NAME_TAB_CACHE_TTL_MS,
+        }),
+      );
+    } catch (_error) {
+      // Session storage may be unavailable.
+    }
+  }
+
+  /**
    * Reads a valid organization-name cache entry from in-memory or domain storage.
    * Purpose: Reuse recent org-name lookups to reduce repeated API requests.
    * Necessity: Update Name and Reset Information may request the same org repeatedly.
@@ -851,6 +939,8 @@
     } catch (_error) {
       // Storage may be unavailable; memory cache still provides benefit.
     }
+
+    setSessionCachedOrganizationName(normalizedOrgId, normalizedName);
   }
 
   /**
@@ -864,12 +954,31 @@
 
     try {
       const storage = getDomainCacheStorage();
+      if (storage) {
+        const keysToDelete = [];
+        for (let index = 0; index < storage.length; index += 1) {
+          const key = storage.key(index);
+          if (key && key.startsWith(ORG_NAME_CACHE_STORAGE_PREFIX)) {
+            keysToDelete.push(key);
+          }
+        }
+
+        keysToDelete.forEach((key) => {
+          storage.removeItem(key);
+        });
+      }
+    } catch (_error) {
+      // Ignore storage failures; in-memory cache is still cleared.
+    }
+
+    try {
+      const storage = getTabSessionStorage();
       if (!storage) return;
 
       const keysToDelete = [];
       for (let index = 0; index < storage.length; index += 1) {
         const key = storage.key(index);
-        if (key && key.startsWith(ORG_NAME_CACHE_STORAGE_PREFIX)) {
+        if (key && key.startsWith(ORG_NAME_TAB_CACHE_STORAGE_PREFIX)) {
           keysToDelete.push(key);
         }
       }
@@ -878,7 +987,7 @@
         storage.removeItem(key);
       });
     } catch (_error) {
-      // Ignore storage failures; in-memory cache is still cleared.
+      // Ignore storage failures.
     }
   }
 
@@ -3632,6 +3741,12 @@
     const resource = getEntityApiResourceByEntity(entity);
     if (!resource || !entityId) return null;
 
+    const orgIdFromForm = normalizeOrgIdForCache(getInputValue("#id_org"));
+    if (orgIdFromForm) {
+      const resolvedFromOrgId = await getOrganizationName(orgIdFromForm);
+      if (resolvedFromOrgId) return resolvedFromOrgId;
+    }
+
     try {
       const endpoint = getPeeringDbApiObjectUrl(resource, entityId);
       if (!endpoint) return null;
@@ -3640,7 +3755,14 @@
       const entityData = getFirstApiDataItem(payload, endpoint);
       const resolved = String(entityData?.org_name || "").trim();
       if (!resolved) return null;
-      return resolved;
+
+      const normalizedResolved = sanitizeRdapOrgName(resolved);
+
+      const orgIdFromPayload = normalizeOrgIdForCache(entityData?.org_id);
+      if (orgIdFromPayload) {
+        setCachedOrganizationName(orgIdFromPayload, normalizedResolved);
+      }
+      return normalizedResolved;
     } catch (_error) {
       return null;
     }
@@ -3691,6 +3813,26 @@
     const normalizedOrgId = normalizeOrgIdForCache(orgId);
     if (!normalizedOrgId) return { name: null, wasMalformed: false, knownAs: "" };
 
+    const globalCachedName = getCachedOrganizationName(normalizedOrgId);
+    if (globalCachedName) {
+      return {
+        name: sanitizeRdapOrgName(globalCachedName),
+        wasMalformed: false,
+        knownAs: "",
+      };
+    }
+
+    const tabCachedName = getSessionCachedOrganizationName(normalizedOrgId);
+    if (tabCachedName) {
+      const sanitized = sanitizeRdapOrgName(tabCachedName);
+      setCachedOrganizationName(normalizedOrgId, sanitized);
+      return {
+        name: sanitized,
+        wasMalformed: false,
+        knownAs: "",
+      };
+    }
+
     try {
       const endpoint = getPeeringDbApiObjectUrl("org", normalizedOrgId);
       if (!endpoint) return { name: null, wasMalformed: false, knownAs: "" };
@@ -3723,10 +3865,17 @@
     const normalizedOrgId = normalizeOrgIdForCache(orgId);
     if (!normalizedOrgId) return null;
 
-    const cached = getCachedOrganizationName(normalizedOrgId);
-    if (cached) {
+    const globalCached = getCachedOrganizationName(normalizedOrgId);
+    if (globalCached) {
       // Still sanitize cached values in case they were stored before sanitization was added
-      return sanitizeRdapOrgName(cached);
+      return sanitizeRdapOrgName(globalCached);
+    }
+
+    const tabCached = getSessionCachedOrganizationName(normalizedOrgId);
+    if (tabCached) {
+      const sanitizedTabCached = sanitizeRdapOrgName(tabCached);
+      setCachedOrganizationName(normalizedOrgId, sanitizedTabCached);
+      return sanitizedTabCached;
     }
 
     try {
@@ -6635,14 +6784,18 @@
               orgName = getCachedOrganizationName(orgId) || "";
             }
 
-            // Priority C: API fetch if cache miss and status is not deleted
+            // Priority C: Check tab-session cache if global cache misses
+            if (!orgName) {
+              orgName = getSessionCachedOrganizationName(orgId) || "";
+            }
+
+            // Priority D: API fetch if cache miss and status is not deleted
             if (!orgName) {
               const status = String(getSelectedStatus() || "").trim().toLowerCase();
               if (status !== "deleted") {
                 try {
-                  const response = await fetch(`/api/v2/org/${orgId}/`);
-                  if (response.ok) {
-                    const data = await response.json();
+                  const data = await pdbFetch(`/api/v2/org/${orgId}/`);
+                  if (data) {
                     const fetchedName = String(data?.name || "").trim();
                     if (fetchedName) {
                       orgName = fetchedName;
@@ -6655,7 +6808,7 @@
               }
             }
 
-            // Priority D: Build copy text (org name + URL or URI only)
+            // Priority E: Build copy text (org name + URL or URI only)
             const copyText = orgName ? `${orgName} | ${orgUrl}` : orgUrl;
             const copied = await copyToClipboard(copyText);
             if (copied) {
