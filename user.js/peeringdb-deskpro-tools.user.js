@@ -1441,6 +1441,20 @@
   }
 
   /**
+   * Returns true when a numeric token is a valid ASN for linkification.
+   * Purpose: Guard widened regex captures to avoid linking invalid large numbers.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {string|number} asn - Candidate ASN token.
+   * @returns {boolean} True when ASN is within valid 32-bit range.
+   */
+  function isValidAsnForLink(asn) {
+    const normalizedAsn = String(asn || "").trim();
+    if (!/^\d{1,10}$/.test(normalizedAsn)) return false;
+    const asnNumber = Number(normalizedAsn);
+    return Number.isInteger(asnNumber) && asnNumber > 0 && asnNumber <= 4294967295;
+  }
+
+  /**
    * Fetches exchange object by IX id.
    * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string|number} ixId - Exchange id.
@@ -2218,24 +2232,31 @@
   const REPLACEMENT_RULES = [
     {
       // AS123 / ASN123 — the full token becomes the link text.
-      regex: /\bASN?(\d+)\b/gi,
+      regex: /\bASN?(\d{1,10})\b/gi,
       buildNodes([fullMatch, asn]) {
+        if (!isValidAsnForLink(asn)) return [document.createTextNode(fullMatch)];
         return [makeAsnLink(asn, fullMatch)];
       },
     },
     {
       // Label-led ASN value — link only the numeric token (e.g. "member ASN: 12345").
-      regex: /\b((?:member\s+asn|network\s+asn|asn)\s*[:=#-]?\s*)(\d{3,6})\b/gi,
+      regex: /\b((?:member\s+asn|network\s+asn|asn)\s*[:=#\-\u2013\u2014\u2212]?\s*)(\d{1,10})\b/gi,
       buildNodes([, prefix, asn]) {
+        if (!isValidAsnForLink(asn)) {
+          return [document.createTextNode(prefix), document.createTextNode(asn)];
+        }
         return [document.createTextNode(prefix), makeAsnLink(asn, asn)];
       },
     },
     {
       // "They also provided this ASN in their request: 123" — link only the bare number.
       // Accept optional "they also" prefix and flexible separator before the ASN value.
-      regex: /\b(?:(?:they\s+also\s+)?provided this ASN in their request)\s*[:#=-]?\s*(\d+)/gi,
+      regex: /\b(?:(?:they\s+also\s+)?provided this ASN in their request)\s*[:#=\-\u2013\u2014\u2212]?\s*(\d{1,10})/gi,
       buildNodes([fullMatch, asn]) {
         const prefix = fullMatch.slice(0, fullMatch.length - asn.length);
+        if (!isValidAsnForLink(asn)) {
+          return [document.createTextNode(prefix), document.createTextNode(asn)];
+        }
         return [document.createTextNode(prefix), makeAsnLink(asn, asn)];
       },
     },
@@ -2253,7 +2274,7 @@
   ];
 
   // Quick pre-test — text nodes matching none of the rules are rejected early.
-  const QUICK_TEST_REGEX = /\bASN?\d+\b|\b(?:member\s+asn|network\s+asn|asn)\s*[:=#-]?\s*\d{3,6}\b|\b(?:(?:they\s+also\s+)?provided this ASN in their request)\s*[:#=-]?\s*\d+|wishes to be affiliated to Organization\s+['"\u201c\u201d\u2018\u2019][^'"\u201c\u201d\u2018\u2019\n]+['"\u201c\u201d\u2018\u2019]|(?:^|\n)\s*\d{3,6}\s*(?:\n|$)/i;
+  const QUICK_TEST_REGEX = /\bASN?\d{1,10}\b|\b(?:member\s+asn|network\s+asn|asn)\s*[:=#\-\u2013\u2014\u2212]?\s*\d{1,10}\b|\b(?:(?:they\s+also\s+)?provided this ASN in their request)\s*[:#=\-\u2013\u2014\u2212]?\s*\d{1,10}|wishes to be affiliated to Organization\s+['"\u201c\u201d\u2018\u2019][^'"\u201c\u201d\u2018\u2019\n]+['"\u201c\u201d\u2018\u2019]|(?:^|\n)\s*\d{1,10}\s*(?:\n|$)/i;
 
   /**
    * Finds standalone 3-6 digit ASN candidates only in high-confidence contexts.
@@ -2275,7 +2296,7 @@
       const line = rawLine.replace(/\r$/, "");
       const trimmed = line.trim();
 
-      if (!/^\d{3,6}$/.test(trimmed)) {
+      if (!/^\d{1,10}$/.test(trimmed) || !isValidAsnForLink(trimmed)) {
         offset += rawLine.length + 1;
         continue;
       }
