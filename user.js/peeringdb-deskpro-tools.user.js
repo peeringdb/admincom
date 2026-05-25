@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name            PeeringDB DP - Consolidated Tools
 // @namespace       https://www.peeringdb.com/
-// @version         1.7.0.20260525
+// @version         1.7.1.20260525
 // @description     Consolidated DeskPro tools: linkifies/enriches PeeringDB links (ASN/IP/IX/NET), copies mailto addresses, normalizes PeeringDB CP double-slash links, generates pihole whitelist commands for IX/NET/FAC/Carrier approval tickets
 // @author          <chriztoffer@peeringdb.com>
 // @match           https://peeringdb.deskpro.com/app*
@@ -38,7 +38,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbDp";
-  const SCRIPT_VERSION = "1.7.0.20260525";
+  const SCRIPT_VERSION = "1.7.1.20260525";
   // RDAP fallback client is intentionally CP-only; DP does not implement RDAP lookups.
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
@@ -139,6 +139,8 @@
   const WL_ACTIVE_TAB_SELECTOR = ".tab-ticket.active";
   const WL_TICKET_PAGE_SELECTOR = '[data-dp-name="ticketPage-TicketPageLayout"][data-ticket-id]';
   const WL_MESSAGE_LIST_SELECTOR = "div[data-ticket-message-list-scrolled]";
+  const WL_SUBJECT_SELECTOR = '[data-dp-name="ticketHeader-subject-title"] h1';
+  const WL_SUGGEST_REGEX = /\[SUGGEST\]/i;
   // DOM ids for modal nodes (scoped namespace).
   const WL_BACKDROP_ID = "pdb-dp-wl-backdrop";
   const WL_MODAL_ID = "pdb-dp-wl-modal";
@@ -2614,7 +2616,7 @@
    * Purpose: Anchor whitelist scans to the active tab to avoid leakage between
    * multiple open ticket tabs in a DeskPro session.
    * @ai Keep selector contracts aligned with DeskPro DOM observations.
-   * @returns {{ticketId: string, ticketPageEl: Element, messageListEl: Element|null}|null}
+   * @returns {{ticketId: string, ticketPageEl: Element, messageListEl: Element|null, ticketSubject: string, isSuggestion: boolean}|null}
    */
   function getActiveTicketContext() {
     const activeTab = document.querySelector(WL_ACTIVE_TAB_SELECTOR);
@@ -2624,7 +2626,10 @@
     const ticketId = String(ticketPageEl.getAttribute("data-ticket-id") || "").trim();
     if (!/^\d+$/.test(ticketId)) return null;
     const messageListEl = ticketPageEl.querySelector(WL_MESSAGE_LIST_SELECTOR);
-    return { ticketId, ticketPageEl, messageListEl };
+    const subjectEl = ticketPageEl.closest('[data-dp-name="CanvasRenderer"]')?.querySelector(WL_SUBJECT_SELECTOR);
+    const ticketSubject = String(subjectEl?.textContent || "").trim();
+    const isSuggestion = WL_SUGGEST_REGEX.test(ticketSubject);
+    return { ticketId, ticketPageEl, messageListEl, ticketSubject, isSuggestion };
   }
 
   /**
@@ -2757,7 +2762,7 @@
       .filter(Boolean);
     if (safeDomains.length === 0) return "";
     const quoted = safeDomains.map((d) => `"${d}"`).join(" ");
-    const comment = `PeeringDB DeskPro ticket ${ticketId} - ${typeLabel} Request`;
+    const comment = `PeeringDB DeskPro ticket ${ticketId} - ${typeLabel}`;
     return `pihole allow ${quoted} --comment "${comment}"`;
   }
 
@@ -3152,17 +3157,21 @@
         return;
       }
 
-      // Fetch all entries in parallel (Plan 9: per-selection switching is instant).
+      // Append "Suggestion" or "Request" suffix to the type label based on ticket subject.
+      const labelSuffix = ctx.isSuggestion ? "Suggestion" : "Request";
+
+      // Fetch all entries in parallel (per-selection switching is instant).
       const entries = await Promise.all(
         links.map(async (link) => {
+          const qualifiedLabel = `${link.label} ${labelSuffix}`;
           try {
             const object = await fetchPeeringDbObjectForWhitelist(link.api, link.id);
             if (!object) {
-              return { ...link, object: null, error: `PeeringDB API returned no record for ${link.api}/${link.id}. The submission may still be pending and not yet visible to your account.` };
+              return { ...link, label: qualifiedLabel, object: null, error: `PeeringDB API returned no record for ${link.api}/${link.id}. The submission may still be pending and not yet visible to your account.` };
             }
-            return { ...link, object, error: null };
+            return { ...link, label: qualifiedLabel, object, error: null };
           } catch (err) {
-            return { ...link, object: null, error: `PeeringDB API error: ${err && err.message ? err.message : "unknown"}` };
+            return { ...link, label: qualifiedLabel, object: null, error: `PeeringDB API error: ${err && err.message ? err.message : "unknown"}` };
           }
         })
       );
