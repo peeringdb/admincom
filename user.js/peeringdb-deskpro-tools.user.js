@@ -1,16 +1,20 @@
 // ==UserScript==
 // @name            PeeringDB DP - Consolidated Tools
 // @namespace       https://www.peeringdb.com/
-// @version         1.6.6.20260504
-// @description     Consolidated DeskPro tools: linkifies/enriches PeeringDB links (ASN/IP/IX/NET), copies mailto addresses, normalizes PeeringDB CP double-slash links
+// @version         1.7.0.20260525
+// @description     Consolidated DeskPro tools: linkifies/enriches PeeringDB links (ASN/IP/IX/NET), copies mailto addresses, normalizes PeeringDB CP double-slash links, generates pihole whitelist commands for IX/NET/FAC/Carrier approval tickets
 // @author          <chriztoffer@peeringdb.com>
 // @match           https://peeringdb.deskpro.com/app*
 // @icon            https://icons.duckduckgo.com/ip2/deskpro.com.ico
 // @grant           GM_xmlhttpRequest
 // @grant           GM_registerMenuCommand
 // @grant           GM_unregisterMenuCommand
+// @grant           GM_addStyle
+// @grant           GM_setClipboard
+// @require         https://cdnjs.cloudflare.com/ajax/libs/psl/1.12.0/psl.min.js
 // @connect         www.peeringdb.com
 // @connect         peeringdb.com
+// @connect         cdnjs.cloudflare.com
 // @updateURL       https://raw.githubusercontent.com/peeringdb/admincom/master/user.js/peeringdb-deskpro-tools.meta.js
 // @downloadURL     https://raw.githubusercontent.com/peeringdb/admincom/master/user.js/peeringdb-deskpro-tools.user.js
 // @supportURL      https://github.com/peeringdb/admincom/issues
@@ -22,6 +26,10 @@
 // - Keep grants/connect metadata aligned with actual usage.
 // - Preserve shared storage key names and cache namespace compatibility.
 // - Validate with syntax checks after edits.
+// - Whitelist CMD Generator: menu command only, no FAB.
+// - Whitelist CMD Generator reuses pdbFetch / existing observer / scoped container helpers.
+// - Whitelist CMD Generator MUST NOT cache PeeringDB lookups (pending→ok status flip risk).
+// - PSL bundled via @require; call psl.* only after init() (script body executes before psl global is reliably available in some edge cases).
 // DP scope:
 // - This script owns DeskPro linkification and enrichment workflows.
 // - Do not add RDAP client logic here; RDAP fallback is CP-only.
@@ -30,7 +38,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbDp";
-  const SCRIPT_VERSION = "1.6.7.20260504";
+  const SCRIPT_VERSION = "1.7.0.20260525";
   // RDAP fallback client is intentionally CP-only; DP does not implement RDAP lookups.
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
@@ -50,10 +58,12 @@
   /**
    * Runtime feature flags for DP consolidated behavior.
    *
-   * `debugMode`:  Enables debug logging when diagnostics localStorage is enabled.
+   * `debugMode`:              Enables debug logging when diagnostics localStorage is enabled.
+   * `whitelistCmdGenerator`:  Exposes "DP: Generate Whitelist CMD" menu command for IX/NET/FAC/Carrier approval tickets.
    */
   const FEATURE_FLAGS = Object.freeze({
     debugMode: false,
+    whitelistCmdGenerator: true,
   });
 
   /**
@@ -113,6 +123,26 @@
   const ENTITY_EXISTENCE_CACHE_TTL_MS = 60 * 60 * 1000;
   const BATCH_FETCH_MAX_ASNS = 100; // Per-request limit for asn__in queries
   const RATE_LIMIT_MIN_REMAINING = 10; // Backoff threshold
+
+  // ── Whitelist CMD Generator constants ─────────────────────────────────────
+  // Maps Django admin model slug → PeeringDB REST API type and human label.
+  // Source URLs look like: https://www.peeringdb.com/cp/peeringdb_server/{model}/{id}/change/
+  const WL_TYPE_MAP = Object.freeze({
+    internetexchange: { api: "ix", label: "Internet Exchange" },
+    network: { api: "net", label: "Network" },
+    facility: { api: "fac", label: "Facility" },
+    carrier: { api: "carrier", label: "Carrier" },
+  });
+  // Regex tolerates single or double slashes (existing normalizer runs first, but be defensive).
+  const WL_CHANGE_URL_REGEX = /peeringdb\.com\/+cp\/+peeringdb_server\/+(\w+)\/+(\d+)\/+change\/+/i;
+  // Selectors specific to whitelist generator (DeskPro DOM contract).
+  const WL_ACTIVE_TAB_SELECTOR = ".tab-ticket.active";
+  const WL_TICKET_PAGE_SELECTOR = '[data-dp-name="ticketPage-TicketPageLayout"][data-ticket-id]';
+  const WL_MESSAGE_LIST_SELECTOR = "div[data-ticket-message-list-scrolled]";
+  // DOM ids for modal nodes (scoped namespace).
+  const WL_BACKDROP_ID = "pdb-dp-wl-backdrop";
+  const WL_MODAL_ID = "pdb-dp-wl-modal";
+  const WL_STYLES_INJECTED_ATTR = "data-pdb-dp-wl-styles-injected";
 
   const asnNameCache = new Map();
   const asnNameInFlight = new Map();
@@ -2570,6 +2600,593 @@
     return container === node || container.contains(node);
   }
 
+  // ── Whitelist CMD Generator ──────────────────────────────────────────────
+  // Module: generates `pihole allow` commands for IX/NET/FAC/Carrier approval
+  // tickets. Exposed via a Tampermonkey menu command. No FAB. No caching.
+  // Public surface: registerWhitelistMenuCommand(), injectWhitelistStyles().
+  // -------------------------------------------------------------------------
+
+  let wlMenuCommandId = null;
+  let wlInFlight = false;
+
+  /**
+   * Returns the active ticket context, or null when no ticket tab is foregrounded.
+   * Purpose: Anchor whitelist scans to the active tab to avoid leakage between
+   * multiple open ticket tabs in a DeskPro session.
+   * @ai Keep selector contracts aligned with DeskPro DOM observations.
+   * @returns {{ticketId: string, ticketPageEl: Element, messageListEl: Element|null}|null}
+   */
+  function getActiveTicketContext() {
+    const activeTab = document.querySelector(WL_ACTIVE_TAB_SELECTOR);
+    if (!activeTab) return null;
+    const ticketPageEl = activeTab.querySelector(WL_TICKET_PAGE_SELECTOR);
+    if (!ticketPageEl) return null;
+    const ticketId = String(ticketPageEl.getAttribute("data-ticket-id") || "").trim();
+    if (!/^\d+$/.test(ticketId)) return null;
+    const messageListEl = ticketPageEl.querySelector(WL_MESSAGE_LIST_SELECTOR);
+    return { ticketId, ticketPageEl, messageListEl };
+  }
+
+  /**
+   * Parses a PeeringDB Django admin change URL into model + id descriptor.
+   * Purpose: Identify object type and id from CP admin change URLs for whitelist lookup.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {string} href - Anchor href.
+   * @returns {{model:string, id:string, api:string, label:string}|null}
+   */
+  function parseWhitelistChangeHref(href) {
+    const match = String(href || "").match(WL_CHANGE_URL_REGEX);
+    if (!match) return null;
+    const modelKey = String(match[1] || "").toLowerCase();
+    const id = String(match[2] || "");
+    const mapping = WL_TYPE_MAP[modelKey];
+    if (!mapping) return null;
+    return { model: modelKey, id, api: mapping.api, label: mapping.label };
+  }
+
+  /**
+   * Collects all parseable PeeringDB change-URL anchors within the active ticket.
+   * Purpose: Identify and deduplicate all parseable object references by `${api}/${id}`.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   * @param {Element} ticketPageEl - Root element to search within.
+   * @returns {Array<{model:string, id:string, api:string, label:string}>}
+   */
+  function collectWhitelistChangeLinks(ticketPageEl) {
+    if (!ticketPageEl) return [];
+    const anchors = ticketPageEl.querySelectorAll('a[href*="peeringdb_server"]');
+    const seen = new Set();
+    const result = [];
+    for (const a of anchors) {
+      const parsed = parseWhitelistChangeHref(a.href);
+      if (!parsed) continue;
+      const key = `${parsed.api}/${parsed.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(parsed);
+    }
+    return result;
+  }
+
+  /**
+   * Fetches a single PeeringDB object without status filter so authenticated
+   * admin sessions can resolve `pending` submissions.
+   * Necessity: Bypasses shared cache to avoid serving stale data when objects
+   * transition from pending to ok status.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+   * @param {string} apiType - REST endpoint type (ix/net/fac/carrier).
+   * @param {string} id - Numeric object id.
+   * @returns {Promise<object|null>} Object payload, or null when unreachable.
+   */
+  async function fetchPeeringDbObjectForWhitelist(apiType, id) {
+    const safeType = String(apiType || "").trim();
+    const safeId = String(id || "").trim();
+    if (!safeType || !/^\d+$/.test(safeId)) return null;
+    const url = `https://www.peeringdb.com/api/${encodeURIComponent(safeType)}/${encodeURIComponent(safeId)}`;
+    const payload = await pdbFetch(url);
+    if (!payload || !Array.isArray(payload.data)) return null;
+    return payload.data[0] || null;
+  }
+
+  /**
+   * Extracts the hostname from a free-form website value.
+   * Purpose: Normalize raw website field values into parseable hostnames; accepts
+   * bare hostnames (e.g. "example.com") or full URLs.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {string} websiteValue - Raw `website` field from PeeringDB.
+   * @returns {string} Lowercased hostname, or empty string when unparseable.
+   */
+  function extractWhitelistHostname(websiteValue) {
+    const raw = String(websiteValue || "").trim();
+    if (!raw) return "";
+    const candidate = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    try {
+      const url = new URL(candidate);
+      return String(url.hostname || "").toLowerCase();
+    } catch (_error) {
+      return raw.replace(/^https?:\/\//i, "").split("/")[0].toLowerCase();
+    }
+  }
+
+  /**
+   * Derives the set of domains to whitelist for a given hostname.
+   * Purpose: Use the Public Suffix List (psl) to expand a hostname into registrable-domain
+   * candidates: the bare hostname, the registrable domain, and its www. subdomain.
+   * Necessity: Ensures pihole allow covers both apex and www variants without guessing.
+   * @ai Preserve emission policy and PSL-based registrable domain resolution; do not fall back to naïve two-label stripping.
+   * @param {string} hostname - Lowercased hostname.
+   * @returns {string[]} Deduplicated candidate domain list, preserving insertion order.
+   */
+  function deriveWhitelistCandidates(hostname) {
+    const host = String(hostname || "").trim().toLowerCase();
+    if (!host || !host.includes(".")) return [];
+
+    let registrable = host;
+    try {
+      if (typeof psl === "object" && typeof psl.get === "function") {
+        const resolved = psl.get(host);
+        if (resolved && typeof resolved === "string") registrable = resolved.toLowerCase();
+      }
+    } catch (_error) {
+      // psl unavailable or threw — fall back to hostname as registrable.
+    }
+
+    const candidates = [host, registrable, `www.${registrable}`];
+    const seen = new Set();
+    const result = [];
+    for (const c of candidates) {
+      if (!c || !c.includes(".")) continue;
+      if (seen.has(c)) continue;
+      seen.add(c);
+      result.push(c);
+    }
+    return result;
+  }
+
+  /**
+   * Constructs the pihole allow command string.
+   * Purpose: Format the final shell-ready command to be copied from the modal.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {string} ticketId - DeskPro ticket identifier used in the allow comment.
+   * @param {string} typeLabel - Human label (e.g. "Internet Exchange").
+   * @param {string[]} domains - Candidate domain list from deriveWhitelistCandidates.
+   * @returns {string} Final shell-ready command, or empty string when no domains.
+   */
+  function buildWhitelistCommand(ticketId, typeLabel, domains) {
+    const safeDomains = (Array.isArray(domains) ? domains : [])
+      .map((d) => String(d || "").trim())
+      .filter(Boolean);
+    if (safeDomains.length === 0) return "";
+    const quoted = safeDomains.map((d) => `"${d}"`).join(" ");
+    const comment = `PeeringDB DeskPro ticket ${ticketId} - ${typeLabel} Request`;
+    return `pihole allow ${quoted} --comment "${comment}"`;
+  }
+
+  /**
+   * Injects whitelist modal CSS once.
+   * Necessity: Uses GM_addStyle when available, otherwise falls back to a <style> element.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   */
+  function injectWhitelistStyles() {
+    if (document.documentElement.getAttribute(WL_STYLES_INJECTED_ATTR) === "true") return;
+    document.documentElement.setAttribute(WL_STYLES_INJECTED_ATTR, "true");
+
+    const css = `
+      #${WL_BACKDROP_ID} {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 2147483600;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-family: system-ui, -apple-system, sans-serif;
+      }
+      #${WL_MODAL_ID} {
+        background: #fff;
+        border-radius: 10px;
+        padding: 22px 26px;
+        width: 680px;
+        max-width: calc(100vw - 32px);
+        max-height: calc(100vh - 64px);
+        overflow-y: auto;
+        box-shadow: 0 8px 40px rgba(0, 0, 0, 0.3);
+        color: #111;
+      }
+      #${WL_MODAL_ID} h2 {
+        margin: 0 0 4px;
+        font-size: 16px;
+        font-weight: 700;
+      }
+      #${WL_MODAL_ID} .pdb-wl-meta {
+        font-size: 12px;
+        color: #555;
+        margin-bottom: 16px;
+      }
+      #${WL_MODAL_ID} .pdb-wl-meta strong { color: #222; }
+      #${WL_MODAL_ID} .pdb-wl-label {
+        display: block;
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #444;
+        margin: 10px 0 5px;
+      }
+      #${WL_MODAL_ID} .pdb-wl-select,
+      #${WL_MODAL_ID} .pdb-wl-input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 7px 10px;
+        font-family: "Courier New", monospace;
+        font-size: 13px;
+        border: 1.5px solid #bbb;
+        border-radius: 5px;
+        outline: none;
+        background: #fff;
+        color: #111;
+      }
+      #${WL_MODAL_ID} .pdb-wl-input:focus,
+      #${WL_MODAL_ID} .pdb-wl-select:focus { border-color: #1a73e8; }
+      #${WL_MODAL_ID} .pdb-wl-input.pdb-wl-err { border-color: #d93025; background: #fdf3f2; }
+      #${WL_MODAL_ID} .pdb-wl-candidates {
+        font-family: "Courier New", monospace;
+        font-size: 12px;
+        color: #333;
+        background: #f6f8fa;
+        border-radius: 5px;
+        padding: 8px 10px;
+        margin: 6px 0 4px;
+        word-break: break-all;
+      }
+      #${WL_MODAL_ID} .pdb-wl-cmd {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 10px 12px;
+        font-family: "Courier New", monospace;
+        font-size: 12px;
+        background: #1e1e1e;
+        color: #d4d4d4;
+        border: none;
+        border-radius: 6px;
+        resize: vertical;
+        min-height: 60px;
+        height: 72px;
+        outline: none;
+        margin-bottom: 14px;
+      }
+      #${WL_MODAL_ID} .pdb-wl-errmsg {
+        font-size: 12px;
+        color: #d93025;
+        padding: 8px 10px;
+        background: #fdf3f2;
+        border-left: 3px solid #d93025;
+        border-radius: 4px;
+        margin: 10px 0;
+      }
+      #${WL_MODAL_ID} .pdb-wl-btn-row {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        margin-top: 6px;
+      }
+      #${WL_MODAL_ID} .pdb-wl-btn {
+        padding: 8px 20px;
+        border-radius: 5px;
+        border: none;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        font-family: inherit;
+      }
+      #${WL_MODAL_ID} .pdb-wl-btn:disabled { opacity: 0.5; cursor: default; }
+      #${WL_MODAL_ID} .pdb-wl-btn-secondary { background: #f0f0f0; color: #333; }
+      #${WL_MODAL_ID} .pdb-wl-btn-secondary:hover { background: #e0e0e0; }
+      #${WL_MODAL_ID} .pdb-wl-btn-primary { background: #1a73e8; color: #fff; }
+      #${WL_MODAL_ID} .pdb-wl-btn-primary:hover:not(:disabled) { background: #1558b0; }
+      #${WL_MODAL_ID} .pdb-wl-btn-primary.pdb-wl-ok { background: #188038; }
+    `;
+
+    if (typeof GM_addStyle === "function") {
+      GM_addStyle(css);
+    } else {
+      const style = document.createElement("style");
+      style.textContent = css;
+      document.head.appendChild(style);
+    }
+  }
+
+  /**
+   * Closes and removes the whitelist modal if present.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   */
+  function closeWhitelistModal() {
+    const existing = document.getElementById(WL_BACKDROP_ID);
+    if (existing) existing.remove();
+  }
+
+  /**
+   * Renders the whitelist modal for an active ticket.
+   * Necessity: All content is set via createElement/textContent to prevent innerHTML injection.
+   * @ai Preserve XSS hygiene (no innerHTML), accessibility (aria-live), and Enter-to-copy semantics.
+   * @param {object} args
+   * @param {string} args.ticketId
+   * @param {Array<{model:string,id:string,api:string,label:string,object:object|null,error:string|null}>} args.entries
+   * @param {number} args.initialIndex
+   */
+  function openWhitelistModal({ ticketId, entries, initialIndex = 0 }) {
+    closeWhitelistModal();
+    injectWhitelistStyles();
+
+    const backdrop = document.createElement("div");
+    backdrop.id = WL_BACKDROP_ID;
+
+    const modal = document.createElement("div");
+    modal.id = WL_MODAL_ID;
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    modal.setAttribute("aria-label", "Whitelist CMD Generator");
+
+    // Header
+    const h2 = document.createElement("h2");
+    h2.textContent = "🛡 Whitelist CMD Generator";
+    modal.appendChild(h2);
+
+    const meta = document.createElement("div");
+    meta.className = "pdb-wl-meta";
+    const metaStrong1 = document.createElement("strong");
+    metaStrong1.textContent = `#${ticketId}`;
+    meta.append("Ticket ", metaStrong1);
+    modal.appendChild(meta);
+
+    // Multi-object selector (if applicable)
+    let select = null;
+    if (entries.length > 1) {
+      const selLabel = document.createElement("label");
+      selLabel.className = "pdb-wl-label";
+      selLabel.textContent = `Object (${entries.length} found in ticket)`;
+      selLabel.htmlFor = "pdb-wl-select";
+      modal.appendChild(selLabel);
+
+      select = document.createElement("select");
+      select.id = "pdb-wl-select";
+      select.className = "pdb-wl-select";
+      entries.forEach((entry, idx) => {
+        const opt = document.createElement("option");
+        opt.value = String(idx);
+        const objName = entry.object && entry.object.name ? ` — ${entry.object.name}` : "";
+        opt.textContent = `[${entry.label}] ${entry.api}/${entry.id}${objName}`;
+        select.appendChild(opt);
+      });
+      select.value = String(initialIndex);
+      modal.appendChild(select);
+    }
+
+    // Error message slot (populated per-selection)
+    const errBox = document.createElement("div");
+    errBox.className = "pdb-wl-errmsg";
+    errBox.style.display = "none";
+    modal.appendChild(errBox);
+
+    // Domain input
+    const inpLabel = document.createElement("label");
+    inpLabel.className = "pdb-wl-label";
+    inpLabel.textContent = "Hostname";
+    inpLabel.htmlFor = "pdb-wl-input";
+    modal.appendChild(inpLabel);
+
+    const inp = document.createElement("input");
+    inp.id = "pdb-wl-input";
+    inp.className = "pdb-wl-input";
+    inp.type = "text";
+    inp.placeholder = "example.com";
+    inp.autocomplete = "off";
+    inp.spellcheck = false;
+    modal.appendChild(inp);
+
+    // Candidates preview
+    const candLabel = document.createElement("label");
+    candLabel.className = "pdb-wl-label";
+    candLabel.textContent = "Candidates emitted";
+    modal.appendChild(candLabel);
+
+    const candBox = document.createElement("div");
+    candBox.className = "pdb-wl-candidates";
+    candBox.textContent = "—";
+    modal.appendChild(candBox);
+
+    // Command preview
+    const cmdLabel = document.createElement("label");
+    cmdLabel.className = "pdb-wl-label";
+    cmdLabel.textContent = "Command";
+    cmdLabel.htmlFor = "pdb-wl-cmd";
+    modal.appendChild(cmdLabel);
+
+    const out = document.createElement("textarea");
+    out.id = "pdb-wl-cmd";
+    out.className = "pdb-wl-cmd";
+    out.readOnly = true;
+    out.spellcheck = false;
+    modal.appendChild(out);
+
+    // Buttons
+    const btnRow = document.createElement("div");
+    btnRow.className = "pdb-wl-btn-row";
+
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "pdb-wl-btn pdb-wl-btn-secondary";
+    closeBtn.textContent = "Close";
+
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "pdb-wl-btn pdb-wl-btn-primary";
+    copyBtn.textContent = "Copy";
+    copyBtn.setAttribute("aria-live", "polite");
+
+    btnRow.append(closeBtn, copyBtn);
+    modal.appendChild(btnRow);
+
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+
+    // ── Behaviour wiring ──────────────────────────────────────────────────
+
+    function currentEntry() {
+      const idx = select ? Number(select.value) : initialIndex;
+      return entries[idx] || entries[0];
+    }
+
+    function refresh() {
+      const entry = currentEntry();
+
+      // Surface fetch error from current entry
+      if (entry.error) {
+        errBox.textContent = `⚠ ${entry.error}`;
+        errBox.style.display = "block";
+      } else if (!entry.object) {
+        errBox.textContent = "⚠ PeeringDB returned no data for this object.";
+        errBox.style.display = "block";
+      } else if (!extractWhitelistHostname(entry.object.website)) {
+        errBox.textContent = "⚠ No website field on this object — enter hostname manually.";
+        errBox.style.display = "block";
+      } else {
+        errBox.textContent = "";
+        errBox.style.display = "none";
+      }
+
+      // Hostname input — typed values strip protocol/path defensively
+      const raw = String(inp.value || "")
+        .trim()
+        .replace(/^https?:\/\//i, "")
+        .replace(/\/.*$/, "")
+        .toLowerCase();
+
+      const candidates = deriveWhitelistCandidates(raw);
+      const valid = candidates.length > 0;
+
+      inp.classList.toggle("pdb-wl-err", !valid);
+      candBox.textContent = valid ? candidates.join("  ·  ") : "—";
+      out.value = valid ? buildWhitelistCommand(ticketId, entry.label, candidates) : "";
+      copyBtn.disabled = !valid;
+    }
+
+    function loadEntryIntoInput() {
+      const entry = currentEntry();
+      const host = entry.object ? extractWhitelistHostname(entry.object.website) : "";
+      inp.value = host;
+      refresh();
+    }
+
+    if (select) {
+      select.addEventListener("change", loadEntryIntoInput);
+    }
+    inp.addEventListener("input", refresh);
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !copyBtn.disabled) {
+        e.preventDefault();
+        copyBtn.click();
+      }
+    });
+
+    copyBtn.addEventListener("click", () => {
+      const cmd = out.value;
+      if (!cmd) return;
+      if (typeof GM_setClipboard === "function") {
+        GM_setClipboard(cmd, "text");
+      } else if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(cmd).catch(() => {});
+      }
+      copyBtn.textContent = "✓ Copied!";
+      copyBtn.classList.add("pdb-wl-ok");
+      window.setTimeout(() => {
+        copyBtn.textContent = "Copy";
+        copyBtn.classList.remove("pdb-wl-ok");
+      }, 2000);
+    });
+
+    closeBtn.addEventListener("click", closeWhitelistModal);
+
+    backdrop.addEventListener("click", (e) => {
+      if (e.target === backdrop) closeWhitelistModal();
+    });
+
+    function onEsc(e) {
+      if (e.key === "Escape") {
+        closeWhitelistModal();
+        document.removeEventListener("keydown", onEsc, true);
+      }
+    }
+    document.addEventListener("keydown", onEsc, true);
+
+    loadEntryIntoInput();
+    inp.focus();
+    inp.select();
+  }
+
+  /**
+   * Menu command handler: live-scans the active ticket and opens the whitelist modal.
+   * Necessity: Guards against concurrent invocations via the wlInFlight flag.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+   */
+  async function runWhitelistCmdGenerator() {
+    if (wlInFlight) return;
+    wlInFlight = true;
+    try {
+      const ctx = getActiveTicketContext();
+      if (!ctx) {
+        openWhitelistModal({
+          ticketId: "—",
+          entries: [{ model: "", id: "", api: "", label: "Unknown", object: null, error: "No active DeskPro ticket detected." }],
+          initialIndex: 0,
+        });
+        return;
+      }
+
+      const links = collectWhitelistChangeLinks(ctx.ticketPageEl);
+      if (links.length === 0) {
+        openWhitelistModal({
+          ticketId: ctx.ticketId,
+          entries: [{ model: "", id: "", api: "", label: "Unknown", object: null, error: "No PeeringDB change URL found in this ticket." }],
+          initialIndex: 0,
+        });
+        return;
+      }
+
+      // Fetch all entries in parallel (Plan 9: per-selection switching is instant).
+      const entries = await Promise.all(
+        links.map(async (link) => {
+          try {
+            const object = await fetchPeeringDbObjectForWhitelist(link.api, link.id);
+            if (!object) {
+              return { ...link, object: null, error: `PeeringDB API returned no record for ${link.api}/${link.id}. The submission may still be pending and not yet visible to your account.` };
+            }
+            return { ...link, object, error: null };
+          } catch (err) {
+            return { ...link, object: null, error: `PeeringDB API error: ${err && err.message ? err.message : "unknown"}` };
+          }
+        })
+      );
+
+      openWhitelistModal({ ticketId: ctx.ticketId, entries, initialIndex: 0 });
+    } finally {
+      wlInFlight = false;
+    }
+  }
+
+  /**
+   * Registers the "DP: Generate Whitelist CMD" menu command.
+   * Purpose: Expose whitelist generation as a Tampermonkey menu command; safe to call multiple times.
+   * @ai Preserve menu command registration behavior and gating on feature flag.
+   */
+  function registerWhitelistMenuCommand() {
+    if (!isFeatureEnabled("whitelistCmdGenerator")) return;
+    if (typeof GM_registerMenuCommand !== "function") return;
+    if (wlMenuCommandId != null) return;
+    wlMenuCommandId = GM_registerMenuCommand("DP: Generate Whitelist CMD", () => {
+      void runWhitelistCmdGenerator();
+    });
+  }
+
   // ── MutationObserver ──────────────────────────────────────────────────────
 
   let observer;
@@ -2678,6 +3295,8 @@
    */
   function init() {
     registerDpMenuCommands();
+    registerWhitelistMenuCommand();
+    injectWhitelistStyles();
 
     // Migrate old cache keys to shared namespace (one-time on first run after upgrade)
     migrateOldCacheKeys();
