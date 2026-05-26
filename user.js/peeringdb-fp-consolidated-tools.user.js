@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.1.29.20260504
+// @version      1.1.30.20260525
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
+// @match        https://beta.peeringdb.com/*
 // @exclude      https://www.peeringdb.com/cp/*
+// @exclude      https://beta.peeringdb.com/cp/*
 // @icon         https://icons.duckduckgo.com/ip2/peeringdb.com.ico
 // @grant        GM_registerMenuCommand
 // @grant        GM_unregisterMenuCommand
@@ -30,7 +32,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbFpConsolidated";
-  const SCRIPT_VERSION = "1.1.29.20260504";
+  const SCRIPT_VERSION = "1.1.30.20260525";
   // RDAP fallback client is intentionally CP-only; FP does not implement RDAP lookups.
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
