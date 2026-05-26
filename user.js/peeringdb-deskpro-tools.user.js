@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name            PeeringDB DP - Consolidated Tools
 // @namespace       https://www.peeringdb.com/
-// @version         1.7.1.20260525
+// @version         1.7.2.20260525
 // @description     Consolidated DeskPro tools: linkifies/enriches PeeringDB links (ASN/IP/IX/NET), copies mailto addresses, normalizes PeeringDB CP double-slash links, generates pihole whitelist commands for IX/NET/FAC/Carrier approval tickets
 // @author          <chriztoffer@peeringdb.com>
 // @match           https://peeringdb.deskpro.com/app*
@@ -30,6 +30,12 @@
 // - Whitelist CMD Generator reuses pdbFetch / existing observer / scoped container helpers.
 // - Whitelist CMD Generator MUST NOT cache PeeringDB lookups (pending→ok status flip risk).
 // - PSL bundled via @require; call psl.* only after init() (script body executes before psl global is reliably available in some edge cases).
+// - IXLAN Renumber launcher: detects 'old/new' prefix pairs in ticket body via
+//   RN_PREFIX_PAIR_REGEX, opens a small modal to confirm/edit the pair and
+//   ixlan id, then hands off to CP by opening the networkixlan changelist with
+//   a '#pdb-renumber=v1&...' URL hash payload (hash, not query — never reaches
+//   the Django backend and does not affect changelist filters). No netixlan
+//   caching is performed here; the CP module owns enumeration and apply.
 // DP scope:
 // - This script owns DeskPro linkification and enrichment workflows.
 // - Do not add RDAP client logic here; RDAP fallback is CP-only.
@@ -38,7 +44,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbDp";
-  const SCRIPT_VERSION = "1.7.1.20260525";
+  const SCRIPT_VERSION = "1.7.2.20260525";
   // RDAP fallback client is intentionally CP-only; DP does not implement RDAP lookups.
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
@@ -60,10 +66,12 @@
    *
    * `debugMode`:              Enables debug logging when diagnostics localStorage is enabled.
    * `whitelistCmdGenerator`:  Exposes "DP: Generate Whitelist CMD" menu command for IX/NET/FAC/Carrier approval tickets.
+   * `ixlanRenumber`:          Exposes "DP: Renumber IXLAN Peers" menu command for IXLAN prefix-change tickets.
    */
   const FEATURE_FLAGS = Object.freeze({
     debugMode: false,
     whitelistCmdGenerator: true,
+    ixlanRenumber: true,
   });
 
   /**
@@ -141,6 +149,23 @@
   const WL_MESSAGE_LIST_SELECTOR = "div[data-ticket-message-list-scrolled]";
   const WL_SUBJECT_SELECTOR = '[data-dp-name="ticketHeader-subject-title"] h1';
   const WL_SUGGEST_REGEX = /\[SUGGEST\]/i;
+
+  // ── IXLAN Peer Renumber launcher ─────────────────────────────────────────
+  // Detects "<old CIDR> -> <new CIDR>" pairs in the active ticket and opens
+  // the CP `networkixlan` changelist with a hash payload that activates the
+  // CP-side renumber module. Both v4 and v6 pairs are supported (independent).
+  // -------------------------------------------------------------------------
+  const RN_CP_LIST_URL = "https://www.peeringdb.com/cp/peeringdb_server/networkixlan/";
+  const RN_HASH_KEY = "pdb-renumber";
+  const RN_HASH_VERSION = "v1";
+  // Permissive CIDR pair regex; CP-side parseCidr() is the authoritative
+  // validator. Capture groups: 1 = old CIDR, 2 = new CIDR. Accepts ASCII
+  // "->" plus Unicode "→" and the word "to" as separators.
+  const RN_PREFIX_PAIR_REGEX =
+    /(\b(?:\d{1,3}\.){3}\d{1,3}\/\d{1,2}|\b[0-9A-Fa-f:]+\/\d{1,3})\s*(?:->|=>|→|to|TO|To)\s*((?:\d{1,3}\.){3}\d{1,3}\/\d{1,2}|[0-9A-Fa-f:]+\/\d{1,3})/g;
+  const RN_SUBJECT_HINT_REGEX = /\b(?:renumber|prefix change|new prefix|migrate)\b/i;
+  const RN_BACKDROP_ID = "pdb-dp-rn-backdrop";
+  const RN_MODAL_ID = "pdb-dp-rn-modal";
   // DOM ids for modal nodes (scoped namespace).
   const WL_BACKDROP_ID = "pdb-dp-wl-backdrop";
   const WL_MODAL_ID = "pdb-dp-wl-modal";
@@ -2616,7 +2641,7 @@
    * Purpose: Anchor whitelist scans to the active tab to avoid leakage between
    * multiple open ticket tabs in a DeskPro session.
    * @ai Keep selector contracts aligned with DeskPro DOM observations.
-   * @returns {{ticketId: string, ticketPageEl: Element, messageListEl: Element|null, ticketSubject: string, isSuggestion: boolean}|null}
+   * @returns {{ticketId: string, ticketPageEl: Element, messageListEl: Element|null, ticketSubject: string, ticketBodyText: string, isSuggestion: boolean}|null}
    */
   function getActiveTicketContext() {
     const activeTab = document.querySelector(WL_ACTIVE_TAB_SELECTOR);
@@ -2628,8 +2653,9 @@
     const messageListEl = ticketPageEl.querySelector(WL_MESSAGE_LIST_SELECTOR);
     const subjectEl = ticketPageEl.closest('[data-dp-name="CanvasRenderer"]')?.querySelector(WL_SUBJECT_SELECTOR);
     const ticketSubject = String(subjectEl?.textContent || "").trim();
+    const ticketBodyText = String(messageListEl?.textContent || "").replace(/\s+/g, " ").trim();
     const isSuggestion = WL_SUGGEST_REGEX.test(ticketSubject);
-    return { ticketId, ticketPageEl, messageListEl, ticketSubject, isSuggestion };
+    return { ticketId, ticketPageEl, messageListEl, ticketSubject, ticketBodyText, isSuggestion };
   }
 
   /**
@@ -3196,6 +3222,266 @@
     });
   }
 
+  // ── IXLAN Peer Renumber launcher ──────────────────────────────────────────
+  // Detects "<old CIDR> -> <new CIDR>" pairs in the active ticket, presents
+  // them in a small modal for review, and opens the CP `networkixlan/`
+  // changelist page with a hash payload that activates the CP-side renumber
+  // module. All authoritative validation and mutation happens CP-side; this
+  // launcher is intentionally read-only.
+  // -------------------------------------------------------------------------
+
+  let rnMenuCommandId = null;
+
+  /**
+   * Scans subject + body text for renumber prefix pairs.
+   * Purpose: Pre-populate the launcher modal with detected old/new CIDR pairs.
+   * Necessity: Operators routinely paste the prefix change directly into the
+   * ticket; detecting it removes a copy/paste step and reduces typos.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {{ticketSubject: string, ticketBodyText: string}} ctx - Ticket context.
+   * @returns {{ pairs: Array<{family:4|6, old:string, new:string}>, subjectHinted: boolean }}
+   */
+  function collectRenumberCandidates(ctx) {
+    const pairs = [];
+    const seen = new Set();
+    const haystack = `${String(ctx?.ticketSubject || "")}\n${String(ctx?.ticketBodyText || "")}`;
+    RN_PREFIX_PAIR_REGEX.lastIndex = 0;
+    let m;
+    while ((m = RN_PREFIX_PAIR_REGEX.exec(haystack)) !== null) {
+      const oldCidr = m[1];
+      const newCidr = m[2];
+      const family = oldCidr.includes(":") ? 6 : 4;
+      const otherFamily = newCidr.includes(":") ? 6 : 4;
+      if (family !== otherFamily) continue;
+      const key = `${family}:${oldCidr}>${newCidr}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      pairs.push({ family, old: oldCidr, new: newCidr });
+    }
+    return { pairs, subjectHinted: RN_SUBJECT_HINT_REGEX.test(String(ctx?.ticketSubject || "")) };
+  }
+
+  /**
+   * Extracts the first ixlan id referenced from CP change-URL anchors in the
+   * active ticket, when present.
+   * Purpose: Pre-fill the optional ixlan id on the launcher modal so the CP
+   * module can skip the cross-ixlan grouping step.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   * @param {Element|null} ticketPageEl - Root of the active ticket DOM subtree.
+   * @returns {string} The ixlan id as a digit string, or an empty string when
+   *   no `ixlan/{id}/change/` anchor is found.
+   */
+  function extractIxlanIdFromTicket(ticketPageEl) {
+    if (!ticketPageEl) return "";
+    const anchors = ticketPageEl.querySelectorAll('a[href*="peeringdb_server/ixlan/"]');
+    for (const a of anchors) {
+      const m = String(a.getAttribute("href") || "").match(
+        /peeringdb_server\/+ixlan\/+(\d+)\/+change\/+/i,
+      );
+      if (m) return m[1];
+    }
+    return "";
+  }
+
+  /**
+   * Builds the CP changelist URL with a renumber hash payload.
+   * Purpose: Single source of truth for the DP -> CP handoff URL shape.
+   * Necessity: The CP module matches on the URL hash; keeping the key
+   * (`pdb-renumber`) and version (`v1`) constants in lockstep with the CP
+   * parser is essential.
+   * @ai Preserve URL hash schema; CP-side parser depends on these keys.
+   * @param {{old4?:string,new4?:string,old6?:string,new6?:string,ixlan?:string,ticket?:string}} payload
+   *   Optional renumber payload fields; missing fields are omitted from the
+   *   hash. v4 and v6 are independent and either may be absent.
+   * @returns {string} Full URL with hash fragment.
+   */
+  function buildRenumberCpUrl(payload) {
+    const parts = [`${RN_HASH_KEY}=${RN_HASH_VERSION}`];
+    const append = (key, value) => {
+      const text = String(value || "").trim();
+      if (text) parts.push(`${key}=${encodeURIComponent(text)}`);
+    };
+    append("old4", payload?.old4);
+    append("new4", payload?.new4);
+    append("old6", payload?.old6);
+    append("new6", payload?.new6);
+    append("ixlan", payload?.ixlan);
+    append("ticket", payload?.ticket);
+    return `${RN_CP_LIST_URL}#${parts.join("&")}`;
+  }
+
+  /**
+   * Opens the renumber launcher modal with detected pairs editable.
+   * Purpose: Give operators one last chance to correct OCR-/copy-paste-style
+   * mistakes before handing off to CP, and to optionally supply an ixlan id
+   * when the ticket does not reference one.
+   * Necessity: Renumbering is a destructive, multi-row operation; an explicit
+   * review step on the DP side keeps the launcher honest about what it
+   * detected versus what will be acted on.
+   * @ai Preserve menu command registration behavior and gating on feature flag.
+   * @param {object} options - Modal options.
+   * @param {string} options.ticketId - Active ticket id.
+   * @param {Array<{family:4|6, old:string, new:string}>} options.pairs - Detected pairs.
+   * @param {string} options.ixlanId - Pre-filled ixlan id (may be empty).
+   */
+  function openRenumberModal({ ticketId, pairs, ixlanId }) {
+    // Remove any prior instance to keep the modal idempotent across opens.
+    document.getElementById(RN_BACKDROP_ID)?.remove();
+
+    const v4 = pairs.find((p) => p.family === 4) || { old: "", new: "" };
+    const v6 = pairs.find((p) => p.family === 6) || { old: "", new: "" };
+
+    const backdrop = document.createElement("div");
+    backdrop.id = RN_BACKDROP_ID;
+    Object.assign(backdrop.style, {
+      position: "fixed", inset: "0", background: "rgba(0,0,0,0.45)",
+      zIndex: "2147483646", display: "flex", alignItems: "center",
+      justifyContent: "center",
+    });
+
+    const modal = document.createElement("div");
+    modal.id = RN_MODAL_ID;
+    Object.assign(modal.style, {
+      background: "#fff", color: "#111", padding: "18px 20px",
+      borderRadius: "8px", width: "min(520px, 92vw)",
+      boxShadow: "0 10px 30px rgba(0,0,0,0.25)",
+      font: "13px/1.4 -apple-system,Segoe UI,Helvetica,Arial,sans-serif",
+    });
+
+    const h = document.createElement("h2");
+    h.textContent = "Renumber IXLAN Peers";
+    Object.assign(h.style, { margin: "0 0 4px", fontSize: "16px", fontWeight: "700" });
+    modal.appendChild(h);
+
+    const meta = document.createElement("div");
+    meta.textContent = `Ticket #${ticketId} \u2014 review prefix pairs, then open in CP.`;
+    Object.assign(meta.style, { fontSize: "12px", color: "#555", marginBottom: "12px" });
+    modal.appendChild(meta);
+
+    /**
+     * Builds a paired old/new CIDR input row inside the modal.
+     */
+    function makeRow(labelText, oldVal, newVal) {
+      const wrap = document.createElement("div");
+      Object.assign(wrap.style, { display: "grid", gridTemplateColumns: "70px 1fr 20px 1fr", gap: "6px", alignItems: "center", marginBottom: "8px" });
+      const label = document.createElement("label");
+      label.textContent = labelText;
+      Object.assign(label.style, { fontWeight: "600", fontSize: "12px" });
+      const oldInput = document.createElement("input");
+      oldInput.type = "text"; oldInput.placeholder = "old CIDR"; oldInput.value = oldVal;
+      const arrow = document.createElement("span"); arrow.textContent = "\u2192"; arrow.style.textAlign = "center";
+      const newInput = document.createElement("input");
+      newInput.type = "text"; newInput.placeholder = "new CIDR"; newInput.value = newVal;
+      for (const inp of [oldInput, newInput]) {
+        Object.assign(inp.style, { padding: "6px 8px", border: "1.5px solid #bbb", borderRadius: "4px", font: "12px/1 monospace" });
+      }
+      wrap.append(label, oldInput, arrow, newInput);
+      modal.appendChild(wrap);
+      return { oldInput, newInput };
+    }
+    const row4 = makeRow("IPv4", v4.old, v4.new);
+    const row6 = makeRow("IPv6", v6.old, v6.new);
+
+    const ixWrap = document.createElement("div");
+    Object.assign(ixWrap.style, { display: "grid", gridTemplateColumns: "70px 1fr", gap: "6px", alignItems: "center", marginBottom: "14px" });
+    const ixLabel = document.createElement("label");
+    ixLabel.textContent = "ixlan id";
+    Object.assign(ixLabel.style, { fontWeight: "600", fontSize: "12px" });
+    const ixInput = document.createElement("input");
+    ixInput.type = "text"; ixInput.placeholder = "optional"; ixInput.value = String(ixlanId || "");
+    Object.assign(ixInput.style, { padding: "6px 8px", border: "1.5px solid #bbb", borderRadius: "4px", font: "12px/1 monospace" });
+    ixWrap.append(ixLabel, ixInput);
+    modal.appendChild(ixWrap);
+
+    const buttons = document.createElement("div");
+    Object.assign(buttons.style, { display: "flex", gap: "8px", justifyContent: "flex-end" });
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button"; cancelBtn.textContent = "Cancel";
+    Object.assign(cancelBtn.style, { padding: "7px 14px", border: "1px solid #bbb", background: "#f5f5f5", borderRadius: "5px", cursor: "pointer" });
+    const openBtn = document.createElement("button");
+    openBtn.type = "button"; openBtn.textContent = "Open in CP";
+    Object.assign(openBtn.style, { padding: "7px 14px", border: "0", background: "#1a73e8", color: "#fff", borderRadius: "5px", cursor: "pointer", fontWeight: "600" });
+    buttons.append(cancelBtn, openBtn);
+    modal.appendChild(buttons);
+
+    /**
+     * Closes the modal and removes the keydown listener.
+     */
+    function close() {
+      backdrop.remove();
+      document.removeEventListener("keydown", onKey);
+    }
+    /**
+     * Handles Escape and Enter keys at the document level while the modal is open.
+     */
+    function onKey(ev) {
+      if (ev.key === "Escape") close();
+      if (ev.key === "Enter" && (ev.target === ixInput || ev.target === row4.newInput || ev.target === row6.newInput)) openBtn.click();
+    }
+    cancelBtn.addEventListener("click", close);
+    backdrop.addEventListener("click", (ev) => { if (ev.target === backdrop) close(); });
+    document.addEventListener("keydown", onKey);
+
+    openBtn.addEventListener("click", () => {
+      const payload = {
+        old4: row4.oldInput.value.trim(),
+        new4: row4.newInput.value.trim(),
+        old6: row6.oldInput.value.trim(),
+        new6: row6.newInput.value.trim(),
+        ixlan: ixInput.value.trim(),
+        ticket: String(ticketId || "").trim(),
+      };
+      const hasV4 = payload.old4 && payload.new4;
+      const hasV6 = payload.old6 && payload.new6;
+      if (!hasV4 && !hasV6) {
+        // No families selected — flash both v4 inputs to nudge the user.
+        for (const inp of [row4.oldInput, row4.newInput, row6.oldInput, row6.newInput]) {
+          inp.style.borderColor = "#d93025";
+        }
+        return;
+      }
+      window.open(buildRenumberCpUrl(payload), "_blank", "noopener");
+      close();
+    });
+
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+    setTimeout(() => row4.oldInput.focus(), 0);
+  }
+
+  /**
+   * Entry point invoked by the menu command; resolves context and opens the modal.
+   * Purpose: Anchor the renumber workflow to the foregrounded ticket tab and
+   * surface helpful errors when no ticket is visible.
+   * @ai Preserve menu command registration behavior and gating on feature flag.
+   * @returns {void}
+   */
+  function runRenumberLauncher() {
+    const ctx = getActiveTicketContext();
+    if (!ctx) {
+      window.alert("PeeringDB DP: open a ticket tab to launch the IXLAN renumber tool.");
+      return;
+    }
+    const { pairs } = collectRenumberCandidates(ctx);
+    const ixlanId = extractIxlanIdFromTicket(ctx.ticketPageEl);
+    openRenumberModal({ ticketId: ctx.ticketId, pairs, ixlanId });
+  }
+
+  /**
+   * Registers the "DP: Renumber IXLAN Peers" menu command.
+   * Purpose: Expose the launcher as a Tampermonkey menu command; safe to call
+   * multiple times.
+   * @ai Preserve menu command registration behavior and gating on feature flag.
+   */
+  function registerRenumberMenuCommand() {
+    if (!isFeatureEnabled("ixlanRenumber")) return;
+    if (typeof GM_registerMenuCommand !== "function") return;
+    if (rnMenuCommandId != null) return;
+    rnMenuCommandId = GM_registerMenuCommand("DP: Renumber IXLAN Peers", () => {
+      runRenumberLauncher();
+    });
+  }
+
   // ── MutationObserver ──────────────────────────────────────────────────────
 
   let observer;
@@ -3305,6 +3591,7 @@
   function init() {
     registerDpMenuCommands();
     registerWhitelistMenuCommand();
+    registerRenumberMenuCommand();
     injectWhitelistStyles();
 
     // Migrate old cache keys to shared namespace (one-time on first run after upgrade)
