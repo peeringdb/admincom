@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.176.20260504
+// @version      2.0.201.20260526
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*/*/change/*
+// @match        https://beta.peeringdb.com/cp/peeringdb_server/*/*/change/*
 // @icon         https://icons.duckduckgo.com/ip2/peeringdb.com.ico
 // @grant        GM_xmlhttpRequest
 // @grant        GM_notification
@@ -18,6 +19,7 @@
 // @connect      rdap.apnic.net
 // @connect      rdap.lacnic.net
 // @connect      rdap.afrinic.net
+// @connect      *
 // @updateURL    https://raw.githubusercontent.com/peeringdb/admincom/master/user.js/peeringdb-cp-consolidated-tools.meta.js
 // @downloadURL  https://raw.githubusercontent.com/peeringdb/admincom/master/user.js/peeringdb-cp-consolidated-tools.user.js
 // @supportURL   https://github.com/peeringdb/admincom/issues

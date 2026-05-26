@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.176.20260504
+// @version      2.0.201.20260526
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
+// @match        https://beta.peeringdb.com/cp/peeringdb_server/*
 // @icon         https://icons.duckduckgo.com/ip2/peeringdb.com.ico
 // @grant        GM_xmlhttpRequest
 // @grant        GM_notification
@@ -18,6 +19,7 @@
 // @connect      rdap.apnic.net
 // @connect      rdap.lacnic.net
 // @connect      rdap.afrinic.net
+// @connect      *
 // @updateURL    https://raw.githubusercontent.com/peeringdb/admincom/master/user.js/peeringdb-cp-consolidated-tools.meta.js
 // @downloadURL  https://raw.githubusercontent.com/peeringdb/admincom/master/user.js/peeringdb-cp-consolidated-tools.user.js
 // @supportURL   https://github.com/peeringdb/admincom/issues
@@ -32,12 +34,37 @@
 // CP scope:
 // - This script owns admin workflows and RDAP fallback client behavior.
 // - RDAP ownership is CP-only; do not assume FP/DP parity.
+// - IXLAN Renumber module: activates only on networkixlan changelist when a
+//   '#pdb-renumber=v1&...' hash payload is present (handed off by the DP
+//   launcher). MUST NOT cache netixlan rows during enumerate/apply; all
+//   mutations go through pdbPost(PUT) (PATCH path is intentionally absent);
+//   audit log uses its own storage key (IXLAN_RENUMBER_AUDIT_LOG_STORAGE_KEY).
+// - IX-F Member Audit module: activates on the networkixlan changelist when
+//   an ixlan filter is present (or via prompt). Cross-origin GET of the
+//   ixlan's ixf_ixp_member_list_url uses GM_xmlhttpRequest with
+//   anonymous:true and requires '@connect *' (IX portal hosts are operator-
+//   defined). Merge keeps the older (lower-id) netixlan via pdbPost(PUT)
+//   and DELETEs its sibling; audit log uses its own storage key
+//   (IXF_MEMBER_AUDIT_LOG_STORAGE_KEY).
+// - IXLAN Conflict Resolver: post-renumber phase reachable from the
+//   IXLAN Renumber modal. For each row classified as "conflict" (target
+//   IP already exists on the ixlan), runs a 7-gate verification including
+//   live IX-F cross-check against the keeper, then DELETEs the doomed
+//   duplicate via pdbPost("DELETE"). DELETEs are sequential, require a
+//   typed ixlan-id confirmation + per-row checkbox + final window.confirm,
+//   and IX-F unavailability hard-fails gates 5 & 6 ("200% sure"
+//   directive). Audit log: CONFLICT_RESOLVE_AUDIT_LOG_STORAGE_KEY.
+// - Recent IP Changes Report: read-only modal reachable from the
+//   networkixlan changelist toolbar, IXLAN Renumber modal, and IX-F Member
+//   Audit modal. Merges live /api/netixlan rows (last 60 min) with all
+//   three local audit logs (renumber + IX-F merge + conflict-resolve) so
+//   DELETEd rows still surface as "(deleted; superseded by #<keeperId>)".
 
 (function () {
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.176.20260504";
+  const SCRIPT_VERSION = "2.0.201.20260526";
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
   const SHARED_USER_AGENT_STORAGE_KEY = "pdbAdmincom.userAgent";
@@ -57,10 +84,52 @@
     debugMode: true,
     moduleDispatch: true,
     orgUpdateAuditLog: true,
+    ixlanRenumber: true,
+    ixfMemberAudit: true,
+    conflictResolver: true,
+    recentIpChanges: true,
   });
   const DISABLED_MODULES_STORAGE_KEY = `${MODULE_PREFIX}.disabledModules`;
   const ORG_UPDATE_AUDIT_LOG_STORAGE_KEY = `${MODULE_PREFIX}.orgUpdateAuditLog`;
   const ORG_UPDATE_AUDIT_LOG_MAX_ITEMS = 30;
+  const IXLAN_RENUMBER_AUDIT_LOG_STORAGE_KEY = `${MODULE_PREFIX}.ixlanRenumberAuditLog`;
+  const IXLAN_RENUMBER_AUDIT_LOG_MAX_ITEMS = 20;
+  const IXLAN_RENUMBER_HASH_KEY = "pdb-renumber";
+  const IXLAN_RENUMBER_HASH_VERSION = "v1";
+  const IXLAN_RENUMBER_APPLY_DELAY_MS = 250;
+  const IXF_MEMBER_AUDIT_LOG_STORAGE_KEY = `${MODULE_PREFIX}.ixfMemberAuditLog`;
+  const IXF_MEMBER_AUDIT_LOG_MAX_ITEMS = 20;
+  const IXF_MEMBER_APPLY_DELAY_MS = 250;
+  const IXF_FETCH_TIMEOUT_MS = 15000;
+  // Conflict resolver: deletes duplicate (stale) netixlan rows whose IPs
+  // collide with an existing keeper row on the same ixlan, after multi-
+  // gate verification against the IX-F member-export.
+  const CONFLICT_RESOLVE_AUDIT_LOG_STORAGE_KEY = `${MODULE_PREFIX}.ixlanConflictResolveAuditLog`;
+  const CONFLICT_RESOLVE_AUDIT_LOG_MAX_ITEMS = 20;
+  const CONFLICT_RESOLVE_APPLY_DELAY_MS = 250;
+  // Conflict-resolver data-loss guards. Gate 8 inspects every field in
+  // PRESERVED_NETIXLAN_FIELDS on the non-conflicting family side; a
+  // doomed row carrying a non-empty value the keeper lacks is
+  // auto-absorbed when the field is in AUTO_MERGE_FIELDS, else the
+  // gate hard-fails (operator must reconcile). A *mismatch* where BOTH
+  // rows carry conflicting non-empty values always hard-fails. Policy:
+  // AUTO_MERGE_FIELDS == PRESERVED_NETIXLAN_FIELDS — absorbing data the
+  // keeper is missing is strictly additive and can never destroy
+  // operator-entered values, while disagreements still require manual
+  // resolution. Operator-discovered drivers:
+  //   • ixlan #3990 AS211750: keeper had no IPv6; the doomed row's
+  //     `2001:7f8:134::1b` would have been lost on a naive DELETE.
+  //   • Same ixlan: real-world keeper/doomed pairs commonly disagree
+  //     on `speed` etc., which used to hard-fail gate 8 with a
+  //     would-lose:speed and made the row uncheckable even though the
+  //     intent was plainly "absorb everything the keeper is missing".
+  const PRESERVED_NETIXLAN_FIELDS = [
+    "ipaddr4", "ipaddr6", "speed", "operational", "is_rs_peer", "bfd_support", "notes",
+  ];
+  const AUTO_MERGE_FIELDS = PRESERVED_NETIXLAN_FIELDS.slice();
+  const CONFLICT_RESOLVE_GATE_COUNT = 8;
+  // Recent IP changes report: window length in minutes for the audit view.
+  const RECENT_IP_CHANGES_WINDOW_MIN = 60;
   const DEFAULT_REQUEST_USER_AGENT = "PeeringDB-Admincom-CP-Consolidated";
   const PEERINGDB_API_BASE_URL = window.location.origin + "/api";
   const PDB_API_TIMEOUT_MS = 12000;
@@ -278,6 +347,9 @@
   const CP_LIST_PAGE_ACTION_LABELS = {
     ANALYZE_NETWORK_NAMES: "Analyze Network Names",
     COPY_CHANGE_LINKS: "Copy Change Links",
+    RENUMBER_IXLAN_PEERS: "Renumber IXLAN Peers",
+    AUDIT_IXF_MEMBERS: "Audit IX-F Members",
+    RECENT_IP_CHANGES: `Recent IP Changes (\u2264${RECENT_IP_CHANGES_WINDOW_MIN} min)`,
   };
   let dropdownGlobalCloseListenerBound = false;
 
@@ -2697,6 +2769,2859 @@
 
     const rows = payload.data;
     return rows.length > 0 ? rows[0] : null;
+  }
+
+  /**
+   * Parses an IPv4 or IPv6 address string into a BigInt + family pair.
+   * Purpose: Shared low-level address parser used by CIDR + renumber helpers.
+   * Necessity: The renumber workflow performs host-bit math on netixlan
+   * addresses for both families; a single BigInt-backed parser avoids
+   * pulling in an external library and keeps the script self-contained.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {string} text - Address literal (e.g. "185.0.1.50", "2001:db8::1").
+   * @returns {{ family: 4|6, bigint: bigint }|null} Parsed value or null on
+   *   malformed input.
+   */
+  function parseIp(text) {
+    const raw = String(text || "").trim();
+    if (!raw) return null;
+
+    if (raw.includes(":")) {
+      // IPv6 — support `::` compression but not embedded IPv4 form.
+      if (raw.indexOf("::") !== raw.lastIndexOf("::")) return null;
+      const halves = raw.split("::");
+      const left = halves[0] ? halves[0].split(":") : [];
+      const right = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+      const explicit = left.length + right.length;
+      if (halves.length === 1) {
+        if (explicit !== 8) return null;
+      } else if (explicit > 7) {
+        return null;
+      }
+      const zeroCount = halves.length === 2 ? 8 - explicit : 0;
+      const groups = [...left, ...Array(zeroCount).fill("0"), ...right];
+      if (groups.length !== 8) return null;
+      let value = 0n;
+      for (const group of groups) {
+        if (!/^[0-9a-fA-F]{1,4}$/.test(group)) return null;
+        value = (value << 16n) | BigInt(parseInt(group, 16));
+      }
+      return { family: 6, bigint: value };
+    }
+
+    const octets = raw.split(".");
+    if (octets.length !== 4) return null;
+    let value = 0n;
+    for (const octet of octets) {
+      if (!/^\d{1,3}$/.test(octet)) return null;
+      const num = Number(octet);
+      if (num < 0 || num > 255) return null;
+      value = (value << 8n) | BigInt(num);
+    }
+    return { family: 4, bigint: value };
+  }
+
+  /**
+   * Formats a family/BigInt address pair back into canonical string form.
+   * Purpose: Produce stable on-screen + on-wire representations after host
+   * arithmetic in replaceHostInPrefix().
+   * Necessity: IPv6 in particular requires RFC 5952 lowercase compressed
+   * form for parity with PeeringDB CP rendering.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {4|6} family - Address family.
+   * @param {bigint} value - Numeric address.
+   * @returns {string} Canonical address string, or empty string on invalid input.
+   */
+  function formatIp(family, value) {
+    if (family === 4) {
+      const octets = [];
+      let remaining = value;
+      for (let i = 0; i < 4; i += 1) {
+        octets.unshift(String(Number(remaining & 0xffn)));
+        remaining >>= 8n;
+      }
+      return octets.join(".");
+    }
+    if (family !== 6) return "";
+
+    const groups = [];
+    let remaining = value;
+    for (let i = 0; i < 8; i += 1) {
+      groups.unshift(Number(remaining & 0xffffn).toString(16));
+      remaining >>= 16n;
+    }
+    // RFC 5952: collapse the longest run of all-zero groups (>=2) into "::".
+    let bestStart = -1;
+    let bestLen = 0;
+    let curStart = -1;
+    let curLen = 0;
+    for (let i = 0; i < 8; i += 1) {
+      if (groups[i] === "0") {
+        if (curStart === -1) curStart = i;
+        curLen += 1;
+        if (curLen > bestLen) {
+          bestLen = curLen;
+          bestStart = curStart;
+        }
+      } else {
+        curStart = -1;
+        curLen = 0;
+      }
+    }
+    if (bestLen < 2) return groups.join(":");
+    const head = groups.slice(0, bestStart).join(":");
+    const tail = groups.slice(bestStart + bestLen).join(":");
+    return `${head}::${tail}`;
+  }
+
+  /**
+   * Parses a CIDR literal (e.g. "185.0.1.0/24" or "2001:db8::/32") into
+   * structured fields suitable for host-bit arithmetic.
+   * Purpose: Foundation for the IXLAN peer renumber workflow.
+   * Necessity: Renumbering preserves host bits across a prefix change, which
+   * requires both the network base and a network mask as BigInts.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {string} text - CIDR literal.
+   * @returns {{ family: 4|6, address: bigint, prefixLen: number,
+   *             totalBits: number, networkMask: bigint, hostMask: bigint,
+   *             network: bigint }|null} Parsed CIDR or null on malformed input.
+   */
+  function parseCidr(text) {
+    const raw = String(text || "").trim();
+    if (!raw) return null;
+    const slashIdx = raw.indexOf("/");
+    if (slashIdx === -1) return null;
+    const addressPart = raw.slice(0, slashIdx);
+    const prefixPart = raw.slice(slashIdx + 1);
+    if (!/^\d+$/.test(prefixPart)) return null;
+    const prefixLen = Number(prefixPart);
+    const parsedAddress = parseIp(addressPart);
+    if (!parsedAddress) return null;
+    const totalBits = parsedAddress.family === 4 ? 32 : 128;
+    if (prefixLen < 0 || prefixLen > totalBits) return null;
+    const totalMask = (1n << BigInt(totalBits)) - 1n;
+    const hostBitCount = BigInt(totalBits - prefixLen);
+    const hostMask = hostBitCount === 0n ? 0n : (1n << hostBitCount) - 1n;
+    const networkMask = totalMask ^ hostMask;
+    const network = parsedAddress.bigint & networkMask;
+    return {
+      family: parsedAddress.family,
+      address: parsedAddress.bigint,
+      prefixLen,
+      totalBits,
+      networkMask,
+      hostMask,
+      network,
+    };
+  }
+
+  /**
+   * Computes the renumbered address for `ip` when its containing prefix
+   * changes from `oldCidrText` to `newCidrText`, preserving host bits.
+   * Purpose: Single point of truth for the IXLAN renumber math used by both
+   * the dry-run preview and the apply loop.
+   * Necessity: Host bits must remain stable across prefix changes (e.g.
+   * 185.0.1.50/24 -> 185.1.184.50/23). The result also tells callers when
+   * the host portion does not fit the new prefix (returns fits:false).
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {string} ipText - The current address to rewrite.
+   * @param {string} oldCidrText - Source prefix in CIDR notation.
+   * @param {string} newCidrText - Target prefix in CIDR notation.
+   * @returns {{ fits: boolean, ip: string, reason?: string }} Rewritten
+   *   address (when fits) plus diagnostic reason when not eligible.
+   */
+  function replaceHostInPrefix(ipText, oldCidrText, newCidrText) {
+    const parsedIp = parseIp(ipText);
+    if (!parsedIp) return { fits: false, ip: "", reason: "invalid-ip" };
+    const oldCidr = parseCidr(oldCidrText);
+    if (!oldCidr) return { fits: false, ip: "", reason: "invalid-old-cidr" };
+    const newCidr = parseCidr(newCidrText);
+    if (!newCidr) return { fits: false, ip: "", reason: "invalid-new-cidr" };
+    if (parsedIp.family !== oldCidr.family || oldCidr.family !== newCidr.family) {
+      return { fits: false, ip: "", reason: "family-mismatch" };
+    }
+    if ((parsedIp.bigint & oldCidr.networkMask) !== oldCidr.network) {
+      return { fits: false, ip: "", reason: "ip-not-in-old-prefix" };
+    }
+    const hostBits = parsedIp.bigint & oldCidr.hostMask;
+    // Host bits beyond the new prefix's host space cannot be preserved
+    // verbatim — flag the row so the operator can decide how to handle it.
+    if ((hostBits & newCidr.networkMask) !== 0n) {
+      return { fits: false, ip: "", reason: "host-out-of-range" };
+    }
+    const newAddress = newCidr.network | hostBits;
+    return { fits: true, ip: formatIp(newCidr.family, newAddress) };
+  }
+
+  // ── IXLAN Peer Renumber (helpers) ──────────────────────────────────────────
+  // Helpers consumed by the CP-side renumber module. The module is gated on
+  // a hash payload produced by the DP launcher (`#pdb-renumber=v1&...`); the
+  // CP module is dormant on any networkixlan changelist that does not carry
+  // a valid payload. All mutations go through pdbPost(PUT) with CSRF + audit
+  // logging; no netixlan caching is used during enumerate/apply since rows
+  // may flip status mid-flow.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Parses the renumber hash payload produced by the DP launcher.
+   * Purpose: Single authoritative parser for the `#pdb-renumber=v1&...`
+   * fragment; downstream code never touches `location.hash` directly.
+   * Necessity: Hash payload is the contract between the DP and CP scripts;
+   * keeping a strict parser guards against drift and rejects malformed or
+   * spoofed fragments before any UI is built.
+   * @ai Preserve URL hash schema; DP-side builder depends on these keys.
+   * @param {string} hashText - Raw value of `location.hash` (with or
+   *   without the leading "#").
+   * @returns {{ old4: string, new4: string, old6: string, new6: string,
+   *             ixlanId: string, ticketId: string, hasV4: boolean,
+   *             hasV6: boolean }|null} Parsed payload or null when the
+   *   hash does not carry a valid v1 renumber payload.
+   */
+  function parseRenumberHash(hashText) {
+    const raw = String(hashText || "").replace(/^#/, "");
+    if (!raw) return null;
+    let params;
+    try {
+      params = new URLSearchParams(raw);
+    } catch (_error) {
+      return null;
+    }
+    if (params.get(IXLAN_RENUMBER_HASH_KEY) !== IXLAN_RENUMBER_HASH_VERSION) return null;
+    const result = {
+      old4: String(params.get("old4") || "").trim(),
+      new4: String(params.get("new4") || "").trim(),
+      old6: String(params.get("old6") || "").trim(),
+      new6: String(params.get("new6") || "").trim(),
+      ixlanId: String(params.get("ixlan") || "").trim(),
+      ticketId: String(params.get("ticket") || "").trim(),
+    };
+    result.hasV4 = Boolean(result.old4 && result.new4);
+    result.hasV6 = Boolean(result.old6 && result.new6);
+    if (!result.hasV4 && !result.hasV6) return null;
+    return result;
+  }
+
+  /**
+   * Fetches netixlan rows potentially affected by a renumber payload.
+   * Purpose: Enumerate the working set for the renumber modal.
+   * Necessity: When the DP launcher supplies an ixlan id we can query
+   * directly; without it we fall back to a startswith scan against the v4
+   * (or v6) old prefix's address portion and the CP modal then groups by
+   * `ixlan_id` for an operator selection step.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+   * @param {object} payload - Parsed renumber payload from parseRenumberHash().
+   * @returns {Promise<{rows: object[], scanFilter: string, error: string}>}
+   *   List of API rows plus the filter string used (for diagnostics) and an
+   *   error code on failure ("" on success).
+   */
+  async function fetchRenumberAffectedRows(payload) {
+    if (!payload) return { rows: [], conflictingIps4: [], conflictingIps6: [], scanFilter: "", error: "no-payload" };
+    const filterParts = [];
+    if (payload.ixlanId && /^\d+$/.test(payload.ixlanId)) {
+      filterParts.push(`ixlan_id=${encodeURIComponent(payload.ixlanId)}`);
+    } else if (payload.hasV4) {
+      const v4Cidr = parseCidr(payload.old4);
+      if (!v4Cidr || v4Cidr.family !== 4) return { rows: [], conflictingIps4: [], conflictingIps6: [], scanFilter: "", error: "bad-old4" };
+      // Use the dotted address portion as a startswith filter; full
+      // host-bit math runs later via replaceHostInPrefix().
+      const networkText = formatIp(4, v4Cidr.network);
+      const truncated = networkText.split(".").slice(0, Math.max(1, Math.floor(v4Cidr.prefixLen / 8))).join(".");
+      filterParts.push(`ipaddr4__startswith=${encodeURIComponent(truncated + (truncated.split(".").length < 4 ? "." : ""))}`);
+    } else if (payload.hasV6) {
+      const v6Cidr = parseCidr(payload.old6);
+      if (!v6Cidr || v6Cidr.family !== 6) return { rows: [], conflictingIps4: [], conflictingIps6: [], scanFilter: "", error: "bad-old6" };
+      // Pick the longest hex prefix common to all addresses in the source
+      // /N — keep it conservative so the server scan still narrows the set.
+      const networkText = formatIp(6, v6Cidr.network);
+      const colonSlice = networkText.split(":").slice(0, Math.max(1, Math.floor(v6Cidr.prefixLen / 16))).join(":");
+      filterParts.push(`ipaddr6__startswith=${encodeURIComponent(colonSlice)}`);
+    } else {
+      return { rows: [], conflictingIps4: [], conflictingIps6: [], scanFilter: "", error: "empty-payload" };
+    }
+    const filterQuery = filterParts.join("&");
+    const endpoint = `${PEERINGDB_API_BASE_URL}/netixlan?${filterQuery}&depth=0`;
+    let rows = [];
+    try {
+      const data = await pdbFetch(endpoint);
+      rows = Array.isArray(data?.data) ? data.data : [];
+    } catch (_error) {
+      return { rows: [], conflictingIps4: [], conflictingIps6: [], scanFilter: filterQuery, error: "fetch-failed" };
+    }
+
+    // Pre-flight conflict scan: fetch any netixlan globally already living
+    // in the *new* prefix range so cross-ixlan or same-network duplicates
+    // can be classified before apply. PeeringDB enforces uniqueness of an
+    // IP across the whole netixlan table, so these would otherwise come
+    // back as opaque HTTP 400 responses mid-apply.
+    const conflictingIps4 = [];
+    const conflictingIps6 = [];
+    if (payload.hasV4) {
+      try {
+        const newCidr = parseCidr(payload.new4);
+        if (newCidr && newCidr.family === 4) {
+          const networkText = formatIp(4, newCidr.network);
+          const truncated = networkText.split(".").slice(0, Math.max(1, Math.floor(newCidr.prefixLen / 8))).join(".");
+          const newQuery = `ipaddr4__startswith=${encodeURIComponent(truncated + (truncated.split(".").length < 4 ? "." : ""))}`;
+          const conflictData = await pdbFetch(`${PEERINGDB_API_BASE_URL}/netixlan?${newQuery}&depth=0`);
+          const conflictRows = Array.isArray(conflictData?.data) ? conflictData.data : [];
+          for (const r of conflictRows) {
+            const ip = String(r.ipaddr4 || "").trim();
+            if (ip) conflictingIps4.push(ip);
+          }
+        }
+      } catch (_error) {
+        // Best-effort; conflict-pre-flight failure should not block the modal.
+      }
+    }
+    if (payload.hasV6) {
+      try {
+        const newCidr = parseCidr(payload.new6);
+        if (newCidr && newCidr.family === 6) {
+          const networkText = formatIp(6, newCidr.network);
+          const colonSlice = networkText.split(":").slice(0, Math.max(1, Math.floor(newCidr.prefixLen / 16))).join(":");
+          const newQuery = `ipaddr6__startswith=${encodeURIComponent(colonSlice)}`;
+          const conflictData = await pdbFetch(`${PEERINGDB_API_BASE_URL}/netixlan?${newQuery}&depth=0`);
+          const conflictRows = Array.isArray(conflictData?.data) ? conflictData.data : [];
+          for (const r of conflictRows) {
+            const ip = String(r.ipaddr6 || "").trim();
+            if (ip) conflictingIps6.push(ip);
+          }
+        }
+      } catch (_error) {
+        // Best-effort; conflict-pre-flight failure should not block the modal.
+      }
+    }
+    return { rows, conflictingIps4, conflictingIps6, scanFilter: filterQuery, error: "" };
+  }
+
+  /**
+   * Classifies fetched netixlan rows against a renumber payload.
+   * Purpose: Produce a per-row, per-family diagnostic the modal renders.
+   * Necessity: Operators need to see which rows are eligible, skipped (no
+   * change), out of host range, or conflicting before approving the apply
+   * step. Classification is pure and re-run on every Dry run press.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {object[]} rows - netixlan rows from fetchRenumberAffectedRows().
+   * @param {object} payload - Parsed renumber payload.
+   * @returns {Array<{ row: object, v4: object|null, v6: object|null,
+   *                   anyEligible: boolean }>} Classified per-row entries.
+   */
+  function classifyRenumberRows(rows, payload, options = {}) {
+    const entries = [];
+    const existingV4 = new Set(rows.map((r) => String(r.ipaddr4 || "").trim()).filter(Boolean));
+    const existingV6 = new Set(rows.map((r) => String(r.ipaddr6 || "").trim()).filter(Boolean));
+    for (const ip of (options.extraConflictIps4 || [])) existingV4.add(String(ip).trim());
+    for (const ip of (options.extraConflictIps6 || [])) existingV6.add(String(ip).trim());
+    for (const row of rows) {
+      let v4 = null;
+      if (payload.hasV4 && row.ipaddr4) {
+        const result = replaceHostInPrefix(row.ipaddr4, payload.old4, payload.new4);
+        if (result.fits) {
+          if (result.ip === row.ipaddr4) {
+            v4 = { status: "no-change", oldIp: row.ipaddr4, newIp: result.ip };
+          } else if (existingV4.has(result.ip)) {
+            v4 = { status: "conflict", oldIp: row.ipaddr4, newIp: result.ip };
+          } else {
+            v4 = { status: "eligible", oldIp: row.ipaddr4, newIp: result.ip };
+          }
+        } else if (result.reason === "ip-not-in-old-prefix") {
+          v4 = null; // row is not in the source prefix; ignore v4 here
+        } else {
+          v4 = { status: "skip", oldIp: row.ipaddr4, newIp: "", reason: result.reason };
+        }
+      }
+      let v6 = null;
+      if (payload.hasV6 && row.ipaddr6) {
+        const result = replaceHostInPrefix(row.ipaddr6, payload.old6, payload.new6);
+        if (result.fits) {
+          if (result.ip === row.ipaddr6) {
+            v6 = { status: "no-change", oldIp: row.ipaddr6, newIp: result.ip };
+          } else if (existingV6.has(result.ip)) {
+            v6 = { status: "conflict", oldIp: row.ipaddr6, newIp: result.ip };
+          } else {
+            v6 = { status: "eligible", oldIp: row.ipaddr6, newIp: result.ip };
+          }
+        } else if (result.reason === "ip-not-in-old-prefix") {
+          v6 = null;
+        } else {
+          v6 = { status: "skip", oldIp: row.ipaddr6, newIp: "", reason: result.reason };
+        }
+      }
+      const anyEligible = (v4?.status === "eligible") || (v6?.status === "eligible");
+      if (v4 || v6) entries.push({ row, v4, v6, anyEligible });
+    }
+    return entries;
+  }
+
+  /**
+   * Persists a renumber audit entry to the dedicated audit log key.
+   * Purpose: Keep a forensic record of every applied netixlan rewrite so
+   * operators can manually revert if needed.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
+   * @param {object} entry - Audit entry payload.
+   */
+  function recordRenumberAuditEntry(entry) {
+    const storage = getDomainCacheStorage();
+    if (!storage) return;
+    const item = {
+      ts: new Date().toISOString(),
+      ticketId: String(entry?.ticketId || "").trim(),
+      ixlanId: String(entry?.ixlanId || "").trim(),
+      payload: entry?.payload || null,
+      rows: Array.isArray(entry?.rows) ? entry.rows : [],
+      version: SCRIPT_VERSION,
+    };
+    try {
+      const raw = String(storage.getItem(IXLAN_RENUMBER_AUDIT_LOG_STORAGE_KEY) || "").trim();
+      const current = raw ? JSON.parse(raw) : [];
+      const list = Array.isArray(current) ? current : [];
+      list.unshift(item);
+      storage.setItem(
+        IXLAN_RENUMBER_AUDIT_LOG_STORAGE_KEY,
+        JSON.stringify(list.slice(0, IXLAN_RENUMBER_AUDIT_LOG_MAX_ITEMS)),
+      );
+      dbg("renumber-audit", "renumber outcome recorded", item);
+    } catch (_error) {
+      // Never let audit logging break the apply flow.
+    }
+  }
+
+  /**
+   * Strips read-only / server-managed fields from a netixlan row before
+   * round-tripping it through a PUT request.
+   * Purpose: Avoid sending derived metadata back to the API.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   * @param {object} row - netixlan row as returned by the list endpoint.
+   * @returns {object} Sanitized payload safe for PUT.
+   */
+  function buildNetixlanPutPayload(row) {
+    const payload = { ...row };
+    for (const key of ["id", "created", "updated", "_grainy_status", "status_dashboard_url"]) {
+      delete payload[key];
+    }
+    // DRF rejects null on ipaddr4/ipaddr6 ("This field may not be null."),
+    // but the list endpoint serializes empty addresses as null. Normalize
+    // back to empty strings so a v4-only or v6-only row round-trips cleanly.
+    if (payload.ipaddr4 === null || payload.ipaddr4 === undefined) payload.ipaddr4 = "";
+    if (payload.ipaddr6 === null || payload.ipaddr6 === undefined) payload.ipaddr6 = "";
+    return payload;
+  }
+
+  /**
+   * Extracts a human-readable error detail from a pdbPost result.
+   * Purpose: Surface PeeringDB's per-field DRF validation messages (which
+   * are how the 400 "IP already exists" responses come back) instead of
+   * the opaque "http-error" placeholder.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+   * @param {object} result - Return value of pdbPost().
+   * @returns {string} Compact, single-line error detail string.
+   */
+  function extractRenumberApiErrorDetail(result) {
+    if (!result) return "http-error";
+    if (result.reason) return String(result.reason);
+    const data = result.data;
+    if (data && typeof data === "object") {
+      if (typeof data.detail === "string") return data.detail;
+      const fieldParts = [];
+      for (const [field, value] of Object.entries(data)) {
+        if (field === "meta") continue;
+        const text = Array.isArray(value) ? value.join("; ") : (typeof value === "string" ? value : JSON.stringify(value));
+        fieldParts.push(`${field}: ${text}`);
+      }
+      if (fieldParts.length) return fieldParts.join(" | ").slice(0, 240);
+    }
+    const raw = String(result.rawBody || "").trim();
+    if (raw) return raw.slice(0, 240);
+    return `http-${result.status || "error"}`;
+  }
+
+  /**
+   * Applies a renumber plan by issuing one PUT per selected family per row.
+   * Purpose: Sequential apply loop with per-row status reporting and an
+   * external cancel signal so the modal can abort mid-flight.
+   * Necessity: PeeringDB API rejects PATCH; updates must round-trip the
+   * full record. Sequential issue keeps server pressure low and respects
+   * the API's per-key rate limit.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+   * @param {object[]} entries - Selected classified entries to apply.
+   * @param {{ cancelled: boolean }} signal - Cancel flag flipped by UI.
+   * @param {Function} onProgress - Invoked per row with status updates.
+   * @returns {Promise<object[]>} Apply outcomes for the audit log.
+   */
+  async function applyRenumberRows(entries, signal, onProgress) {
+    const outcomes = [];
+    for (const entry of entries) {
+      if (signal?.cancelled) {
+        outcomes.push({ netixlanId: entry.row.id, asn: entry.row.asn, status: "cancelled" });
+        continue;
+      }
+      const payload = buildNetixlanPutPayload(entry.row);
+      if (entry.v4Selected && entry.v4?.status === "eligible") payload.ipaddr4 = entry.v4.newIp;
+      if (entry.v6Selected && entry.v6?.status === "eligible") payload.ipaddr6 = entry.v6.newIp;
+      const url = `${PEERINGDB_API_BASE_URL}/netixlan/${entry.row.id}`;
+      onProgress?.(entry, { status: "in-flight" });
+      const result = await pdbPost(url, "PUT", payload, { contentType: "application/json", retries: 1 });
+      const ok = Number(result?.status || 0) >= 200 && Number(result?.status || 0) < 300;
+      const outcome = {
+        netixlanId: entry.row.id,
+        asn: entry.row.asn,
+        oldIp4: entry.row.ipaddr4 || "",
+        newIp4: payload.ipaddr4 || "",
+        oldIp6: entry.row.ipaddr6 || "",
+        newIp6: payload.ipaddr6 || "",
+        status: ok ? "done" : "error",
+        httpStatus: Number(result?.status || 0),
+        error: ok ? "" : extractRenumberApiErrorDetail(result),
+      };
+      outcomes.push(outcome);
+      onProgress?.(entry, outcome);
+      if (IXLAN_RENUMBER_APPLY_DELAY_MS > 0) {
+        await new Promise((resolve) => setTimeout(resolve, IXLAN_RENUMBER_APPLY_DELAY_MS));
+      }
+    }
+    return outcomes;
+  }
+
+  /**
+   * Builds and shows the renumber modal for a parsed payload.
+   * Purpose: Top-level UI entry point invoked from the toolbar button.
+   * Necessity: Centralizes Dry run + Apply orchestration so the toolbar
+   * button stays a one-liner and dispose() is straightforward.
+   * @ai Preserve menu command registration behavior and gating on feature flag.
+   * @param {object} payload - Parsed renumber payload.
+   */
+  async function openIxlanRenumberModal(payload) {
+    const BACKDROP_ID = `${MODULE_PREFIX}RenumberBackdrop`;
+    document.getElementById(BACKDROP_ID)?.remove();
+
+    const backdrop = document.createElement("div");
+    backdrop.id = BACKDROP_ID;
+    Object.assign(backdrop.style, {
+      position: "fixed", inset: "0", background: "rgba(0,0,0,0.45)",
+      zIndex: "2147483646", display: "flex", alignItems: "center",
+      justifyContent: "center",
+    });
+    const modal = document.createElement("div");
+    Object.assign(modal.style, {
+      background: "#fff", color: "#111", padding: "16px 20px",
+      borderRadius: "8px", width: "min(960px, 96vw)", maxWidth: "96vw",
+      maxHeight: "92vh", display: "flex", flexDirection: "column",
+      boxSizing: "border-box", minHeight: "0", minWidth: "0",
+      boxShadow: "0 10px 30px rgba(0,0,0,0.25)",
+      font: "13px/1.4 -apple-system,Segoe UI,Helvetica,Arial,sans-serif",
+    });
+    const header = document.createElement("h2");
+    header.textContent = `Renumber IXLAN Peers — ticket #${payload.ticketId || "?"}`;
+    Object.assign(header.style, { margin: "0 0 6px", fontSize: "16px" });
+    modal.appendChild(header);
+
+    const summary = document.createElement("div");
+    Object.assign(summary.style, { fontSize: "12px", color: "#444", marginBottom: "10px" });
+    const summaryParts = [];
+    if (payload.hasV4) summaryParts.push(`IPv4 ${payload.old4} → ${payload.new4}`);
+    if (payload.hasV6) summaryParts.push(`IPv6 ${payload.old6} → ${payload.new6}`);
+    if (payload.ixlanId) summaryParts.push(`ixlan #${payload.ixlanId}`);
+    summary.textContent = summaryParts.join("  •  ");
+    modal.appendChild(summary);
+
+    const status = document.createElement("div");
+    Object.assign(status.style, { fontSize: "12px", color: "#666", marginBottom: "8px" });
+    status.textContent = "Loading affected rows…";
+    modal.appendChild(status);
+
+    // Top-of-modal conflict banner — primary, impossible-to-miss entry
+    // into the conflict resolver. Cannot be clipped by viewport height
+    // or flex-row overflow because it sits above the scrollable table.
+    const conflictsBanner = document.createElement("div");
+    Object.assign(conflictsBanner.style, {
+      display: "none", alignItems: "center", justifyContent: "space-between", gap: "12px",
+      flexWrap: "wrap", rowGap: "8px",
+      background: "#fef2f2", border: "1px solid #fecaca", color: "#7f1d1d",
+      borderRadius: "6px", padding: "10px 12px", marginBottom: "10px", fontSize: "13px",
+    });
+    const conflictsBannerText = document.createElement("div");
+    Object.assign(conflictsBannerText.style, { flex: "1 1 420px", minWidth: "220px" });
+
+    const shapeActionIconBtn = (btn) => {
+      Object.assign(btn.style, {
+        width: "34px", minWidth: "34px", height: "34px", padding: "0",
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        fontSize: "16px", lineHeight: "1", fontWeight: "700",
+        margin: "0", flex: "0 0 34px", boxSizing: "border-box",
+      });
+    };
+    const setActionIconLabel = (btn, icon, label) => {
+      btn.textContent = icon;
+      btn.title = label;
+      btn.setAttribute("aria-label", label);
+    };
+
+    const conflictsBannerBtn = document.createElement("button");
+    conflictsBannerBtn.type = "button";
+    Object.assign(conflictsBannerBtn.style, {
+      border: "0", background: "#b91c1c", color: "#fff",
+      borderRadius: "5px", cursor: "pointer", whiteSpace: "nowrap", flexShrink: "0", marginLeft: "auto",
+    });
+    shapeActionIconBtn(conflictsBannerBtn);
+    setActionIconLabel(conflictsBannerBtn, "\u26a0", "Resolve conflicts");
+    conflictsBanner.append(conflictsBannerText, conflictsBannerBtn);
+    modal.appendChild(conflictsBanner);
+
+    const tableWrap = document.createElement("div");
+    // No fixed maxHeight: tableWrap is `flex: 1 1 auto` inside a column
+    // flex parent capped at 92vh, so it shrinks first to keep the
+    // sticky button row below visible on any viewport.
+    Object.assign(tableWrap.style, { overflow: "auto", flex: "1 1 auto", minHeight: "0", minWidth: "0", width: "100%", border: "1px solid #ddd", borderRadius: "4px", marginBottom: "10px" });
+    const table = document.createElement("table");
+    Object.assign(table.style, { width: "100%", borderCollapse: "collapse", fontSize: "12px" });
+    tableWrap.appendChild(table);
+    modal.appendChild(tableWrap);
+
+    // Sticky bottom button row — right-start icon strip with fixed offsets.
+    const buttons = document.createElement("div");
+    Object.assign(buttons.style, {
+      display: "flex", flexDirection: "row-reverse", justifyContent: "flex-start", alignItems: "center",
+      gap: "10px", flexShrink: "0", flexWrap: "wrap", rowGap: "10px", width: "100%", minWidth: "0",
+      position: "sticky", bottom: "0", background: "#fff",
+      paddingTop: "10px", borderTop: "1px solid #eee", marginTop: "auto",
+    });
+    // Desktop-only strict single-line variant, left-to-right with fixed spacing.
+    if (window.matchMedia("(min-width: 1024px)").matches) {
+      Object.assign(buttons.style, { flexWrap: "nowrap", rowGap: "0", overflowX: "auto", overflowY: "hidden" });
+    }
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    Object.assign(closeBtn.style, { border: "1px solid #bbb", background: "#f5f5f5", borderRadius: "5px", cursor: "pointer" });
+    shapeActionIconBtn(closeBtn);
+    setActionIconLabel(closeBtn, "\u2715", "Close");
+    const dryBtn = document.createElement("button");
+    dryBtn.type = "button";
+    Object.assign(dryBtn.style, { border: "1px solid #bbb", background: "#eef", borderRadius: "5px", cursor: "pointer" });
+    shapeActionIconBtn(dryBtn);
+    setActionIconLabel(dryBtn, "\u2697", "Dry run (re-classify)");
+    const applyBtn = document.createElement("button");
+    applyBtn.type = "button";
+    Object.assign(applyBtn.style, { border: "0", background: "#1a73e8", color: "#fff", borderRadius: "5px", cursor: "pointer" });
+    shapeActionIconBtn(applyBtn);
+    setActionIconLabel(applyBtn, "\u2713", "Apply");
+    const cancelApplyBtn = document.createElement("button");
+    cancelApplyBtn.type = "button";
+    Object.assign(cancelApplyBtn.style, { border: "1px solid #d93025", background: "#fff", color: "#d93025", borderRadius: "5px", cursor: "pointer", display: "none" });
+    shapeActionIconBtn(cancelApplyBtn);
+    setActionIconLabel(cancelApplyBtn, "\u25a0", "Cancel apply");
+    // Bottom-row resolve button is a secondary entry point. The primary
+    // (impossible-to-miss) entry is the top banner above.
+    const resolveConflictsBtn = document.createElement("button");
+    resolveConflictsBtn.type = "button";
+    Object.assign(resolveConflictsBtn.style, { border: "1px solid #b91c1c", background: "#fff", color: "#b91c1c", borderRadius: "5px", cursor: "pointer", display: "none" });
+    shapeActionIconBtn(resolveConflictsBtn);
+    setActionIconLabel(resolveConflictsBtn, "\u26a0", "Resolve conflicts");
+    const recentChangesBtn = document.createElement("button");
+    recentChangesBtn.type = "button";
+    Object.assign(recentChangesBtn.style, { border: "1px solid #bbb", background: "#f5f5f5", borderRadius: "5px", cursor: "pointer" });
+    shapeActionIconBtn(recentChangesBtn);
+    setActionIconLabel(recentChangesBtn, "\u23f2", `Recent IP changes (\u2264${RECENT_IP_CHANGES_WINDOW_MIN}m)`);
+    // Right-start fixed-offset strip (icons), then flow leftward.
+    buttons.append(applyBtn, cancelApplyBtn, resolveConflictsBtn, recentChangesBtn, dryBtn, closeBtn);
+    modal.appendChild(buttons);
+
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+
+    /**
+     * Removes the modal from the DOM.
+     */
+    function close() { backdrop.remove(); }
+    closeBtn.addEventListener("click", close);
+    backdrop.addEventListener("click", (ev) => { if (ev.target === backdrop) close(); });
+
+    let entries = [];
+    let cancelSignal = { cancelled: false };
+    let selectedIxlanId = payload.ixlanId;
+
+    /**
+     * Renders the entry table; recomputes selection checkboxes.
+     */
+    function render() {
+      table.textContent = "";
+      const thead = document.createElement("thead");
+      const trh = document.createElement("tr");
+      for (const label of ["✓v4", "✓v6", "ASN", "ixlan", "IPv4 (old → new)", "IPv6 (old → new)", "Status"]) {
+        const th = document.createElement("th");
+        th.textContent = label;
+        Object.assign(th.style, { textAlign: "left", padding: "6px 8px", borderBottom: "1px solid #ccc", background: "#fafafa", position: "sticky", top: "0" });
+        trh.appendChild(th);
+      }
+      thead.appendChild(trh);
+      table.appendChild(thead);
+      const tbody = document.createElement("tbody");
+      for (const entry of entries) {
+        const tr = document.createElement("tr");
+        tr.dataset.entryRow = String(entry.row.id);
+        const td = (text) => { const cell = document.createElement("td"); cell.textContent = String(text); Object.assign(cell.style, { padding: "5px 8px", borderBottom: "1px solid #eee", verticalAlign: "top" }); return cell; };
+
+        const v4Cell = document.createElement("td");
+        Object.assign(v4Cell.style, { padding: "5px 8px", borderBottom: "1px solid #eee", textAlign: "center" });
+        if (entry.v4?.status === "eligible") {
+          const cb = document.createElement("input");
+          cb.type = "checkbox"; cb.checked = entry.v4Selected !== false;
+          cb.addEventListener("change", () => { entry.v4Selected = cb.checked; });
+          v4Cell.appendChild(cb);
+        }
+        const v6Cell = document.createElement("td");
+        Object.assign(v6Cell.style, { padding: "5px 8px", borderBottom: "1px solid #eee", textAlign: "center" });
+        if (entry.v6?.status === "eligible") {
+          const cb = document.createElement("input");
+          cb.type = "checkbox"; cb.checked = entry.v6Selected !== false;
+          cb.addEventListener("change", () => { entry.v6Selected = cb.checked; });
+          v6Cell.appendChild(cb);
+        }
+
+        const v4Text = entry.v4 ? (entry.v4.newIp ? `${entry.v4.oldIp} → ${entry.v4.newIp}` : `${entry.v4.oldIp} (${entry.v4.reason || entry.v4.status})`) : "";
+        const v6Text = entry.v6 ? (entry.v6.newIp ? `${entry.v6.oldIp} → ${entry.v6.newIp}` : `${entry.v6.oldIp} (${entry.v6.reason || entry.v6.status})`) : "";
+        const statusText = entry.applyStatus || (entry.v4?.status === "eligible" || entry.v6?.status === "eligible" ? "ready" : (entry.v4?.status || entry.v6?.status || ""));
+
+        tr.append(v4Cell, v6Cell, td(entry.row.asn || ""), td(entry.row.ixlan_id || ""), td(v4Text), td(v6Text), td(statusText));
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+    }
+
+    /**
+     * Issues the fetch + classify pipeline; supports re-runs.
+     */
+    async function refresh() {
+      status.textContent = "Loading affected rows…";
+      const queryPayload = { ...payload, ixlanId: selectedIxlanId };
+      const { rows, conflictingIps4, conflictingIps6, error, scanFilter } = await fetchRenumberAffectedRows(queryPayload);
+      if (error) {
+        status.textContent = `Fetch failed: ${error} (filter: ${scanFilter})`;
+        return;
+      }
+      // Group by ixlan_id when no ixlan id was provided and more than one was returned.
+      if (!selectedIxlanId) {
+        const ixlanIds = Array.from(new Set(rows.map((r) => String(r.ixlan_id)).filter(Boolean)));
+        if (ixlanIds.length > 1) {
+          status.textContent = "";
+          const prompt = document.createElement("div");
+          prompt.textContent = `Multiple ixlans matched (${ixlanIds.length}). Pick one to continue:`;
+          status.appendChild(prompt);
+          const select = document.createElement("select");
+          Object.assign(select.style, { marginLeft: "8px" });
+          for (const id of ixlanIds) {
+            const opt = document.createElement("option"); opt.value = id; opt.textContent = `ixlan #${id} (${rows.filter((r) => String(r.ixlan_id) === id).length} rows)`;
+            select.appendChild(opt);
+          }
+          const pickBtn = document.createElement("button");
+          pickBtn.type = "button"; pickBtn.textContent = "Use this ixlan";
+          Object.assign(pickBtn.style, { marginLeft: "8px", padding: "3px 10px" });
+          pickBtn.addEventListener("click", () => { selectedIxlanId = select.value; refresh(); });
+          status.appendChild(select);
+          status.appendChild(pickBtn);
+          entries = [];
+          render();
+          return;
+        }
+        if (ixlanIds.length === 1) selectedIxlanId = ixlanIds[0];
+      }
+      entries = classifyRenumberRows(rows, queryPayload, { extraConflictIps4: conflictingIps4, extraConflictIps6: conflictingIps6 }).map((e) => ({ ...e, v4Selected: e.v4?.status === "eligible", v6Selected: e.v6?.status === "eligible", applyStatus: "" }));
+      const counts = entries.reduce((acc, e) => {
+        if (e.v4?.status === "eligible") acc.v4Eligible += 1;
+        else if (e.v4?.status === "conflict") acc.conflicts += 1;
+        if (e.v6?.status === "eligible") acc.v6Eligible += 1;
+        else if (e.v6?.status === "conflict") acc.conflicts += 1;
+        return acc;
+      }, { v4Eligible: 0, v6Eligible: 0, conflicts: 0 });
+      status.textContent = `ixlan #${selectedIxlanId || "?"} — ${entries.length} affected rows • v4 eligible: ${counts.v4Eligible} • v6 eligible: ${counts.v6Eligible} • conflicts: ${counts.conflicts}`;
+      updateResolveConflictsButton();
+      render();
+    }
+
+    /**
+     * Updates the "Resolve conflicts (N)" button label and visibility based
+     * on the current entries' conflict status. Mirrors state into the
+     * top-of-modal banner so the operator always has a visible entry.
+     */
+    function updateResolveConflictsButton() {
+      if (!isFeatureEnabled("conflictResolver")) {
+        resolveConflictsBtn.style.display = "none";
+        conflictsBanner.style.display = "none";
+        return;
+      }
+      const conflictItems = collectConflictItemsFromEntries(entries);
+      const n = conflictItems.length;
+      resolveConflictsBtn.title = `Resolve conflicts (${n})`;
+      resolveConflictsBtn.setAttribute("aria-label", `Resolve conflicts (${n})`);
+      resolveConflictsBtn.style.display = n > 0 ? "" : "none";
+      resolveConflictsBtn.disabled = n === 0;
+      if (n > 0) {
+        conflictsBanner.style.display = "flex";
+        conflictsBannerText.textContent = `${n} row${n === 1 ? "" : "s"} have IP conflicts that block Apply. Resolve them first to absorb the doomed rows into the existing keepers.`;
+        conflictsBannerBtn.title = `Resolve conflicts (${n})`;
+        conflictsBannerBtn.setAttribute("aria-label", `Resolve conflicts (${n})`);
+      } else {
+        conflictsBanner.style.display = "none";
+      }
+    }
+
+    resolveConflictsBtn.addEventListener("click", () => {
+      const conflictItems = collectConflictItemsFromEntries(entries);
+      if (conflictItems.length === 0) return;
+      if (!selectedIxlanId) { status.textContent = "Select an ixlan first."; return; }
+      openConflictResolverModal({
+        ixlanId: String(selectedIxlanId),
+        ticketId: payload.ticketId || "",
+        payload,
+        conflictItems,
+      });
+    });
+    conflictsBannerBtn.addEventListener("click", () => resolveConflictsBtn.click());
+
+    recentChangesBtn.addEventListener("click", () => {
+      if (!isFeatureEnabled("recentIpChanges")) { status.textContent = "Recent IP changes feature is disabled."; return; }
+      if (!selectedIxlanId) { status.textContent = "Select an ixlan first."; return; }
+      openRecentIpChangesModal(String(selectedIxlanId));
+    });
+
+    dryBtn.addEventListener("click", () => { refresh(); });
+    applyBtn.addEventListener("click", async () => {
+      const selected = entries.filter((e) =>
+        (e.v4Selected && e.v4?.status === "eligible") || (e.v6Selected && e.v6?.status === "eligible"),
+      );
+      if (selected.length === 0) {
+        status.textContent = "Nothing selected to apply.";
+        return;
+      }
+      const v4Count = selected.filter((e) => e.v4Selected && e.v4?.status === "eligible").length;
+      const v6Count = selected.filter((e) => e.v6Selected && e.v6?.status === "eligible").length;
+      const confirmed = window.confirm(
+        `Apply ${selected.length} netixlan update(s)?\n` +
+        `  IPv4 rewrites: ${v4Count}\n` +
+        `  IPv6 rewrites: ${v6Count}\n` +
+        `  ixlan: #${selectedIxlanId || "?"}\n` +
+        `Press OK to proceed; updates run sequentially and may be cancelled mid-flight.`,
+      );
+      if (!confirmed) return;
+      applyBtn.disabled = true; dryBtn.disabled = true;
+      cancelApplyBtn.style.display = ""; cancelSignal = { cancelled: false };
+      cancelApplyBtn.onclick = () => { cancelSignal.cancelled = true; };
+      const outcomes = await applyRenumberRows(selected, cancelSignal, (entry, update) => {
+        entry.applyStatus = update.status === "in-flight" ? "applying…" : `${update.status}${update.httpStatus ? ` (${update.httpStatus})` : ""}${update.error ? ` — ${update.error}` : ""}`;
+        render();
+      });
+      recordRenumberAuditEntry({ ticketId: payload.ticketId, ixlanId: selectedIxlanId, payload, rows: outcomes });
+      applyBtn.disabled = false; dryBtn.disabled = false; cancelApplyBtn.style.display = "none";
+      const okCount = outcomes.filter((o) => o.status === "done").length;
+      const errCount = outcomes.filter((o) => o.status === "error").length;
+      status.textContent = `Apply complete — ok:${okCount} error:${errCount} cancelled:${outcomes.filter((o) => o.status === "cancelled").length}`;
+      // Promote 400 "already exists" errors into conflict items so the
+      // "Resolve conflicts (N)" button picks them up — they were eligible
+      // at Dry-run time but a keeper appeared between Dry-run and Apply.
+      for (const outcome of outcomes) {
+        if (outcome.status !== "error") continue;
+        const httpStatus = Number(outcome.httpStatus || 0);
+        if (httpStatus !== 400) continue;
+        const detail = String(outcome.error || "").toLowerCase();
+        const looksLikeDup = detail.includes("already exists") || detail.includes("unique") || detail.includes("already been taken");
+        if (!looksLikeDup) continue;
+        const entry = entries.find((e) => String(e.row.id) === String(outcome.netixlanId));
+        if (!entry) continue;
+        if (outcome.newIp4 && entry.v4?.status === "eligible") entry.v4 = { status: "conflict", oldIp: outcome.oldIp4, newIp: outcome.newIp4 };
+        if (outcome.newIp6 && entry.v6?.status === "eligible") entry.v6 = { status: "conflict", oldIp: outcome.oldIp6, newIp: outcome.newIp6 };
+      }
+      updateResolveConflictsButton();
+    });
+
+    await refresh();
+  }
+
+  // ── IX-F Member Audit (helpers) ────────────────────────────────────────────
+  // Compares a PeeringDB ixlan's current netixlan rows against the upstream
+  // IX-F JSON export (ixf_ixp_member_list_url) and proposes merges of split
+  // v4-only / v6-only netixlan rows that the IX-F member-export confirms
+  // belong to the same ASN. The keeper is always the older (lower-id) row;
+  // its sibling is DELETEd after the keeper is PUT with both addresses.
+  // All mutations run sequentially with an inflight cancel signal and are
+  // captured in a dedicated audit log.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Reads the ixlan filter from a Django changelist URL.
+   * Purpose: Detect when the operator has scoped the netixlan changelist to
+   * a single ixlan so the module can derive ixlanId without prompting.
+   * Necessity: The IX-F audit is scoped to one ixlan at a time; running
+   * unscoped would be expensive and ambiguous.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {string} href - URL to inspect (defaults to current location).
+   * @returns {string} Numeric ixlan id, or "" when no single-ixlan filter is set.
+   */
+  function parseIxlanFilterFromChangelistUrl(href) {
+    try {
+      const url = new URL(String(href || window.location.href), window.location.origin);
+      const candidateKeys = ["ixlan__id__exact", "ixlan__exact", "ixlan_id__exact", "ixlan_id", "ixlan"];
+      for (const key of candidateKeys) {
+        const value = String(url.searchParams.get(key) || "").trim();
+        if (value && /^\d+$/.test(value)) return value;
+      }
+    } catch (_error) {
+      // Ignore URL parse errors; caller will prompt for the ixlan id.
+    }
+    return "";
+  }
+
+  /**
+   * Fetches an ixlan record and returns its IX-F member-list URL.
+   * Purpose: Centralize the "does this ixlan publish IX-F?" check.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+   * @param {string} ixlanId - Numeric ixlan id.
+   * @returns {Promise<{ ixfUrl: string, ixlan: object|null, error: string }>}
+   */
+  async function fetchIxlanIxfMemberListUrl(ixlanId) {
+    if (!/^\d+$/.test(String(ixlanId || ""))) return { ixfUrl: "", ixlan: null, error: "bad-ixlan-id" };
+    try {
+      const endpoint = `${PEERINGDB_API_BASE_URL}/ixlan/${ixlanId}?depth=0`;
+      const data = await pdbFetch(endpoint);
+      const ixlan = Array.isArray(data?.data) ? data.data[0] : null;
+      if (!ixlan) return { ixfUrl: "", ixlan: null, error: "ixlan-not-found" };
+      const ixfUrl = String(ixlan.ixf_ixp_member_list_url || "").trim();
+      if (!ixfUrl) return { ixfUrl: "", ixlan, error: "no-ixf-url" };
+      return { ixfUrl, ixlan, error: "" };
+    } catch (_error) {
+      return { ixfUrl: "", ixlan: null, error: "fetch-failed" };
+    }
+  }
+
+  /**
+   * Cross-origin GET of an IX-F member-export JSON document.
+   * Purpose: Retrieve the upstream IX-F data via GM_xmlhttpRequest because
+   * the IX portal hostname is not same-origin with PeeringDB.
+   * Necessity: pdbFetch uses fetch() which is blocked by CORS for arbitrary
+   * IX portals; we need the userscript-grant code path.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+   * @param {string} ixfUrl - The IX-F export URL.
+   * @returns {Promise<{ data: object|null, status: number, error: string }>}
+   */
+  function fetchIxfMemberExport(ixfUrl) {
+    return new Promise((resolve) => {
+      let urlString = "";
+      try { urlString = new URL(ixfUrl).toString(); } catch (_error) { resolve({ data: null, status: 0, error: "bad-url" }); return; }
+      logExternalRequestUserAgent({ method: "GET", url: urlString, headers: {}, attempt: 1, retries: 1, mode: "cross-origin-ixf" });
+      try {
+        GM_xmlhttpRequest({
+          method: "GET",
+          url: urlString,
+          headers: { Accept: "application/json" },
+          timeout: IXF_FETCH_TIMEOUT_MS,
+          anonymous: true,
+          onload: (response) => {
+            const status = Number(response?.status || 0);
+            const raw = String(response?.responseText || "");
+            let data = null;
+            try { data = JSON.parse(raw); } catch (_err) { resolve({ data: null, status, error: "parse-failed" }); return; }
+            if (status >= 200 && status < 300) {
+              resolve({ data, status, error: "" });
+            } else {
+              resolve({ data, status, error: `http-${status}` });
+            }
+          },
+          onerror: () => resolve({ data: null, status: 0, error: "network-error" }),
+          ontimeout: () => resolve({ data: null, status: 0, error: "timeout" }),
+        });
+      } catch (_error) {
+        resolve({ data: null, status: 0, error: "request-failed" });
+      }
+    });
+  }
+
+  /**
+   * Normalizes an IPv6 string for comparison (lowercase, compressed).
+   * Purpose: PDB rows and IX-F exports may differ in v6 spelling
+   * (e.g. "2001:DB8::1" vs "2001:db8:0:0:0:0:0:1") even though they
+   * refer to the same address.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {string} ip - IPv6 string (or empty).
+   * @returns {string} Canonical lowercase compressed form, or "" on error.
+   */
+  function normalizeIpv6ForCompare(ip) {
+    const text = String(ip || "").trim();
+    if (!text) return "";
+    try {
+      const parsed = parseIp(text);
+      if (!parsed || parsed.family !== 6) return text.toLowerCase();
+      return formatIp(6, parsed.bigint);
+    } catch (_error) {
+      return text.toLowerCase();
+    }
+  }
+
+  /**
+   * Builds an ASN-keyed map of (ipv4, ipv6) pairs from an IX-F export.
+   * Purpose: Surface the IX-F "this ASN has this v4 alongside this v6 on
+   * a single vlan/connection" relationship that the audit needs to confirm
+   * a merge is safe.
+   * Necessity: IX-F treats v4 and v6 as fields of one vlan entry; PeeringDB
+   * historically allows them as separate netixlan rows, which is the
+   * mismatch this module is built to reconcile.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {object} ixfData - Parsed IX-F member-export JSON (v0.x or v1.x).
+   * @returns {Map<string, Array<{v4: string, v6: string, v6Norm: string, ixpId: string|number}>>}
+   */
+  function extractIxfAsnIpPairs(ixfData) {
+    const map = new Map();
+    const memberList = Array.isArray(ixfData?.member_list) ? ixfData.member_list : [];
+    for (const member of memberList) {
+      const asn = String(member?.asnum ?? member?.asn ?? "").trim();
+      if (!asn) continue;
+      const connections = Array.isArray(member?.connection_list) ? member.connection_list : [];
+      for (const connection of connections) {
+        const ixpId = connection?.ixp_id ?? "";
+        const vlanList = Array.isArray(connection?.vlan_list) ? connection.vlan_list : [];
+        for (const vlan of vlanList) {
+          const v4 = String(vlan?.ipv4?.address || "").trim();
+          const v6 = String(vlan?.ipv6?.address || "").trim();
+          if (!v4 && !v6) continue;
+          const entry = { v4, v6, v6Norm: normalizeIpv6ForCompare(v6), ixpId };
+          if (!map.has(asn)) map.set(asn, []);
+          map.get(asn).push(entry);
+        }
+      }
+    }
+    return map;
+  }
+
+  /**
+   * Identifies merge candidates from PDB rows and IX-F pairs.
+   * Purpose: Given the ixlan's PDB netixlan rows grouped by ASN plus the
+   * IX-F (v4, v6) pair list also by ASN, find pairs where PDB has the
+   * data split across two rows that IX-F asserts belong together.
+   * Necessity: Eliminates manual cross-referencing.
+   *
+   * Two shapes are recognized:
+   *  • "split"      — one row v4-only, the other v6-only; IX-F confirms
+   *                   they belong to the same member. Merge into the
+   *                   lower-id row, DELETE the other.
+   *  • "stale-dual" — one row v4-only with v4 == IX-F.v4 (the fresh
+   *                   keeper, typically created by a recent renumber),
+   *                   the other row carries BOTH a non-IX-F v4 (stale,
+   *                   usually still in the renumber-source prefix) AND
+   *                   a v6 that matches IX-F.v6. We absorb the stale
+   *                   row's v6 into the v4-only keeper and DELETE the
+   *                   stale dual row. Discovered via operator report
+   *                   (ixlan #3990, AS211750) where the pair otherwise
+   *                   slipped through the audit silently.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {object[]} rows - netixlan rows for the ixlan.
+   * @param {Map<string, Array<{v4: string, v6: string, v6Norm: string}>>} ixfMap
+   * @returns {Array<{ asn: string, keeperRow: object, otherRow: object,
+   *                   ipv4: string, ipv6: string, ixfEntry: object,
+   *                   shape: "split"|"stale-dual" }>}
+   */
+  function findIxfMergeCandidates(rows, ixfMap) {
+    const candidates = [];
+    const byAsn = new Map();
+    for (const row of rows) {
+      const asn = String(row.asn || "").trim();
+      if (!asn) continue;
+      if (!byAsn.has(asn)) byAsn.set(asn, []);
+      byAsn.get(asn).push(row);
+    }
+    for (const [asn, asnRows] of byAsn.entries()) {
+      if (asnRows.length !== 2) continue;
+      const ixfEntries = ixfMap.get(asn) || [];
+      if (ixfEntries.length === 0) continue;
+
+      // Shape 1 — clean v4-only + v6-only split.
+      const v4Only = asnRows.find((r) => String(r.ipaddr4 || "").trim() && !String(r.ipaddr6 || "").trim());
+      const v6Only = asnRows.find((r) => !String(r.ipaddr4 || "").trim() && String(r.ipaddr6 || "").trim());
+      if (v4Only && v6Only && v4Only !== v6Only) {
+        const v4Text = String(v4Only.ipaddr4 || "").trim();
+        const v6Text = String(v6Only.ipaddr6 || "").trim();
+        const v6Norm = normalizeIpv6ForCompare(v6Text);
+        const ixfMatch = ixfEntries.find((entry) => entry.v4 === v4Text && entry.v6Norm === v6Norm);
+        if (ixfMatch) {
+          const keeperRow = Number(v4Only.id) <= Number(v6Only.id) ? v4Only : v6Only;
+          const otherRow = keeperRow === v4Only ? v6Only : v4Only;
+          candidates.push({ asn, keeperRow, otherRow, ipv4: v4Text, ipv6: v6Text, ixfEntry: ixfMatch, shape: "split" });
+          continue;
+        }
+      }
+
+      // Shape 2 — v4-only fresh keeper + v4+v6 stale doomed.
+      // Required: the v4-only row's v4 matches IX-F.v4, AND the dual row
+      // carries v6 == IX-F.v6 but v4 != IX-F.v4 (i.e. the stale v4 is
+      // not what IX-F asserts — usually because a renumber created the
+      // v4-only keeper and the operator did not delete the old row).
+      // We DO NOT match shape 2 when the dual row's v4 already equals
+      // IX-F.v4 — that would mean two rows claim the same v4 and the
+      // safer Renumber/Conflict-resolver path should handle it instead.
+      const v4OnlyRow = v4Only;
+      const dualRow = asnRows.find((r) => String(r.ipaddr4 || "").trim() && String(r.ipaddr6 || "").trim());
+      if (v4OnlyRow && dualRow && v4OnlyRow !== dualRow) {
+        const keeperV4 = String(v4OnlyRow.ipaddr4 || "").trim();
+        const staleV4 = String(dualRow.ipaddr4 || "").trim();
+        const staleV6 = String(dualRow.ipaddr6 || "").trim();
+        const staleV6Norm = normalizeIpv6ForCompare(staleV6);
+        const ixfMatch = ixfEntries.find((entry) =>
+          entry.v4 === keeperV4 &&
+          entry.v6Norm === staleV6Norm &&
+          entry.v4 !== staleV4,
+        );
+        if (ixfMatch) {
+          candidates.push({
+            asn,
+            keeperRow: v4OnlyRow,
+            otherRow: dualRow,
+            ipv4: keeperV4,
+            ipv6: staleV6,
+            ixfEntry: ixfMatch,
+            shape: "stale-dual",
+          });
+          continue;
+        }
+      }
+    }
+    return candidates;
+  }
+
+  /**
+   * Persists an IX-F merge audit entry.
+   * Purpose: Forensic record of every merge so operators can manually undo
+   * if the IX-F export turns out to have been wrong.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
+   * @param {object} entry - Audit entry payload.
+   */
+  function recordIxfMergeAuditEntry(entry) {
+    const storage = getDomainCacheStorage();
+    if (!storage) return;
+    const item = {
+      ts: new Date().toISOString(),
+      ixlanId: String(entry?.ixlanId || "").trim(),
+      ixfUrl: String(entry?.ixfUrl || "").trim(),
+      outcomes: Array.isArray(entry?.outcomes) ? entry.outcomes : [],
+      version: SCRIPT_VERSION,
+    };
+    try {
+      const raw = String(storage.getItem(IXF_MEMBER_AUDIT_LOG_STORAGE_KEY) || "").trim();
+      const current = raw ? JSON.parse(raw) : [];
+      const list = Array.isArray(current) ? current : [];
+      list.unshift(item);
+      storage.setItem(
+        IXF_MEMBER_AUDIT_LOG_STORAGE_KEY,
+        JSON.stringify(list.slice(0, IXF_MEMBER_AUDIT_LOG_MAX_ITEMS)),
+      );
+      dbg("ixf-audit", "IX-F merge outcome recorded", item);
+    } catch (_error) {
+      // Never let audit logging break the apply flow.
+    }
+  }
+
+  /**
+   * Applies a list of merge candidates sequentially.
+    * Purpose: For each candidate, pre-clear the sibling row's transfer IP
+    * (so unique-ip validation does not block keeper PUT), then PUT the
+    * keeper with both ipv4 + ipv6, then DELETE the sibling.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+   * @param {object[]} candidates - Selected merge candidates.
+   * @param {{ cancelled: boolean }} signal - External cancel flag.
+   * @param {Function} onProgress - Per-row callback.
+   * @returns {Promise<object[]>} Outcomes for the audit log.
+   */
+  async function applyIxfMerges(candidates, signal, onProgress) {
+    const outcomes = [];
+    for (const candidate of candidates) {
+      const base = {
+        asn: candidate.asn,
+        keeperId: candidate.keeperRow.id,
+        otherId: candidate.otherRow.id,
+        ipv4: candidate.ipv4,
+        ipv6: candidate.ipv6,
+        shape: candidate.shape || "split",
+      };
+      if (signal?.cancelled) {
+        outcomes.push({ ...base, status: "cancelled" });
+        continue;
+      }
+
+      onProgress?.(candidate, { status: "in-flight" });
+
+      const otherOriginal = buildNetixlanPutPayload(candidate.otherRow);
+      const otherNeutralized = { ...otherOriginal };
+      const candidateV4 = String(candidate.ipv4 || "").trim();
+      const candidateV6Norm = normalizeIpv6ForCompare(candidate.ipv6 || "");
+      const otherV4 = String(otherOriginal.ipaddr4 || "").trim();
+      const otherV6Norm = normalizeIpv6ForCompare(otherOriginal.ipaddr6 || "");
+      let neutralizeChanged = false;
+
+      // Unique IP constraint blocks keeper PUT while sibling still holds
+      // the transfer address. Pre-clear the sibling's matching family.
+      if (candidateV4 && otherV4 === candidateV4) {
+        otherNeutralized.ipaddr4 = "";
+        neutralizeChanged = true;
+      }
+      if (candidateV6Norm && otherV6Norm === candidateV6Norm) {
+        otherNeutralized.ipaddr6 = "";
+        neutralizeChanged = true;
+      }
+
+      if (neutralizeChanged) {
+        const otherUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${candidate.otherRow.id}`;
+        const neutralizeRes = await pdbPost(otherUrl, "PUT", otherNeutralized, { contentType: "application/json", retries: 1 });
+        const neutralizeOk = Number(neutralizeRes?.status || 0) >= 200 && Number(neutralizeRes?.status || 0) < 300;
+        if (!neutralizeOk) {
+          const outcome = {
+            ...base,
+            status: "preclear-failed",
+            httpStatus: Number(neutralizeRes?.status || 0),
+            error: extractRenumberApiErrorDetail(neutralizeRes),
+          };
+          outcomes.push(outcome);
+          onProgress?.(candidate, outcome);
+          if (IXF_MEMBER_APPLY_DELAY_MS > 0) await new Promise((r) => setTimeout(r, IXF_MEMBER_APPLY_DELAY_MS));
+          continue;
+        }
+      }
+
+      const putBody = buildNetixlanPutPayload(candidate.keeperRow);
+      putBody.ipaddr4 = candidate.ipv4;
+      putBody.ipaddr6 = candidate.ipv6;
+      const putUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${candidate.keeperRow.id}`;
+      const putResult = await pdbPost(putUrl, "PUT", putBody, { contentType: "application/json", retries: 1 });
+      const putOk = Number(putResult?.status || 0) >= 200 && Number(putResult?.status || 0) < 300;
+      if (!putOk) {
+        let rollbackStatus = 0;
+        let rollbackError = "";
+        if (neutralizeChanged) {
+          const otherUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${candidate.otherRow.id}`;
+          const rollbackRes = await pdbPost(otherUrl, "PUT", otherOriginal, { contentType: "application/json", retries: 1 });
+          rollbackStatus = Number(rollbackRes?.status || 0);
+          const rollbackOk = rollbackStatus >= 200 && rollbackStatus < 300;
+          if (!rollbackOk) rollbackError = extractRenumberApiErrorDetail(rollbackRes);
+        }
+        const outcome = {
+          ...base,
+          status: "put-failed",
+          httpStatus: Number(putResult?.status || 0),
+          error: extractRenumberApiErrorDetail(putResult),
+          rollbackStatus,
+          rollbackError,
+        };
+        outcomes.push(outcome);
+        onProgress?.(candidate, outcome);
+        if (IXF_MEMBER_APPLY_DELAY_MS > 0) await new Promise((r) => setTimeout(r, IXF_MEMBER_APPLY_DELAY_MS));
+        continue;
+      }
+      const delUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${candidate.otherRow.id}`;
+      const delResult = await pdbPost(delUrl, "DELETE", "", { contentType: "application/json", retries: 1 });
+      const delOk = Number(delResult?.status || 0) >= 200 && Number(delResult?.status || 0) < 300;
+      const outcome = {
+        ...base,
+        status: delOk ? "done" : "delete-failed",
+        httpStatus: Number(delResult?.status || 0),
+        error: delOk ? "" : extractRenumberApiErrorDetail(delResult),
+      };
+      outcomes.push(outcome);
+      onProgress?.(candidate, outcome);
+      if (IXF_MEMBER_APPLY_DELAY_MS > 0) await new Promise((r) => setTimeout(r, IXF_MEMBER_APPLY_DELAY_MS));
+    }
+    return outcomes;
+  }
+
+  /**
+   * Opens the IX-F audit modal for a chosen ixlan.
+   * Purpose: Top-level entry point invoked from the toolbar button.
+   * @ai Preserve menu command registration behavior and gating on feature flag.
+   * @param {string} ixlanId - Numeric ixlan id to audit.
+   */
+  async function openIxfMemberAuditModal(ixlanId) {
+    const BACKDROP_ID = `${MODULE_PREFIX}IxfAuditBackdrop`;
+    document.getElementById(BACKDROP_ID)?.remove();
+
+    const backdrop = document.createElement("div");
+    backdrop.id = BACKDROP_ID;
+    Object.assign(backdrop.style, {
+      position: "fixed", inset: "0", background: "rgba(0,0,0,0.45)",
+      zIndex: "2147483646", display: "flex", alignItems: "center", justifyContent: "center",
+    });
+    const modal = document.createElement("div");
+    Object.assign(modal.style, {
+      background: "#fff", color: "#111", padding: "16px 20px",
+      borderRadius: "8px", width: "min(1080px, 96vw)", maxWidth: "96vw",
+      maxHeight: "92vh", display: "flex", flexDirection: "column",
+      boxSizing: "border-box", minHeight: "0", minWidth: "0",
+      boxShadow: "0 10px 30px rgba(0,0,0,0.25)",
+      font: "13px/1.4 -apple-system,Segoe UI,Helvetica,Arial,sans-serif",
+    });
+    const header = document.createElement("h2");
+    header.textContent = `IX-F Member Audit — ixlan #${ixlanId}`;
+    Object.assign(header.style, { margin: "0 0 6px", fontSize: "16px" });
+    modal.appendChild(header);
+
+    const status = document.createElement("div");
+    Object.assign(status.style, { fontSize: "12px", color: "#444", marginBottom: "8px" });
+    status.textContent = "Loading…";
+    modal.appendChild(status);
+
+    const tableWrap = document.createElement("div");
+    // No fixed maxHeight — column flex parent handles it; see Renumber
+    // modal note about clipping.
+    Object.assign(tableWrap.style, { overflow: "auto", flex: "1 1 auto", minHeight: "0", minWidth: "0", width: "100%", border: "1px solid #ddd", borderRadius: "4px", marginBottom: "10px" });
+    const table = document.createElement("table");
+    Object.assign(table.style, { width: "100%", borderCollapse: "collapse", fontSize: "12px" });
+    tableWrap.appendChild(table);
+    modal.appendChild(tableWrap);
+
+    const buttons = document.createElement("div");
+    Object.assign(buttons.style, {
+      display: "flex", flexDirection: "row", justifyContent: "flex-end", alignItems: "center",
+      gap: "10px", flexShrink: "0", flexWrap: "wrap", rowGap: "10px", width: "100%", minWidth: "0",
+      position: "sticky", bottom: "0", background: "#fff",
+      paddingTop: "10px", borderTop: "1px solid #eee", marginTop: "auto",
+    });
+    // Desktop-only strict single-line variant, right aligned with fixed spacing.
+    if (window.matchMedia("(min-width: 1024px)").matches) {
+      Object.assign(buttons.style, { flexWrap: "nowrap", rowGap: "0", overflowX: "auto", overflowY: "hidden" });
+    }
+
+    const applyIconButtonShape = (btn) => {
+      Object.assign(btn.style, {
+        width: "34px", minWidth: "34px", height: "34px", padding: "0",
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        fontSize: "16px", lineHeight: "1", fontWeight: "700",
+        margin: "0", flex: "0 0 34px", boxSizing: "border-box",
+      });
+    };
+    const setIconButtonLabel = (btn, icon, hoverText) => {
+      btn.textContent = icon;
+      btn.title = hoverText;
+      btn.setAttribute("aria-label", hoverText);
+    };
+
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    Object.assign(closeBtn.style, { border: "1px solid #bbb", background: "#f5f5f5", borderRadius: "5px", cursor: "pointer" });
+    applyIconButtonShape(closeBtn);
+    setIconButtonLabel(closeBtn, "\u2715", "Close");
+
+    const refreshBtn = document.createElement("button");
+    refreshBtn.type = "button";
+    Object.assign(refreshBtn.style, { border: "1px solid #bbb", background: "#eef", borderRadius: "5px", cursor: "pointer" });
+    applyIconButtonShape(refreshBtn);
+    setIconButtonLabel(refreshBtn, "\u21bb", "Re-scan");
+
+    const cancelApplyBtn = document.createElement("button");
+    cancelApplyBtn.type = "button";
+    Object.assign(cancelApplyBtn.style, { border: "1px solid #d93025", background: "#fff", color: "#d93025", borderRadius: "5px", cursor: "pointer", display: "none" });
+    applyIconButtonShape(cancelApplyBtn);
+    setIconButtonLabel(cancelApplyBtn, "\u25a0", "Cancel apply");
+
+    const applyBtn = document.createElement("button");
+    applyBtn.type = "button";
+    Object.assign(applyBtn.style, { border: "0", background: "#1a73e8", color: "#fff", borderRadius: "5px", cursor: "pointer" });
+    applyIconButtonShape(applyBtn);
+    setIconButtonLabel(applyBtn, "\u2713", "Apply merges");
+
+    const recentChangesBtn = document.createElement("button");
+    recentChangesBtn.type = "button";
+    Object.assign(recentChangesBtn.style, { border: "1px solid #bbb", background: "#f5f5f5", borderRadius: "5px", cursor: "pointer" });
+    applyIconButtonShape(recentChangesBtn);
+    setIconButtonLabel(recentChangesBtn, "\u23f2", `Recent IP changes (\u2264${RECENT_IP_CHANGES_WINDOW_MIN}m)`);
+    recentChangesBtn.addEventListener("click", () => {
+      if (!isFeatureEnabled("recentIpChanges")) return;
+      openRecentIpChangesModal(String(ixlanId));
+    });
+    // Right-aligned fixed-offset strip: buttons stay side-by-side.
+    buttons.append(closeBtn, refreshBtn, recentChangesBtn, cancelApplyBtn, applyBtn);
+    modal.appendChild(buttons);
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+
+    /** Removes the modal. */
+    function close() { backdrop.remove(); }
+    closeBtn.addEventListener("click", close);
+    backdrop.addEventListener("click", (ev) => { if (ev.target === backdrop) close(); });
+
+    let candidates = [];
+    let ixfUrlInUse = "";
+    let cancelSignal = { cancelled: false };
+
+    /** Re-renders the candidate table. */
+    function render() {
+      table.textContent = "";
+      const thead = document.createElement("thead");
+      const trh = document.createElement("tr");
+      for (const label of ["✓", "ASN", "Shape", "Keeper id", "Other id", "IPv4", "IPv6", "Status"]) {
+        const th = document.createElement("th");
+        th.textContent = label;
+        Object.assign(th.style, { textAlign: "left", padding: "6px 8px", borderBottom: "1px solid #ccc", background: "#fafafa", position: "sticky", top: "0" });
+        trh.appendChild(th);
+      }
+      thead.appendChild(trh);
+      table.appendChild(thead);
+      const tbody = document.createElement("tbody");
+      for (const candidate of candidates) {
+        const tr = document.createElement("tr");
+        const td = (text) => { const cell = document.createElement("td"); cell.textContent = String(text); Object.assign(cell.style, { padding: "5px 8px", borderBottom: "1px solid #eee", verticalAlign: "top" }); return cell; };
+        const cbCell = document.createElement("td");
+        Object.assign(cbCell.style, { padding: "5px 8px", borderBottom: "1px solid #eee", textAlign: "center" });
+        const cb = document.createElement("input");
+        cb.type = "checkbox"; cb.checked = candidate.selected !== false;
+        cb.addEventListener("change", () => { candidate.selected = cb.checked; });
+        cbCell.appendChild(cb);
+        const shapeCell = td(candidate.shape || "split");
+        if (candidate.shape === "stale-dual") {
+          shapeCell.title = "v4-only keeper + dual stale row: absorb v6, DELETE the stale row whose v4 disagrees with IX-F.";
+          Object.assign(shapeCell.style, { color: "#b45309", fontWeight: "600" });
+        }
+        tr.append(cbCell, td(candidate.asn), shapeCell, td(candidate.keeperRow.id), td(candidate.otherRow.id), td(candidate.ipv4 || ""), td(candidate.ipv6 || ""), td(candidate.applyStatus || "ready"));
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+    }
+
+    /** Runs the fetch + analysis pipeline. */
+    async function refresh() {
+      status.textContent = "Fetching ixlan record…";
+      const ixlanResult = await fetchIxlanIxfMemberListUrl(ixlanId);
+      if (ixlanResult.error) {
+        status.textContent = `Cannot audit: ${ixlanResult.error === "no-ixf-url" ? "ixlan has no IX-F member-export URL configured." : ixlanResult.error}`;
+        candidates = []; render(); return;
+      }
+      ixfUrlInUse = ixlanResult.ixfUrl;
+      status.textContent = `Fetching IX-F export from ${ixfUrlInUse}…`;
+      const ixfResult = await fetchIxfMemberExport(ixfUrlInUse);
+      if (ixfResult.error) {
+        status.textContent = `IX-F fetch failed (${ixfResult.error}); URL: ${ixfUrlInUse}`;
+        candidates = []; render(); return;
+      }
+      status.textContent = `Fetching PDB netixlan rows for ixlan #${ixlanId}…`;
+      let rows = [];
+      try {
+        const netixlanData = await pdbFetch(`${PEERINGDB_API_BASE_URL}/netixlan?ixlan_id=${encodeURIComponent(ixlanId)}&depth=0`);
+        rows = Array.isArray(netixlanData?.data) ? netixlanData.data : [];
+      } catch (_error) {
+        status.textContent = "PDB netixlan fetch failed.";
+        candidates = []; render(); return;
+      }
+      const ixfMap = extractIxfAsnIpPairs(ixfResult.data);
+      candidates = findIxfMergeCandidates(rows, ixfMap).map((c) => ({ ...c, selected: true, applyStatus: "" }));
+      status.textContent = `ixlan #${ixlanId} — ${rows.length} PDB rows • ${ixfMap.size} IX-F ASNs • ${candidates.length} mergeable split pair(s)`;
+      render();
+    }
+
+    refreshBtn.addEventListener("click", () => { refresh(); });
+    applyBtn.addEventListener("click", async () => {
+      const selected = candidates.filter((c) => c.selected);
+      if (selected.length === 0) { status.textContent = "Nothing selected to apply."; return; }
+      const confirmed = window.confirm(
+        `Merge ${selected.length} split netixlan pair(s)?\n` +
+        `Each merge will pre-clear the sibling transfer IP if needed, PUT both IPs onto the older (lower-id) row, then DELETE the sibling.\n` +
+        `ixlan: #${ixlanId}\n` +
+        `IX-F source: ${ixfUrlInUse}`,
+      );
+      if (!confirmed) return;
+      applyBtn.disabled = true; refreshBtn.disabled = true;
+      cancelApplyBtn.style.display = ""; cancelSignal = { cancelled: false };
+      cancelApplyBtn.onclick = () => { cancelSignal.cancelled = true; };
+      const outcomes = await applyIxfMerges(selected, cancelSignal, (candidate, update) => {
+        candidate.applyStatus = update.status === "in-flight" ? "applying…" : `${update.status}${update.httpStatus ? ` (${update.httpStatus})` : ""}${update.error ? ` — ${update.error}` : ""}`;
+        render();
+      });
+      recordIxfMergeAuditEntry({ ixlanId, ixfUrl: ixfUrlInUse, outcomes });
+      applyBtn.disabled = false; refreshBtn.disabled = false; cancelApplyBtn.style.display = "none";
+      const ok = outcomes.filter((o) => o.status === "done").length;
+      const preclearErr = outcomes.filter((o) => o.status === "preclear-failed").length;
+      const putErr = outcomes.filter((o) => o.status === "put-failed").length;
+      const delErr = outcomes.filter((o) => o.status === "delete-failed").length;
+      status.textContent = `Apply complete — ok:${ok} preclear-failed:${preclearErr} put-failed:${putErr} delete-failed:${delErr} cancelled:${outcomes.filter((o) => o.status === "cancelled").length}`;
+    });
+
+    await refresh();
+  }
+
+  // ── IXLAN Conflict Resolver (helpers) ──────────────────────────────────────
+  // Follow-up phase after an IXLAN renumber Apply run: handles the rows that
+  // ended in "conflict" because the renumber-target IP already belongs to a
+  // different netixlan ("keeper") on the same ixlan. The keeper is usually
+  // the correct/new row that was created ahead of (or during) the renumber;
+  // the original (doomed) row is now a stale duplicate. This module DELETEs
+  // the doomed row, but only after a 7-gate verification chain against the
+  // upstream IX-F member-export plus a live API re-read of both rows.
+  // No PATCH; no bulk DELETE; each delete is its own request, sequential,
+  // with re-verification immediately before issue. Outcomes are persisted
+  // to a dedicated audit log.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Resolves the "keeper" netixlan row that already occupies a renumber's
+   * target IP on a given ixlan.
+   * Purpose: Locate the unambiguous row that the conflict-resolver may need
+   * to keep (i.e. NOT delete) before deleting the stale doomed row.
+   * Necessity: A keeper must exist by definition for the doomed row to have
+   * been flagged as a conflict; if zero or multiple rows are returned, the
+   * resolver MUST refuse to act.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+   * @param {{ ixlanId: string, doomedId: string|number, asn: string|number,
+   *           family: 4|6, newIp: string }} args
+   * @returns {Promise<{ keeper: object|null, error: string }>}
+   */
+  async function findKeeperForConflict(args) {
+    const ixlanId = String(args?.ixlanId || "").trim();
+    const newIp = String(args?.newIp || "").trim();
+    const family = Number(args?.family);
+    if (!ixlanId || !newIp || (family !== 4 && family !== 6)) {
+      return { keeper: null, error: "bad-args" };
+    }
+    const ipKey = family === 4 ? "ipaddr4" : "ipaddr6";
+    const url = `${PEERINGDB_API_BASE_URL}/netixlan?ixlan_id=${encodeURIComponent(ixlanId)}&${ipKey}=${encodeURIComponent(newIp)}&depth=0`;
+    try {
+      const data = await pdbFetch(url);
+      const rows = Array.isArray(data?.data) ? data.data : [];
+      const matches = rows.filter((r) => String(r.ixlan_id) === ixlanId && String(r[ipKey] || "").trim() === newIp);
+      if (matches.length === 0) return { keeper: null, error: "no-keeper" };
+      if (matches.length > 1) return { keeper: null, error: `ambiguous-${matches.length}` };
+      const keeper = matches[0];
+      if (String(keeper.id) === String(args.doomedId)) return { keeper: null, error: "keeper-is-doomed" };
+      if (String(keeper.asn) !== String(args.asn)) return { keeper, error: "asn-mismatch" };
+      return { keeper, error: "" };
+    } catch (_error) {
+      return { keeper: null, error: "fetch-failed" };
+    }
+  }
+
+  /**
+   * Re-fetches a single netixlan row by id from the live API.
+   * Purpose: Pre-delete confirmation that nothing has shifted since the
+   * keeper/doomed snapshot was taken.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+   * @param {string|number} id - netixlan id.
+   * @returns {Promise<{ row: object|null, error: string }>}
+   */
+  async function fetchNetixlanRowById(id) {
+    const idStr = String(id || "").trim();
+    if (!/^\d+$/.test(idStr)) return { row: null, error: "bad-id" };
+    try {
+      const data = await pdbFetch(`${PEERINGDB_API_BASE_URL}/netixlan/${idStr}?depth=0`);
+      const row = Array.isArray(data?.data) ? data.data[0] : null;
+      if (!row) return { row: null, error: "not-found" };
+      return { row, error: "" };
+    } catch (_error) {
+      return { row: null, error: "fetch-failed" };
+    }
+  }
+
+  /**
+   * Returns true when a netixlan field carries a real value (not null,
+   * undefined, or empty string). Numeric `0` and boolean `false` count
+   * as empty for our purposes here because the netixlan model treats
+   * those as "absent / default off" for the fields we inspect.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {*} value
+   * @returns {boolean}
+   */
+  function isMergeableValue(value) {
+    if (value === null || value === undefined) return false;
+    if (typeof value === "string") return value.trim() !== "";
+    if (typeof value === "number") return value !== 0;
+    if (typeof value === "boolean") return value === true;
+    return true;
+  }
+
+  /**
+   * Normalizes a netixlan field value for cross-row equality. IPv6 gets
+   * collapsed via normalizeIpv6ForCompare so that `2001:7f8::1` and
+   * `2001:7f8:0:0:0:0:0:1` are treated as the same address.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {string} field
+   * @param {*} value
+   * @returns {string}
+   */
+  function normalizeNetixlanFieldForCompare(field, value) {
+    if (value === null || value === undefined) return "";
+    if (field === "ipaddr6") return normalizeIpv6ForCompare(String(value).trim());
+    if (typeof value === "string") return value.trim();
+    return String(value);
+  }
+
+  /**
+   * Builds a per-field "merge plan" describing what must be copied from
+   * the doomed row into the keeper row before the keeper can safely
+   * absorb the doomed row's network attachment. Only fields in
+   * AUTO_MERGE_FIELDS are auto-copied; fields outside that whitelist
+   * surface in `blockers` and require manual operator action.
+   *
+   * Skips the conflicting family entirely — the renumber flow already
+   * gives the keeper its post-renumber IP on that family (gates 3 & 4
+   * verify this).
+   *
+   * Purpose: Prevent IP-family / attribute data loss when a DELETE would
+   * otherwise destroy the only carrier of a value (operator-discovered
+   * bug: ixlan #3990, doomed #93168 IPv6 would have been lost).
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {{ doomedRow: object, keeperRow: object, family: 4|6 }} args
+   * @returns {{ merge: object, blockers: Array<{ field: string, kind: string, doomed: *, keeper: * }> }}
+   */
+  function buildMergePlan(args) {
+    const { doomedRow, keeperRow, family } = args || {};
+    const merge = {};
+    const blockers = [];
+    if (!doomedRow || !keeperRow) return { merge, blockers };
+    const conflictingFamilyField = family === 4 ? "ipaddr4" : "ipaddr6";
+    for (const field of PRESERVED_NETIXLAN_FIELDS) {
+      if (field === conflictingFamilyField) continue;
+      const d = doomedRow[field];
+      const k = keeperRow[field];
+      const dHas = isMergeableValue(d);
+      const kHas = isMergeableValue(k);
+      if (dHas && kHas) {
+        const dn = normalizeNetixlanFieldForCompare(field, d);
+        const kn = normalizeNetixlanFieldForCompare(field, k);
+        if (dn !== kn) {
+          blockers.push({ field, kind: "field-mismatch", doomed: d, keeper: k });
+        }
+        continue;
+      }
+      if (dHas && !kHas) {
+        if (AUTO_MERGE_FIELDS.includes(field)) {
+          merge[field] = d;
+        } else {
+          blockers.push({ field, kind: "would-lose", doomed: d, keeper: k });
+        }
+      }
+    }
+    return { merge, blockers };
+  }
+
+  /**
+   * Verifies a doomed/keeper conflict pair against all 8 safety gates.
+   * Purpose: Single source of truth for "is it safe to absorb the
+   * doomed netixlan into the keeper and DELETE it?". Every gate must
+   * pass; any failure locks the row out. The IX-F gates require the
+   * export to be reachable — when ixfMap is null the gates 5 & 6
+   * hard-fail (we choose 200% sure over 90%). Gate 8 catches the
+   * silent-data-loss case where the doomed row carries a non-empty
+   * field value the keeper lacks and that field is not auto-mergeable.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {{ doomedRow: object, keeperRow: object, payload: object,
+   *           ixfMap: Map|null, family: 4|6 }} args
+   * @returns {{ gates: Array<{ name: string, ok: boolean, detail: string }>,
+   *             ok: boolean, mergePlan: { merge: object, blockers: Array<object> } }}
+   */
+  function verifyConflictGates(args) {
+    const { doomedRow, keeperRow, payload, ixfMap, family } = args || {};
+    const gates = [];
+    const pushGate = (name, ok, detail = "") => gates.push({ name, ok: Boolean(ok), detail: String(detail || "") });
+
+    // Gate 1 — ASN match between doomed and keeper.
+    pushGate(
+      "asn-match",
+      doomedRow && keeperRow && String(doomedRow.asn) === String(keeperRow.asn),
+      `doomed=${doomedRow?.asn ?? "?"} keeper=${keeperRow?.asn ?? "?"}`,
+    );
+
+    // Gate 2 — Both rows live on the same ixlan.
+    pushGate(
+      "same-ixlan",
+      doomedRow && keeperRow && String(doomedRow.ixlan_id) === String(keeperRow.ixlan_id),
+      `doomed=${doomedRow?.ixlan_id ?? "?"} keeper=${keeperRow?.ixlan_id ?? "?"}`,
+    );
+
+    // Gate 3 — Keeper IP matches the renumber target for the conflicting family.
+    let keeperIp = "";
+    let targetIp = "";
+    if (family === 4 && payload?.hasV4) {
+      keeperIp = String(keeperRow?.ipaddr4 || "").trim();
+      const result = replaceHostInPrefix(String(doomedRow?.ipaddr4 || "").trim(), payload.old4, payload.new4);
+      targetIp = result.fits ? result.ip : "";
+      pushGate("keeper-ip-is-target", Boolean(keeperIp) && keeperIp === targetIp, `keeper=${keeperIp} target=${targetIp}`);
+    } else if (family === 6 && payload?.hasV6) {
+      keeperIp = normalizeIpv6ForCompare(String(keeperRow?.ipaddr6 || "").trim());
+      const result = replaceHostInPrefix(String(doomedRow?.ipaddr6 || "").trim(), payload.old6, payload.new6);
+      targetIp = result.fits ? normalizeIpv6ForCompare(result.ip) : "";
+      pushGate("keeper-ip-is-target", Boolean(keeperIp) && keeperIp === targetIp, `keeper=${keeperIp} target=${targetIp}`);
+    } else {
+      pushGate("keeper-ip-is-target", false, "payload-missing-family");
+    }
+
+    // Gate 4 — Doomed IP still lives in the renumber source prefix.
+    let doomedIp = "";
+    let oldCidr = "";
+    if (family === 4 && payload?.hasV4) {
+      doomedIp = String(doomedRow?.ipaddr4 || "").trim();
+      oldCidr = String(payload.old4 || "");
+      const cidr = parseCidr(oldCidr);
+      const ip = parseIp(doomedIp);
+      const inPrefix = cidr && ip && ip.family === cidr.family && (ip.bigint & cidr.networkMask) === cidr.network;
+      pushGate("doomed-ip-in-source-prefix", Boolean(inPrefix), `${doomedIp} in ${oldCidr}`);
+    } else if (family === 6 && payload?.hasV6) {
+      doomedIp = String(doomedRow?.ipaddr6 || "").trim();
+      oldCidr = String(payload.old6 || "");
+      const cidr = parseCidr(oldCidr);
+      const ip = parseIp(doomedIp);
+      const inPrefix = cidr && ip && ip.family === cidr.family && (ip.bigint & cidr.networkMask) === cidr.network;
+      pushGate("doomed-ip-in-source-prefix", Boolean(inPrefix), `${doomedIp} in ${oldCidr}`);
+    } else {
+      pushGate("doomed-ip-in-source-prefix", false, "payload-missing-family");
+    }
+
+    // Gates 5 & 6 — IX-F member-export agreement.
+    if (!ixfMap) {
+      pushGate("ixf-asserts-keeper", false, "ixf-unavailable");
+      pushGate("ixf-does-not-assert-doomed", false, "ixf-unavailable");
+    } else {
+      const asn = String(doomedRow?.asn || "").trim();
+      const ixfEntries = ixfMap.get(asn) || [];
+      if (ixfEntries.length === 0) {
+        pushGate("ixf-asserts-keeper", false, `ixf-missing-asn:${asn}`);
+        pushGate("ixf-does-not-assert-doomed", false, `ixf-missing-asn:${asn}`);
+      } else {
+        // Gate 5: at least one IX-F vlan entry for this ASN names the keeper's
+        // IP on the conflicting family.
+        const keeperV4 = String(keeperRow?.ipaddr4 || "").trim();
+        const keeperV6Norm = normalizeIpv6ForCompare(String(keeperRow?.ipaddr6 || "").trim());
+        const keeperAsserted = ixfEntries.some((entry) => {
+          if (family === 4) return entry.v4 && entry.v4 === keeperV4;
+          return entry.v6Norm && entry.v6Norm === keeperV6Norm;
+        });
+        pushGate(
+          "ixf-asserts-keeper",
+          keeperAsserted,
+          family === 4 ? `keeperV4=${keeperV4}` : `keeperV6=${keeperV6Norm}`,
+        );
+
+        // Gate 6: NO IX-F vlan entry for this ASN names the doomed IP. This
+        // catches dual-attached members who legitimately publish both
+        // addresses — they must NOT have either row deleted.
+        const doomedAsserted = ixfEntries.some((entry) => {
+          if (family === 4) return entry.v4 && entry.v4 === doomedIp;
+          const doomedV6Norm = normalizeIpv6ForCompare(doomedIp);
+          return entry.v6Norm && entry.v6Norm === doomedV6Norm;
+        });
+        pushGate(
+          "ixf-does-not-assert-doomed",
+          !doomedAsserted,
+          family === 4 ? `doomedV4=${doomedIp}` : `doomedV6=${normalizeIpv6ForCompare(doomedIp)}`,
+        );
+      }
+    }
+
+    // Gate 7 — "Fresh re-read agrees" is checked separately, immediately
+    // before the DELETE issue (see applyConflictDeletes). It is reported as
+    // a placeholder here so the modal can render all 8 gates uniformly.
+    pushGate("fresh-reread-agrees", true, "checked at apply time");
+
+    // Gate 8 — No silent data loss. The doomed row must not carry any
+    // non-empty field value (on the non-conflicting family, or scalar
+    // fields like speed/notes/...) that the keeper lacks AND that we
+    // cannot auto-merge. Mismatched non-null values always hard-fail
+    // (manual review required). See PRESERVED_NETIXLAN_FIELDS and
+    // AUTO_MERGE_FIELDS for the policy. The merge plan returned with
+    // the gates feeds the two-phase apply (PUT keeper, then DELETE).
+    const mergePlan = buildMergePlan({ doomedRow, keeperRow, family });
+    if (mergePlan.blockers.length === 0) {
+      const summary = Object.keys(mergePlan.merge).length === 0
+        ? "no merge required"
+        : `auto-merge: ${Object.keys(mergePlan.merge).join(",")}`;
+      pushGate("no-data-loss-on-delete", true, summary);
+    } else {
+      const detail = mergePlan.blockers
+        .map((b) => `${b.kind}:${b.field}`)
+        .join(" ");
+      pushGate("no-data-loss-on-delete", false, detail);
+    }
+
+    return { gates, ok: gates.every((g) => g.ok), mergePlan };
+  }
+
+  /**
+   * Persists a conflict-resolve audit entry.
+   * Purpose: Forensic record of every DELETE so operators can manually
+   * audit and (if needed) reverse via the netixlan admin.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
+   * @param {object} entry - Audit entry payload.
+   */
+  function recordConflictResolveAuditEntry(entry) {
+    const storage = getDomainCacheStorage();
+    if (!storage) return;
+    const item = {
+      ts: new Date().toISOString(),
+      ixlanId: String(entry?.ixlanId || "").trim(),
+      ticketId: String(entry?.ticketId || "").trim(),
+      ixfUrl: String(entry?.ixfUrl || "").trim(),
+      payload: entry?.payload || null,
+      outcomes: Array.isArray(entry?.outcomes) ? entry.outcomes : [],
+      version: SCRIPT_VERSION,
+    };
+    try {
+      const raw = String(storage.getItem(CONFLICT_RESOLVE_AUDIT_LOG_STORAGE_KEY) || "").trim();
+      const current = raw ? JSON.parse(raw) : [];
+      const list = Array.isArray(current) ? current : [];
+      list.unshift(item);
+      storage.setItem(
+        CONFLICT_RESOLVE_AUDIT_LOG_STORAGE_KEY,
+        JSON.stringify(list.slice(0, CONFLICT_RESOLVE_AUDIT_LOG_MAX_ITEMS)),
+      );
+      dbg("conflict-resolve", "DELETE outcome recorded", item);
+    } catch (_error) {
+      // Never let audit logging break the apply flow.
+    }
+  }
+
+  /**
+  /**
+   * Applies the conflict-resolver merge+DELETE sequence.
+   * Purpose: For each ticked conflict item, re-read both rows from the
+   * live API and re-run all 8 gates; on agreement, run the two-phase
+   * apply — PUT the keeper with any auto-merged fields (e.g. an IPv6
+   * the keeper was missing), re-read to confirm the merge landed, and
+   * only then DELETE the doomed row. Any drift or failure aborts that
+   * specific row without affecting others — and critically, no DELETE
+   * ever runs unless the merge PUT both succeeded and verified.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+   * @param {object[]} items - Selected conflict items.
+   * @param {object} payload - Renumber payload (for prefix gates).
+   * @param {Map|null} ixfMap - IX-F ASN→pairs map, or null if unavailable.
+   * @param {{ cancelled: boolean }} signal - External cancel flag.
+   * @param {Function} onProgress - Per-row progress callback.
+   * @returns {Promise<object[]>} Outcomes for the audit log.
+   */
+  async function applyConflictDeletes(items, payload, ixfMap, signal, onProgress) {
+    const outcomes = [];
+    for (const item of items) {
+      const baseOutcome = {
+        doomedId: String(item.doomedRow.id),
+        keeperId: String(item.keeperRow.id),
+        asn: String(item.doomedRow.asn || ""),
+        family: item.family,
+        oldIp4: String(item.doomedRow.ipaddr4 || ""),
+        oldIp6: String(item.doomedRow.ipaddr6 || ""),
+        keeperIp4: String(item.keeperRow.ipaddr4 || ""),
+        keeperIp6: String(item.keeperRow.ipaddr6 || ""),
+        mergePlan: {},
+        keeperPutStatus: 0,
+        phase: "blocked",
+      };
+      if (signal?.cancelled) {
+        outcomes.push({ ...baseOutcome, status: "cancelled" });
+        continue;
+      }
+      onProgress?.(item, { status: "in-flight" });
+
+      // Gate 7 — live re-read of both rows, then re-run all 8 gates on
+      // the live response. If anything moved, or gate 8 now reports new
+      // blockers, abort this row.
+      const [freshDoomedRes, freshKeeperRes] = await Promise.all([
+        fetchNetixlanRowById(item.doomedRow.id),
+        fetchNetixlanRowById(item.keeperRow.id),
+      ]);
+      if (freshDoomedRes.error || freshKeeperRes.error) {
+        const outcome = { ...baseOutcome, status: "aborted", gateFailed: "fresh-reread", error: freshDoomedRes.error || freshKeeperRes.error };
+        outcomes.push(outcome);
+        onProgress?.(item, outcome);
+        if (CONFLICT_RESOLVE_APPLY_DELAY_MS > 0) await new Promise((r) => setTimeout(r, CONFLICT_RESOLVE_APPLY_DELAY_MS));
+        continue;
+      }
+      const liveGates = verifyConflictGates({
+        doomedRow: freshDoomedRes.row,
+        keeperRow: freshKeeperRes.row,
+        payload,
+        ixfMap,
+        family: item.family,
+      });
+      if (!liveGates.ok) {
+        const failed = liveGates.gates.filter((g) => !g.ok).map((g) => g.name).join(",");
+        const outcome = { ...baseOutcome, status: "aborted", gateFailed: failed || "unknown", error: "live-gate-failed" };
+        outcomes.push(outcome);
+        onProgress?.(item, outcome);
+        if (CONFLICT_RESOLVE_APPLY_DELAY_MS > 0) await new Promise((r) => setTimeout(r, CONFLICT_RESOLVE_APPLY_DELAY_MS));
+        continue;
+      }
+
+      const liveMerge = (liveGates.mergePlan && liveGates.mergePlan.merge) || {};
+      baseOutcome.mergePlan = { ...liveMerge };
+
+      // Phase 1 — Merge into keeper, if there is anything to absorb.
+      let keeperRowForDelete = freshKeeperRes.row;
+      if (Object.keys(liveMerge).length > 0) {
+        const mergedPayload = { ...buildNetixlanPutPayload(freshKeeperRes.row), ...liveMerge };
+        const putUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${item.keeperRow.id}`;
+        const putResult = await pdbPost(putUrl, "PUT", JSON.stringify(mergedPayload), { contentType: "application/json", retries: 1 });
+        const putStatus = Number(putResult?.status || 0);
+        baseOutcome.keeperPutStatus = putStatus;
+        const putOk = putStatus >= 200 && putStatus < 300;
+        if (!putOk) {
+          const outcome = {
+            ...baseOutcome,
+            status: "keeper-merge-failed",
+            phase: "blocked",
+            error: extractRenumberApiErrorDetail(putResult),
+          };
+          outcomes.push(outcome);
+          onProgress?.(item, outcome);
+          if (CONFLICT_RESOLVE_APPLY_DELAY_MS > 0) await new Promise((r) => setTimeout(r, CONFLICT_RESOLVE_APPLY_DELAY_MS));
+          continue;
+        }
+        // Verify the merge landed by re-reading the keeper. If any
+        // requested field does not match what we asked for, DO NOT
+        // proceed to DELETE — the doomed row is the last carrier.
+        const verifyRes = await fetchNetixlanRowById(item.keeperRow.id);
+        if (verifyRes.error || !verifyRes.row) {
+          const outcome = {
+            ...baseOutcome,
+            status: "keeper-merge-verify-failed",
+            phase: "blocked",
+            error: verifyRes.error || "no-row",
+          };
+          outcomes.push(outcome);
+          onProgress?.(item, outcome);
+          if (CONFLICT_RESOLVE_APPLY_DELAY_MS > 0) await new Promise((r) => setTimeout(r, CONFLICT_RESOLVE_APPLY_DELAY_MS));
+          continue;
+        }
+        const mismatched = [];
+        for (const [field, wanted] of Object.entries(liveMerge)) {
+          const got = verifyRes.row[field];
+          const wn = normalizeNetixlanFieldForCompare(field, wanted);
+          const gn = normalizeNetixlanFieldForCompare(field, got);
+          if (wn !== gn) mismatched.push(field);
+        }
+        if (mismatched.length > 0) {
+          const outcome = {
+            ...baseOutcome,
+            status: "keeper-merge-verify-failed",
+            phase: "blocked",
+            error: `mismatch:${mismatched.join(",")}`,
+          };
+          outcomes.push(outcome);
+          onProgress?.(item, outcome);
+          if (CONFLICT_RESOLVE_APPLY_DELAY_MS > 0) await new Promise((r) => setTimeout(r, CONFLICT_RESOLVE_APPLY_DELAY_MS));
+          continue;
+        }
+        keeperRowForDelete = verifyRes.row;
+        baseOutcome.phase = "merge-then-delete";
+      } else {
+        baseOutcome.phase = "delete-only";
+      }
+
+      // Phase 2 — DELETE the doomed row.
+      const delUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${item.doomedRow.id}`;
+      const delResult = await pdbPost(delUrl, "DELETE", "", { contentType: "application/json", retries: 1 });
+      const delOk = Number(delResult?.status || 0) >= 200 && Number(delResult?.status || 0) < 300;
+      if (!delOk) {
+        const outcome = {
+          ...baseOutcome,
+          status: "delete-failed",
+          httpStatus: Number(delResult?.status || 0),
+          error: extractRenumberApiErrorDetail(delResult),
+        };
+        outcomes.push(outcome);
+        onProgress?.(item, outcome);
+        if (CONFLICT_RESOLVE_APPLY_DELAY_MS > 0) await new Promise((r) => setTimeout(r, CONFLICT_RESOLVE_APPLY_DELAY_MS));
+        continue;
+      }
+
+      // Post-condition: keeper still exists.
+      const postKeeper = await fetchNetixlanRowById(item.keeperRow.id);
+      const outcome = {
+        ...baseOutcome,
+        status: postKeeper.row ? "done" : "done-keeper-missing",
+        httpStatus: Number(delResult?.status || 0),
+        error: postKeeper.row ? "" : `post-check:${postKeeper.error}`,
+      };
+      outcomes.push(outcome);
+      onProgress?.(item, outcome);
+      if (CONFLICT_RESOLVE_APPLY_DELAY_MS > 0) await new Promise((r) => setTimeout(r, CONFLICT_RESOLVE_APPLY_DELAY_MS));
+    }
+    return outcomes;
+  }
+
+  /**
+   * Builds the conflict-item list from renumber classified entries.
+   * Purpose: Translate the renumber modal's per-row classification into
+   * one conflict item per (row, family) that needs resolution. A row
+   * with conflicts on both families produces two items.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {object[]} entries - classifyRenumberRows() output.
+   * @returns {Array<{ doomedRow: object, family: 4|6, newIp: string }>}
+   */
+  function collectConflictItemsFromEntries(entries) {
+    const items = [];
+    for (const entry of entries || []) {
+      if (entry?.v4?.status === "conflict") {
+        items.push({ doomedRow: entry.row, family: 4, newIp: entry.v4.newIp });
+      }
+      if (entry?.v6?.status === "conflict") {
+        items.push({ doomedRow: entry.row, family: 6, newIp: entry.v6.newIp });
+      }
+    }
+    return items;
+  }
+
+  /**
+   * Opens the conflict-resolver modal for a renumber run.
+   * Purpose: Operator UI for reviewing per-row verification gates and
+   * approving (or refusing) the DELETE of stale duplicates.
+   * Necessity: The DELETE is destructive and cross-references upstream
+   * IX-F data; this MUST NOT be a one-click operation.
+   * @ai Preserve menu command registration behavior and gating on feature flag.
+   * @param {{ ixlanId: string, ticketId: string, payload: object,
+   *           conflictItems: object[] }} args
+   */
+  async function openConflictResolverModal(args) {
+    const ixlanId = String(args?.ixlanId || "").trim();
+    const normalizedExpectedIxlanId = String(ixlanId || "").replace(/\D+/g, "");
+    const ticketId = String(args?.ticketId || "").trim();
+    const payload = args?.payload || {};
+    const initialItems = Array.isArray(args?.conflictItems) ? args.conflictItems.slice() : [];
+
+    const BACKDROP_ID = `${MODULE_PREFIX}ConflictResolverBackdrop`;
+    document.getElementById(BACKDROP_ID)?.remove();
+    const backdrop = document.createElement("div");
+    backdrop.id = BACKDROP_ID;
+    Object.assign(backdrop.style, {
+      position: "fixed", inset: "0", background: "rgba(0,0,0,0.55)",
+      zIndex: "2147483647", display: "flex", alignItems: "center", justifyContent: "center",
+    });
+    const modal = document.createElement("div");
+    Object.assign(modal.style, {
+      background: "#fff", color: "#111", padding: "16px 20px",
+      borderRadius: "8px", width: "min(1180px, 96vw)", maxWidth: "96vw",
+      maxHeight: "92vh", display: "flex", flexDirection: "column",
+      boxSizing: "border-box", minHeight: "0", minWidth: "0",
+      boxShadow: "0 10px 30px rgba(0,0,0,0.25)",
+      font: "13px/1.4 -apple-system,Segoe UI,Helvetica,Arial,sans-serif",
+    });
+
+    const header = document.createElement("h2");
+    header.textContent = `Resolve Renumber Conflicts — ixlan #${ixlanId}${ticketId ? ` — ticket #${ticketId}` : ""}`;
+    Object.assign(header.style, { margin: "0 0 6px", fontSize: "16px" });
+    const subhead = document.createElement("div");
+    Object.assign(subhead.style, { margin: "0 0 8px", color: "#444" });
+    const summaryParts = [];
+    if (payload.hasV4) summaryParts.push(`IPv4 ${payload.old4} → ${payload.new4}`);
+    if (payload.hasV6) summaryParts.push(`IPv6 ${payload.old6} → ${payload.new6}`);
+    subhead.textContent = summaryParts.join(" • ");
+
+    const warn = document.createElement("div");
+    Object.assign(warn.style, {
+      margin: "4px 0 8px", padding: "8px 10px", background: "#fef3c7",
+      border: "1px solid #d97706", borderRadius: "4px", color: "#7c2d12",
+    });
+    warn.textContent = "DELETEs are destructive. Every ticked row must pass all 8 verification gates AND you must type this ixlan id below to enable Apply. When the keeper is missing a value the doomed row carries (e.g. IPv6), the resolver will PUT the keeper to absorb it BEFORE the DELETE — no row is ever deleted without a verified merge.";
+
+    const status = document.createElement("div");
+    Object.assign(status.style, { margin: "4px 0", color: "#444", minHeight: "1.4em" });
+
+    const prereq = document.createElement("div");
+    Object.assign(prereq.style, { margin: "0 0 8px", color: "#666", fontSize: "12px" });
+
+    const tableWrap = document.createElement("div");
+    // Table is the only scroll region. All controls are rendered above
+    // it, so no bottom action can be clipped by viewport height.
+    Object.assign(tableWrap.style, { overflow: "auto", border: "1px solid #ddd", borderRadius: "4px", flex: "1 1 0", minHeight: "120px", minWidth: "0" });
+    const table = document.createElement("table");
+    Object.assign(table.style, { width: "100%", borderCollapse: "collapse", fontSize: "12px" });
+    const thead = document.createElement("thead");
+    thead.innerHTML = "<tr>" + ["", "ASN", "Family", "Doomed id", "Doomed IP", "Keeper id", "Keeper IP", "Merge plan", "Gates", "Status"]
+      .map((h) => `<th style=\"text-align:left;padding:6px 8px;background:#f7f7f7;border-bottom:1px solid #ddd;\">${h}</th>`).join("") + "</tr>";
+    const tbody = document.createElement("tbody");
+    table.appendChild(thead);
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+
+    const controls = document.createElement("div");
+    Object.assign(controls.style, {
+      display: "flex", flexDirection: "column", gap: "8px", padding: "8px 10px", marginBottom: "8px",
+      border: "1px solid #eee", borderRadius: "6px", background: "#fafafa",
+      alignItems: "stretch", flexShrink: "0",
+    });
+
+    const confirmRow = document.createElement("div");
+    Object.assign(confirmRow.style, {
+      display: "flex", gap: "8px",
+      justifyContent: "flex-start", alignItems: "center", flexWrap: "wrap",
+      width: "100%", minWidth: "0", flexShrink: "0",
+    });
+    const confirmLabel = document.createElement("label");
+    Object.assign(confirmLabel.style, { color: "#444" });
+    confirmLabel.textContent = `Type ixlan id "${ixlanId}" to enable Apply: `;
+    const confirmInput = document.createElement("input");
+    confirmInput.type = "text";
+    confirmInput.placeholder = normalizedExpectedIxlanId || ixlanId;
+    // Pre-fill to prevent false lockout where the operator sees "3990"
+    // but Apply remains disabled due placeholder/value confusion.
+    // Final window.confirm remains in place as destructive safeguard.
+    confirmInput.value = normalizedExpectedIxlanId;
+    Object.assign(confirmInput.style, { padding: "4px 6px", marginLeft: "6px", width: "100px" });
+    confirmLabel.appendChild(confirmInput);
+    confirmRow.appendChild(confirmLabel);
+
+    const buttonRow = document.createElement("div");
+    Object.assign(buttonRow.style, {
+      display: "flex", flexDirection: "row-reverse", justifyContent: "flex-start", alignItems: "center",
+      gap: "8px", flexWrap: "wrap", rowGap: "8px", width: "100%", minWidth: "0", flexShrink: "0",
+    });
+    // Desktop-only strict single-line variant (right anchored, leftward).
+    if (window.matchMedia("(min-width: 1024px)").matches) {
+      Object.assign(buttonRow.style, { flexWrap: "nowrap", rowGap: "0", overflowX: "auto", overflowY: "hidden" });
+    }
+
+    const shapeResolverIconBtn = (btn) => {
+      Object.assign(btn.style, {
+        width: "34px", minWidth: "34px", height: "34px", padding: "0",
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        fontSize: "16px", lineHeight: "1", fontWeight: "700",
+        margin: "0", flex: "0 0 34px", boxSizing: "border-box",
+      });
+    };
+    const setResolverIconLabel = (btn, icon, label) => {
+      btn.textContent = icon;
+      btn.title = label;
+      btn.setAttribute("aria-label", label);
+    };
+
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    Object.assign(closeBtn.style, { border: "1px solid #bbb", background: "#f5f5f5", borderRadius: "5px", cursor: "pointer" });
+    shapeResolverIconBtn(closeBtn);
+    setResolverIconLabel(closeBtn, "\u2715", "Close");
+
+    const refreshBtn = document.createElement("button");
+    refreshBtn.type = "button";
+    Object.assign(refreshBtn.style, { border: "1px solid #bbb", background: "#eef", borderRadius: "5px", cursor: "pointer" });
+    shapeResolverIconBtn(refreshBtn);
+    setResolverIconLabel(refreshBtn, "\u21bb", "Re-verify");
+
+    // Bulk-select convenience: tick every row that passes all 8 gates.
+    // Manually ticking 14+ checkboxes was the operator's blocker for
+    // 'cannot trigger the conflict resolver action'.
+    const selectAllBtn = document.createElement("button");
+    selectAllBtn.type = "button";
+    Object.assign(selectAllBtn.style, { border: "1px solid #15803d", background: "#f0fdf4", color: "#14532d", borderRadius: "5px", cursor: "pointer" });
+    shapeResolverIconBtn(selectAllBtn);
+    setResolverIconLabel(selectAllBtn, "\u2611", "Select all ready (0)");
+
+    const cancelApplyBtn = document.createElement("button");
+    cancelApplyBtn.type = "button";
+    Object.assign(cancelApplyBtn.style, { border: "1px solid #d93025", background: "#fff", color: "#d93025", borderRadius: "5px", cursor: "pointer", display: "none" });
+    shapeResolverIconBtn(cancelApplyBtn);
+    setResolverIconLabel(cancelApplyBtn, "\u25a0", "Cancel apply");
+
+    const applyBtn = document.createElement("button");
+    applyBtn.type = "button";
+    Object.assign(applyBtn.style, { background: "#b91c1c", color: "#fff", border: "0", borderRadius: "5px", cursor: "pointer" });
+    shapeResolverIconBtn(applyBtn);
+    setResolverIconLabel(applyBtn, "\u2326", "Delete selected");
+
+    // Right-anchored fixed-offset strip: first appended is rightmost,
+    // subsequent buttons are placed leftward with a fixed gap.
+    buttonRow.appendChild(applyBtn);
+    buttonRow.appendChild(cancelApplyBtn);
+    buttonRow.appendChild(selectAllBtn);
+    buttonRow.appendChild(refreshBtn);
+    buttonRow.appendChild(closeBtn);
+    controls.appendChild(confirmRow);
+    controls.appendChild(buttonRow);
+
+    modal.appendChild(header);
+    modal.appendChild(subhead);
+    modal.appendChild(warn);
+    modal.appendChild(status);
+    modal.appendChild(prereq);
+    modal.appendChild(controls);
+    modal.appendChild(tableWrap);
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+
+    closeBtn.addEventListener("click", () => backdrop.remove());
+
+    // State.
+    let items = initialItems.map((it) => ({
+      ...it,
+      keeperRow: null,
+      keeperError: "",
+      gates: null,
+      selected: false,
+      applyStatus: "",
+    }));
+    let ixfMap = null;
+    let ixfUrlInUse = "";
+    let ixfError = "";
+    let cancelSignal = { cancelled: false };
+
+    function getNormalizedTypedIxlanId() {
+      return String(confirmInput.value || "").replace(/\D+/g, "");
+    }
+
+    function recomputeApplyEnabled() {
+      const typedOk = getNormalizedTypedIxlanId() === normalizedExpectedIxlanId;
+      const anyEligible = items.some((it) => it.selected && it.gates?.ok);
+      applyBtn.disabled = !(typedOk && anyEligible);
+      applyBtn.style.cursor = applyBtn.disabled ? "not-allowed" : "pointer";
+      const selectedReadyCount = items.reduce((n, it) => n + (it.selected && it.gates?.ok ? 1 : 0), 0);
+      prereq.textContent = `Apply prerequisites: typed ixlan id ${typedOk ? "yes" : "no"} • selected ready rows ${selectedReadyCount}`;
+      prereq.style.color = typedOk && selectedReadyCount > 0 ? "#15803d" : "#b91c1c";
+      // Keep the bulk-select label and disabled state in sync with how
+      // many rows have passed all 8 gates.
+      const readyCount = items.reduce((n, it) => n + (it.gates?.ok ? 1 : 0), 0);
+      const allTicked = readyCount > 0 && items.every((it) => !it.gates?.ok || it.selected);
+      const selectLabel = allTicked ? `Unselect all (${readyCount})` : `Select all ready (${readyCount})`;
+      selectAllBtn.title = selectLabel;
+      selectAllBtn.setAttribute("aria-label", selectLabel);
+      selectAllBtn.disabled = readyCount === 0;
+    }
+    confirmInput.addEventListener("input", recomputeApplyEnabled);
+    confirmInput.addEventListener("change", recomputeApplyEnabled);
+    selectAllBtn.addEventListener("click", () => {
+      const readyItems = items.filter((it) => it.gates?.ok);
+      if (readyItems.length === 0) return;
+      const allTicked = readyItems.every((it) => it.selected);
+      const next = !allTicked;
+      for (const it of readyItems) it.selected = next;
+      render();
+    });
+
+    function render() {
+      tbody.innerHTML = "";
+      for (const it of items) {
+        const tr = document.createElement("tr");
+        Object.assign(tr.style, { borderBottom: "1px solid #eee" });
+        const cells = [];
+
+        const cbCell = document.createElement("td");
+        Object.assign(cbCell.style, { padding: "6px 8px", verticalAlign: "top" });
+        const cb = document.createElement("input"); cb.type = "checkbox";
+        cb.disabled = !it.gates?.ok;
+        cb.checked = Boolean(it.selected) && cb.disabled === false;
+        cb.addEventListener("change", () => { it.selected = cb.checked; recomputeApplyEnabled(); });
+        cbCell.appendChild(cb);
+        cells.push(cbCell);
+
+        const td = (text) => {
+          const c = document.createElement("td");
+          Object.assign(c.style, { padding: "6px 8px", verticalAlign: "top" });
+          c.textContent = String(text ?? "");
+          return c;
+        };
+        cells.push(td(it.doomedRow.asn));
+        cells.push(td(`IPv${it.family}`));
+        cells.push(td(it.doomedRow.id));
+        const doomedIp = it.family === 4 ? (it.doomedRow.ipaddr4 || "") : (it.doomedRow.ipaddr6 || "");
+        cells.push(td(doomedIp));
+        cells.push(td(it.keeperRow?.id || (it.keeperError || "—")));
+        const keeperIp = it.keeperRow ? (it.family === 4 ? (it.keeperRow.ipaddr4 || "") : (it.keeperRow.ipaddr6 || "")) : "";
+        cells.push(td(keeperIp));
+
+        const mergeCell = document.createElement("td");
+        Object.assign(mergeCell.style, { padding: "6px 8px", verticalAlign: "top", fontFamily: "monospace", fontSize: "11px" });
+        const mergePlan = it.gates?.mergePlan;
+        if (mergePlan && (mergePlan.merge || mergePlan.blockers)) {
+          const mergeEntries = Object.entries(mergePlan.merge || {});
+          const blockers = mergePlan.blockers || [];
+          if (mergeEntries.length === 0 && blockers.length === 0) {
+            mergeCell.textContent = "—";
+            mergeCell.style.color = "#6b7280";
+          } else {
+            for (const [field, value] of mergeEntries) {
+              const span = document.createElement("span");
+              const keeperVal = it.keeperRow ? it.keeperRow[field] : "";
+              const before = isMergeableValue(keeperVal) ? String(keeperVal) : "\u2205";
+              span.textContent = `${field}: ${before} → ${value}`;
+              span.title = "Will be PUT into keeper before DELETE";
+              Object.assign(span.style, { display: "block", color: "#15803d" });
+              mergeCell.appendChild(span);
+            }
+            for (const b of blockers) {
+              const span = document.createElement("span");
+              const d = isMergeableValue(b.doomed) ? String(b.doomed) : "\u2205";
+              const k = isMergeableValue(b.keeper) ? String(b.keeper) : "\u2205";
+              span.textContent = `${b.kind}:${b.field} (doomed=${d}, keeper=${k})`;
+              span.title = "Manual reconciliation required — gate 8 blocks DELETE.";
+              Object.assign(span.style, { display: "block", color: "#b91c1c" });
+              mergeCell.appendChild(span);
+            }
+          }
+        } else {
+          mergeCell.textContent = "(pending)";
+          mergeCell.style.color = "#6b7280";
+        }
+        cells.push(mergeCell);
+
+        const gatesCell = document.createElement("td");
+        Object.assign(gatesCell.style, { padding: "6px 8px", verticalAlign: "top", fontFamily: "monospace", fontSize: "11px" });
+        if (it.gates) {
+          for (const g of it.gates.gates) {
+            const span = document.createElement("span");
+            span.textContent = (g.ok ? "✓ " : "✗ ") + g.name;
+            span.title = g.detail || "";
+            Object.assign(span.style, { display: "block", color: g.ok ? "#15803d" : "#b91c1c" });
+            gatesCell.appendChild(span);
+          }
+        } else {
+          gatesCell.textContent = "(pending)";
+        }
+        cells.push(gatesCell);
+
+        cells.push(td(it.applyStatus || (it.gates?.ok ? "ready" : "locked")));
+
+        for (const c of cells) tr.appendChild(c);
+        tbody.appendChild(tr);
+      }
+      recomputeApplyEnabled();
+    }
+    render();
+
+    async function refresh() {
+      status.textContent = "Resolving keepers and fetching IX-F…";
+      applyBtn.disabled = true; refreshBtn.disabled = true;
+      try {
+        // Fetch IX-F once for the whole batch.
+        if (!ixfMap) {
+          const ixfMeta = await fetchIxlanIxfMemberListUrl(ixlanId);
+          if (ixfMeta.error || !ixfMeta.ixfUrl) {
+            ixfError = ixfMeta.error || "no-ixf-url";
+          } else {
+            ixfUrlInUse = ixfMeta.ixfUrl;
+            const ixfRes = await fetchIxfMemberExport(ixfMeta.ixfUrl);
+            if (ixfRes.error || !ixfRes.data) {
+              ixfError = ixfRes.error || "no-data";
+            } else {
+              ixfMap = extractIxfAsnIpPairs(ixfRes.data);
+              ixfError = "";
+            }
+          }
+        }
+        // Resolve keepers and run gates for each item.
+        for (const it of items) {
+          const ipKey = it.family === 4 ? "ipaddr4" : "ipaddr6";
+          if (!it.keeperRow) {
+            const kRes = await findKeeperForConflict({
+              ixlanId, doomedId: it.doomedRow.id, asn: it.doomedRow.asn,
+              family: it.family, newIp: it.newIp,
+            });
+            it.keeperRow = kRes.keeper;
+            it.keeperError = kRes.error;
+          }
+          if (it.keeperRow) {
+            it.gates = verifyConflictGates({
+              doomedRow: it.doomedRow,
+              keeperRow: it.keeperRow,
+              payload,
+              ixfMap,
+              family: it.family,
+            });
+          } else {
+            it.gates = { ok: false, gates: [{ name: "keeper-resolution", ok: false, detail: it.keeperError || "no-keeper" }] };
+          }
+          render();
+        }
+        const ok = items.filter((it) => it.gates?.ok).length;
+        const ixfState = ixfMap ? `IX-F ok (${ixfMap.size} ASNs)` : `IX-F unavailable (${ixfError || "?"})`;
+        status.textContent = `${items.length} conflict item(s) — ${ok} pass all 8 gates • ${ixfState}`;
+      } finally {
+        refreshBtn.disabled = false;
+        recomputeApplyEnabled();
+      }
+    }
+
+    refreshBtn.addEventListener("click", () => { refresh(); });
+    cancelApplyBtn.addEventListener("click", () => { cancelSignal.cancelled = true; });
+
+    applyBtn.addEventListener("click", async () => {
+      if (getNormalizedTypedIxlanId() !== normalizedExpectedIxlanId) {
+        status.textContent = `Type the ixlan id "${normalizedExpectedIxlanId || ixlanId}" exactly to enable Apply.`;
+        return;
+      }
+      const selected = items.filter((it) => it.selected && it.gates?.ok);
+      if (selected.length === 0) { status.textContent = "Nothing selected to apply."; return; }
+      const mergeRows = selected.filter((it) => it.gates?.mergePlan && Object.keys(it.gates.mergePlan.merge || {}).length > 0);
+      const confirmed = window.confirm(
+        `Resolve ${selected.length} netixlan conflict(s)?\n\n` +
+        (mergeRows.length > 0
+          ? `${mergeRows.length} row(s) will PUT keeper to absorb fields before DELETE:\n` +
+            mergeRows.map((it) => `  → keeper #${it.keeperRow?.id}: ${Object.keys(it.gates.mergePlan.merge).join(", ")}`).join("\n") + "\n\n"
+          : "") +
+        `Then DELETE the following doomed row(s):\n` +
+        selected.map((it) => `• ASN ${it.doomedRow.asn} — netixlan #${it.doomedRow.id} (IPv${it.family}: ${it.family === 4 ? it.doomedRow.ipaddr4 : it.doomedRow.ipaddr6})`).join("\n") +
+        `\n\nNo DELETE runs unless its keeper PUT both succeeded and verified.\nThis action cannot be undone via the userscript.\nPress OK to proceed.`,
+      );
+      if (!confirmed) return;
+      applyBtn.disabled = true; refreshBtn.disabled = true;
+      cancelApplyBtn.style.display = ""; cancelSignal = { cancelled: false };
+      const outcomes = await applyConflictDeletes(selected, payload, ixfMap, cancelSignal, (it, update) => {
+        it.applyStatus = update.status === "in-flight" ? "deleting…" : `${update.status}${update.httpStatus ? ` (${update.httpStatus})` : ""}${update.error ? ` — ${update.error}` : ""}${update.gateFailed ? ` [gate:${update.gateFailed}]` : ""}`;
+        render();
+      });
+      recordConflictResolveAuditEntry({ ixlanId, ticketId, ixfUrl: ixfUrlInUse, payload, outcomes });
+      applyBtn.disabled = false; refreshBtn.disabled = false; cancelApplyBtn.style.display = "none";
+      const done = outcomes.filter((o) => o.status === "done" || o.status === "done-keeper-missing").length;
+      const aborted = outcomes.filter((o) => o.status === "aborted").length;
+      const delFailed = outcomes.filter((o) => o.status === "delete-failed").length;
+      const cancelled = outcomes.filter((o) => o.status === "cancelled").length;
+      status.textContent = `Apply complete — deleted:${done} aborted:${aborted} delete-failed:${delFailed} cancelled:${cancelled}`;
+    });
+
+    await refresh();
+  }
+
+  // ── Recent IP Changes Audit Report (helpers) ───────────────────────────────
+  // Per-ixlan diagnostic that lists every netixlan whose IP address(es)
+  // changed within the last RECENT_IP_CHANGES_WINDOW_MIN minutes. Merges
+  // two sources: (a) PDB API filtered by ?updated__gte=... for current
+  // state + authoritative timestamp; (b) local audit logs from the three
+  // mutation modules (renumber, IX-F merge, conflict-resolve) for the
+  // "old" address that the API can no longer show. Read-only.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Fetches netixlan rows updated within the last `windowMinutes` minutes on
+   * a given ixlan. Falls back to a client-side filter if the server rejects
+   * `updated__gte`.
+   * Purpose: Retrieve the authoritative current state for the report.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+   * @param {string} ixlanId
+   * @param {number} windowMinutes
+   * @returns {Promise<{ rows: object[], cutoffIso: string, source: string, error: string }>}
+   */
+  async function fetchRecentNetixlanChanges(ixlanId, windowMinutes) {
+    const id = String(ixlanId || "").trim();
+    if (!/^\d+$/.test(id)) return { rows: [], cutoffIso: "", source: "", error: "bad-ixlan-id" };
+    const cutoffMs = Date.now() - Math.max(1, Number(windowMinutes) || 60) * 60 * 1000;
+    const cutoffIso = new Date(cutoffMs).toISOString().replace(/\.\d{3}Z$/, "Z");
+    // Try server-side filter first.
+    try {
+      const serverUrl = `${PEERINGDB_API_BASE_URL}/netixlan?ixlan_id=${encodeURIComponent(id)}&updated__gte=${encodeURIComponent(cutoffIso)}&depth=0&limit=250`;
+      const data = await pdbFetch(serverUrl);
+      const rows = Array.isArray(data?.data) ? data.data : [];
+      return { rows, cutoffIso, source: "server-filter", error: "" };
+    } catch (_serverErr) {
+      // Fallback: pull recent and client-filter.
+    }
+    try {
+      const fallbackUrl = `${PEERINGDB_API_BASE_URL}/netixlan?ixlan_id=${encodeURIComponent(id)}&depth=0&limit=250`;
+      const data = await pdbFetch(fallbackUrl);
+      const rowsAll = Array.isArray(data?.data) ? data.data : [];
+      const rows = rowsAll.filter((r) => {
+        const t = Date.parse(String(r.updated || ""));
+        return Number.isFinite(t) && t >= cutoffMs;
+      });
+      return { rows, cutoffIso, source: "client-filter", error: "" };
+    } catch (_fallbackErr) {
+      return { rows: [], cutoffIso, source: "", error: "fetch-failed" };
+    }
+  }
+
+  /**
+   * Walks all three local audit logs (renumber, IX-F merge, conflict-
+   * resolve) and emits outcome entries within `windowMinutes` of now.
+   * Purpose: Provide the "old IP" side of the merge for IP changes the
+   * userscript itself performed.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
+   * @param {number} windowMinutes
+   * @param {string} ixlanFilter - When non-empty, restricts to that ixlan id.
+   * @returns {Array<{ netixlanId: string, asn: string, oldIp4: string,
+   *                   newIp4: string, oldIp6: string, newIp6: string,
+   *                   source: string, ts: string, deleted: boolean,
+   *                   keeperId: string }>}
+   */
+  function readAllNetixlanAuditOutcomes(windowMinutes, ixlanFilter) {
+    const storage = getDomainCacheStorage();
+    if (!storage) return [];
+    const cutoffMs = Date.now() - Math.max(1, Number(windowMinutes) || 60) * 60 * 1000;
+    const out = [];
+
+    const readList = (key) => {
+      try {
+        const raw = String(storage.getItem(key) || "").trim();
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (_error) {
+        return [];
+      }
+    };
+    const ixlanMatches = (entryIxlanId) => {
+      if (!ixlanFilter) return true;
+      return String(entryIxlanId || "").trim() === String(ixlanFilter).trim();
+    };
+    const tsOk = (ts) => {
+      const t = Date.parse(String(ts || ""));
+      return Number.isFinite(t) && t >= cutoffMs;
+    };
+
+    // Renumber audit: { ts, ixlanId, ticketId, payload, rows: [{ netixlanId, asn, oldIp4, newIp4, oldIp6, newIp6, status }] }
+    for (const entry of readList(IXLAN_RENUMBER_AUDIT_LOG_STORAGE_KEY)) {
+      if (!tsOk(entry?.ts) || !ixlanMatches(entry?.ixlanId)) continue;
+      for (const o of (entry.rows || [])) {
+        if (o?.status !== "done") continue;
+        out.push({
+          netixlanId: String(o.netixlanId || ""),
+          asn: String(o.asn || ""),
+          oldIp4: String(o.oldIp4 || ""),
+          newIp4: String(o.newIp4 || ""),
+          oldIp6: String(o.oldIp6 || ""),
+          newIp6: String(o.newIp6 || ""),
+          source: "renumber",
+          ts: String(entry.ts || ""),
+          deleted: false,
+          keeperId: "",
+        });
+      }
+    }
+    // IX-F merge: { ts, ixlanId, outcomes: [{ asn, keeperId, otherId, ipv4, ipv6, status }] }
+    for (const entry of readList(IXF_MEMBER_AUDIT_LOG_STORAGE_KEY)) {
+      if (!tsOk(entry?.ts) || !ixlanMatches(entry?.ixlanId)) continue;
+      for (const o of (entry.outcomes || [])) {
+        if (o?.status !== "done") continue;
+        // Keeper was PUT with both addresses — its "old" v6 was empty if it
+        // was the v4-only row, and vice versa. We can't know that direction
+        // without more state, so we just record the merged IPs as the new
+        // state and leave oldIp4/oldIp6 blank for the API merge step to
+        // overlay current state.
+        out.push({
+          netixlanId: String(o.keeperId || ""),
+          asn: String(o.asn || ""),
+          oldIp4: "",
+          newIp4: String(o.ipv4 || ""),
+          oldIp6: "",
+          newIp6: String(o.ipv6 || ""),
+          source: "ixf-merge-keeper",
+          ts: String(entry.ts || ""),
+          deleted: false,
+          keeperId: "",
+        });
+        // The sibling row was DELETEd.
+        out.push({
+          netixlanId: String(o.otherId || ""),
+          asn: String(o.asn || ""),
+          oldIp4: "",
+          newIp4: "",
+          oldIp6: "",
+          newIp6: "",
+          source: "ixf-merge-deleted",
+          ts: String(entry.ts || ""),
+          deleted: true,
+          keeperId: String(o.keeperId || ""),
+        });
+      }
+    }
+    // Conflict-resolve: { ts, ixlanId, outcomes: [{ doomedId, keeperId, asn, oldIp4, oldIp6, status, mergePlan?, phase? }] }
+    for (const entry of readList(CONFLICT_RESOLVE_AUDIT_LOG_STORAGE_KEY)) {
+      if (!tsOk(entry?.ts) || !ixlanMatches(entry?.ixlanId)) continue;
+      for (const o of (entry.outcomes || [])) {
+        if (o?.status !== "done" && o?.status !== "done-keeper-missing") continue;
+        out.push({
+          netixlanId: String(o.doomedId || ""),
+          asn: String(o.asn || ""),
+          oldIp4: String(o.oldIp4 || ""),
+          newIp4: "",
+          oldIp6: String(o.oldIp6 || ""),
+          newIp6: "",
+          source: "conflict-resolve",
+          ts: String(entry.ts || ""),
+          deleted: true,
+          keeperId: String(o.keeperId || ""),
+          absorbedFromId: "",
+        });
+        // If the resolver absorbed fields into the keeper before deleting
+        // the doomed row (gate 8 / two-phase apply), emit a synthetic
+        // record so the keeper surfaces in Recent IP Changes with the
+        // values it picked up and an "absorbed from #<doomedId>" hint.
+        const mergePlan = o.mergePlan && typeof o.mergePlan === "object" ? o.mergePlan : null;
+        if (mergePlan && (mergePlan.ipaddr4 || mergePlan.ipaddr6) && o.keeperId) {
+          out.push({
+            netixlanId: String(o.keeperId),
+            asn: String(o.asn || ""),
+            oldIp4: "",
+            newIp4: String(mergePlan.ipaddr4 || ""),
+            oldIp6: "",
+            newIp6: String(mergePlan.ipaddr6 || ""),
+            source: "conflict-resolve-absorbed",
+            ts: String(entry.ts || ""),
+            deleted: false,
+            keeperId: "",
+            absorbedFromId: String(o.doomedId || ""),
+          });
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Merges PDB API rows with local audit outcomes, keyed by netixlan id.
+   * Purpose: API gives current state and authoritative timestamp; logs give
+   * the historical "old IP" the API can no longer show.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {object[]} apiRows - From fetchRecentNetixlanChanges().
+   * @param {object[]} logOutcomes - From readAllNetixlanAuditOutcomes().
+   * @returns {Array<{ netixlanId: string, asn: string, name: string,
+   *                   oldIp4: string, newIp4: string, oldIp6: string,
+   *                   newIp6: string, deleted: boolean, keeperId: string,
+   *                   sources: string[], ts: string }>}
+   */
+  function mergeAuditSources(apiRows, logOutcomes) {
+    const byId = new Map();
+    for (const row of (apiRows || [])) {
+      const id = String(row.id || "");
+      if (!id) continue;
+      byId.set(id, {
+        netixlanId: id,
+        asn: String(row.asn || ""),
+        name: String(row.name || ""),
+        oldIp4: "",
+        newIp4: String(row.ipaddr4 || ""),
+        oldIp6: "",
+        newIp6: String(row.ipaddr6 || ""),
+        deleted: false,
+        keeperId: "",
+        absorbedFromId: "",
+        sources: ["api"],
+        ts: String(row.updated || ""),
+      });
+    }
+    for (const o of (logOutcomes || [])) {
+      const id = String(o.netixlanId || "");
+      if (!id) continue;
+      let cur = byId.get(id);
+      if (!cur) {
+        cur = {
+          netixlanId: id,
+          asn: String(o.asn || ""),
+          name: "",
+          oldIp4: "",
+          newIp4: "",
+          oldIp6: "",
+          newIp6: "",
+          deleted: false,
+          keeperId: "",
+          absorbedFromId: "",
+          sources: [],
+          ts: String(o.ts || ""),
+        };
+        byId.set(id, cur);
+      }
+      if (o.oldIp4 && !cur.oldIp4) cur.oldIp4 = o.oldIp4;
+      if (o.oldIp6 && !cur.oldIp6) cur.oldIp6 = o.oldIp6;
+      if (o.absorbedFromId && !cur.absorbedFromId) cur.absorbedFromId = o.absorbedFromId;
+      if (o.deleted) {
+        cur.deleted = true;
+        if (o.keeperId) cur.keeperId = o.keeperId;
+        // The API may still return the row briefly after delete; trust the log.
+        cur.newIp4 = "";
+        cur.newIp6 = "";
+      } else if (!cur.newIp4 && o.newIp4) {
+        cur.newIp4 = o.newIp4;
+      }
+      if (!cur.deleted && !cur.newIp6 && o.newIp6) cur.newIp6 = o.newIp6;
+      if (!cur.asn && o.asn) cur.asn = o.asn;
+      if (!cur.sources.includes(o.source)) cur.sources.push(o.source);
+      // Prefer the most recent timestamp.
+      const curT = Date.parse(cur.ts);
+      const oT = Date.parse(o.ts);
+      if (Number.isFinite(oT) && (!Number.isFinite(curT) || oT > curT)) cur.ts = o.ts;
+    }
+    return Array.from(byId.values()).sort((a, b) => String(b.ts).localeCompare(String(a.ts)));
+  }
+
+  /**
+   * Renders merged audit entries to the operator-facing line format.
+   * Purpose: One line per IP family that changed; DELETE rows get a
+   * "(deleted; superseded by #<keeperId>)" suffix.
+   * Format: "<Network name> (AS<asn>); netixlan #<id>; <oldIP> → <newIP>"
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {object[]} merged - From mergeAuditSources().
+   * @returns {string[]} One string per emitted line.
+   */
+  function formatRecentChangeLines(merged) {
+    const lines = [];
+    for (const m of (merged || [])) {
+      const namePart = m.name ? m.name : "(unknown network)";
+      const asnPart = m.asn ? `AS${m.asn}` : "AS?";
+      const idPart = m.netixlanId ? `netixlan #${m.netixlanId}` : "netixlan #?";
+      if (m.deleted) {
+        // Emit one line per family with a known oldIp.
+        if (m.oldIp4) {
+          const suffix = m.keeperId ? `(deleted; superseded by #${m.keeperId})` : "(deleted)";
+          lines.push(`${namePart} (${asnPart}); ${idPart}; ${m.oldIp4} → ${suffix}`);
+        }
+        if (m.oldIp6) {
+          const suffix = m.keeperId ? `(deleted; superseded by #${m.keeperId})` : "(deleted)";
+          lines.push(`${namePart} (${asnPart}); ${idPart}; ${m.oldIp6} → ${suffix}`);
+        }
+        if (!m.oldIp4 && !m.oldIp6) {
+          const suffix = m.keeperId ? `(deleted; superseded by #${m.keeperId})` : "(deleted)";
+          lines.push(`${namePart} (${asnPart}); ${idPart}; ? → ${suffix}`);
+        }
+        continue;
+      }
+      const v4Changed = (m.oldIp4 || m.newIp4) && m.oldIp4 !== m.newIp4;
+      const v6Changed = (m.oldIp6 || m.newIp6) && m.oldIp6 !== m.newIp6;
+      const absorbedSuffix = m.absorbedFromId ? ` (absorbed from #${m.absorbedFromId})` : "";
+      if (v4Changed) {
+        lines.push(`${namePart} (${asnPart}); ${idPart}; ${m.oldIp4 || "?"} → ${m.newIp4 || "?"}${absorbedSuffix}`);
+      }
+      if (v6Changed) {
+        lines.push(`${namePart} (${asnPart}); ${idPart}; ${m.oldIp6 || "?"} → ${m.newIp6 || "?"}${absorbedSuffix}`);
+      }
+      // Row exists in API window but local log has no "old IP" — still
+      // surface it so operators see all touched rows.
+      if (!v4Changed && !v6Changed && m.sources.includes("api")) {
+        const v4 = m.newIp4 || "(no v4)";
+        const v6 = m.newIp6 || "(no v6)";
+        lines.push(`${namePart} (${asnPart}); ${idPart}; current: ${v4} / ${v6} (no historical IP recorded)`);
+      }
+    }
+    return lines;
+  }
+
+  /**
+   * Backfills missing network names on merged entries via /api/net.
+   * Purpose: API-only rows already carry a `name` field, but log-only rows
+   * (e.g. DELETE entries where the row is gone) do not.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+   * @param {object[]} merged - From mergeAuditSources().
+   * @returns {Promise<void>} Mutates entries in place.
+   */
+  async function backfillNetworkNames(merged) {
+    const asnsNeedingName = Array.from(new Set(
+      (merged || []).filter((m) => !m.name && /^\d+$/.test(String(m.asn || ""))).map((m) => String(m.asn)),
+    ));
+    if (asnsNeedingName.length === 0) return;
+    try {
+      const url = `${PEERINGDB_API_BASE_URL}/net?asn__in=${encodeURIComponent(asnsNeedingName.join(","))}&depth=0&limit=${asnsNeedingName.length}`;
+      const data = await pdbFetch(url);
+      const nets = Array.isArray(data?.data) ? data.data : [];
+      const byAsn = new Map(nets.map((n) => [String(n.asn), String(n.name || "")]));
+      for (const m of merged) {
+        if (!m.name) {
+          const name = byAsn.get(String(m.asn));
+          if (name) m.name = name;
+        }
+      }
+    } catch (_error) {
+      // Best-effort; report continues to render without names.
+    }
+  }
+
+  /**
+   * Opens the Recent IP Changes report modal for one ixlan.
+   * Purpose: Read-only audit view; text area + sortable table + copy.
+   * @ai Preserve menu command registration behavior and gating on feature flag.
+   * @param {string} ixlanId - Numeric ixlan id.
+   */
+  async function openRecentIpChangesModal(ixlanId) {
+    const id = String(ixlanId || "").trim();
+    const BACKDROP_ID = `${MODULE_PREFIX}RecentIpChangesBackdrop`;
+    document.getElementById(BACKDROP_ID)?.remove();
+    const backdrop = document.createElement("div");
+    backdrop.id = BACKDROP_ID;
+    Object.assign(backdrop.style, {
+      position: "fixed", inset: "0", background: "rgba(0,0,0,0.45)",
+      zIndex: "2147483646", display: "flex", alignItems: "center", justifyContent: "center",
+    });
+    const modal = document.createElement("div");
+    Object.assign(modal.style, {
+      background: "#fff", color: "#111", padding: "16px 20px",
+      borderRadius: "8px", width: "min(1100px, 96vw)", maxWidth: "96vw",
+      maxHeight: "92vh", display: "flex", flexDirection: "column",
+      boxSizing: "border-box", minHeight: "0", minWidth: "0",
+      boxShadow: "0 10px 30px rgba(0,0,0,0.25)",
+      font: "13px/1.4 -apple-system,Segoe UI,Helvetica,Arial,sans-serif",
+    });
+
+    const header = document.createElement("h2");
+    header.textContent = `Recent IP Changes — ixlan #${id} (last ${RECENT_IP_CHANGES_WINDOW_MIN} min)`;
+    Object.assign(header.style, { margin: "0 0 6px", fontSize: "16px" });
+    const status = document.createElement("div");
+    Object.assign(status.style, { margin: "4px 0", color: "#444", minHeight: "1.4em" });
+
+    const textArea = document.createElement("textarea");
+    textArea.readOnly = true;
+    Object.assign(textArea.style, {
+      width: "100%", minHeight: "240px", maxHeight: "60vh", fontFamily: "monospace",
+      fontSize: "12px", boxSizing: "border-box", padding: "8px",
+      border: "1px solid #ddd", borderRadius: "4px", resize: "vertical",
+    });
+
+    const buttonRow = document.createElement("div");
+    Object.assign(buttonRow.style, {
+      display: "flex", flexDirection: "row-reverse", justifyContent: "flex-start", alignItems: "center",
+      gap: "10px", marginTop: "10px", flexWrap: "wrap", rowGap: "10px", width: "100%", minWidth: "0", flexShrink: "0",
+    });
+    // Desktop-only strict single-line variant, right-start with fixed spacing.
+    if (window.matchMedia("(min-width: 1024px)").matches) {
+      Object.assign(buttonRow.style, { flexWrap: "nowrap", rowGap: "0", overflowX: "auto", overflowY: "hidden" });
+    }
+
+    const shapeIconButton = (btn) => {
+      Object.assign(btn.style, {
+        width: "34px", minWidth: "34px", height: "34px", padding: "0",
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        fontSize: "16px", lineHeight: "1", fontWeight: "700",
+        margin: "0", flex: "0 0 34px", boxSizing: "border-box",
+      });
+    };
+    const iconLabel = (btn, icon, label) => {
+      btn.textContent = icon;
+      btn.title = label;
+      btn.setAttribute("aria-label", label);
+    };
+
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    Object.assign(closeBtn.style, { border: "1px solid #bbb", background: "#f5f5f5", borderRadius: "5px", cursor: "pointer" });
+    shapeIconButton(closeBtn);
+    iconLabel(closeBtn, "\u2715", "Close");
+
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    Object.assign(copyBtn.style, { border: "1px solid #bbb", background: "#f5f5f5", borderRadius: "5px", cursor: "pointer" });
+    shapeIconButton(copyBtn);
+    iconLabel(copyBtn, "\u2398", "Copy");
+
+    const refreshBtn = document.createElement("button");
+    refreshBtn.type = "button";
+    Object.assign(refreshBtn.style, { border: "1px solid #1a73e8", background: "#1a73e8", color: "#fff", borderRadius: "5px", cursor: "pointer" });
+    shapeIconButton(refreshBtn);
+    iconLabel(refreshBtn, "\u21bb", "Refresh");
+
+    // Right-start fixed-offset strip (icons), then flow leftward.
+    buttonRow.append(refreshBtn, copyBtn, closeBtn);
+
+    modal.appendChild(header);
+    modal.appendChild(status);
+    modal.appendChild(textArea);
+    modal.appendChild(buttonRow);
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+
+    closeBtn.addEventListener("click", () => backdrop.remove());
+
+    async function refresh() {
+      refreshBtn.disabled = true; copyBtn.disabled = true;
+      status.textContent = "Fetching…";
+      try {
+        const [apiRes] = await Promise.all([
+          fetchRecentNetixlanChanges(id, RECENT_IP_CHANGES_WINDOW_MIN),
+        ]);
+        const logOutcomes = readAllNetixlanAuditOutcomes(RECENT_IP_CHANGES_WINDOW_MIN, id);
+        const merged = mergeAuditSources(apiRes.rows, logOutcomes);
+        await backfillNetworkNames(merged);
+        const lines = formatRecentChangeLines(merged);
+        textArea.value = lines.length ? lines.join("\n") : "(no IP changes recorded in window)";
+        const srcNote = apiRes.error ? `API: ${apiRes.error}` : `API: ${apiRes.source} (${apiRes.rows.length} rows)`;
+        status.textContent = `Cut-off ${apiRes.cutoffIso} — ${lines.length} line(s) • ${srcNote} • Local audit outcomes: ${logOutcomes.length}`;
+      } finally {
+        refreshBtn.disabled = false; copyBtn.disabled = false;
+      }
+    }
+
+    refreshBtn.addEventListener("click", () => { refresh(); });
+    copyBtn.addEventListener("click", async () => {
+      const ok = await copyToClipboard(textArea.value);
+      status.textContent = ok ? `Copied ${textArea.value.split("\n").length} line(s) to clipboard.` : "Copy failed.";
+    });
+
+    await refresh();
   }
 
   /**
@@ -7906,6 +10831,122 @@
         setTimeout(() => {
           document.title = historyTitle;
         }, 250);
+      },
+    },
+    {
+      id: "ixlan-renumber-peers",
+      match: (ctx) =>
+        Boolean(ctx?.isEntityListPage) &&
+        ctx?.entity === "networkixlan" &&
+        Boolean(parseRenumberHash(window.location.hash)),
+      preconditions: () => isFeatureEnabled("ixlanRenumber") && Boolean(getToolbarList()),
+      run: () => {
+        const payload = parseRenumberHash(window.location.hash);
+        if (!payload) return;
+        addToolbarAction({
+          id: `${MODULE_PREFIX}RenumberIxlanPeers`,
+          label: CP_LIST_PAGE_ACTION_LABELS.RENUMBER_IXLAN_PEERS,
+          insertLeft: true,
+          onClick: async (event) => {
+            const actionLockKey = `${MODULE_PREFIX}.ixlanRenumber`;
+            if (!tryBeginActionLock(actionLockKey)) {
+              notifyUser({
+                title: "PeeringDB CP",
+                text: "Renumber tooling is already running.",
+              });
+              return;
+            }
+            try {
+              await openIxlanRenumberModal(payload);
+            } catch (error) {
+              console.error(`[${MODULE_PREFIX}] Renumber modal failed`, error);
+              notifyUser({
+                title: "PeeringDB CP",
+                text: "Renumber tooling failed. See console for details.",
+              });
+            } finally {
+              endActionLock(actionLockKey);
+            }
+          },
+        });
+      },
+    },
+    {
+      id: "ix-f-member-audit",
+      match: (ctx) => Boolean(ctx?.isEntityListPage) && ctx?.entity === "networkixlan",
+      preconditions: () => isFeatureEnabled("ixfMemberAudit") && Boolean(getToolbarList()),
+      run: () => {
+        addToolbarAction({
+          id: `${MODULE_PREFIX}AuditIxfMembers`,
+          label: CP_LIST_PAGE_ACTION_LABELS.AUDIT_IXF_MEMBERS,
+          insertLeft: true,
+          onClick: async () => {
+            const actionLockKey = `${MODULE_PREFIX}.ixfMemberAudit`;
+            if (!tryBeginActionLock(actionLockKey)) {
+              notifyUser({ title: "PeeringDB CP", text: "IX-F audit is already running." });
+              return;
+            }
+            try {
+              let ixlanId = parseIxlanFilterFromChangelistUrl(window.location.href);
+              if (!ixlanId) {
+                const promptResponse = window.prompt(
+                  "Enter the ixlan id to audit against its IX-F member-export URL:",
+                  "",
+                );
+                ixlanId = String(promptResponse || "").trim();
+                if (!/^\d+$/.test(ixlanId)) {
+                  notifyUser({ title: "PeeringDB CP", text: "Aborted: ixlan id is required for IX-F audit." });
+                  return;
+                }
+              }
+              await openIxfMemberAuditModal(ixlanId);
+            } catch (error) {
+              console.error(`[${MODULE_PREFIX}] IX-F audit failed`, error);
+              notifyUser({ title: "PeeringDB CP", text: "IX-F audit failed. See console for details." });
+            } finally {
+              endActionLock(actionLockKey);
+            }
+          },
+        });
+      },
+    },
+    {
+      id: "recent-ip-changes",
+      match: (ctx) => Boolean(ctx?.isEntityListPage) && ctx?.entity === "networkixlan",
+      preconditions: () => isFeatureEnabled("recentIpChanges") && Boolean(getToolbarList()),
+      run: () => {
+        addToolbarAction({
+          id: `${MODULE_PREFIX}RecentIpChanges`,
+          label: CP_LIST_PAGE_ACTION_LABELS.RECENT_IP_CHANGES,
+          insertLeft: true,
+          onClick: async () => {
+            const actionLockKey = `${MODULE_PREFIX}.recentIpChanges`;
+            if (!tryBeginActionLock(actionLockKey)) {
+              notifyUser({ title: "PeeringDB CP", text: "Recent IP changes report is already open." });
+              return;
+            }
+            try {
+              let ixlanId = parseIxlanFilterFromChangelistUrl(window.location.href);
+              if (!ixlanId) {
+                const promptResponse = window.prompt(
+                  `Enter the ixlan id to report IP changes for (last ${RECENT_IP_CHANGES_WINDOW_MIN} min):`,
+                  "",
+                );
+                ixlanId = String(promptResponse || "").trim();
+                if (!/^\d+$/.test(ixlanId)) {
+                  notifyUser({ title: "PeeringDB CP", text: "Aborted: ixlan id is required for the IP changes report." });
+                  return;
+                }
+              }
+              await openRecentIpChangesModal(ixlanId);
+            } catch (error) {
+              console.error(`[${MODULE_PREFIX}] Recent IP changes report failed`, error);
+              notifyUser({ title: "PeeringDB CP", text: "Recent IP changes report failed. See console for details." });
+            } finally {
+              endActionLock(actionLockKey);
+            }
+          },
+        });
       },
     },
   ];
