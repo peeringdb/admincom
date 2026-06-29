@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.204
+// @version      2.0.207
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
@@ -64,7 +64,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.204";
+  const SCRIPT_VERSION = "2.0.207";
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
   const SHARED_USER_AGENT_STORAGE_KEY = "pdbAdmincom.userAgent";
@@ -8135,40 +8135,36 @@
     const style = document.createElement("style");
     style.id = styleId;
     style.textContent = `
-      .${MODULE_PREFIX}CopyFieldButton,
+      .${MODULE_PREFIX}CopyFieldButton {
+        float: right;
+        margin-left: 6px;
+        border: 1px solid #d7d7d7;
+        border-radius: 3px;
+        background: #f9f9f9;
+        color: #444;
+        font-size: 11px;
+        line-height: 1.4;
+        padding: 0 6px;
+        cursor: pointer;
+      }
+      .${MODULE_PREFIX}CopyFieldButton:hover {
+        background: #efefef;
+      }
       .${MODULE_PREFIX}FieldLinkButton {
         float: right;
         margin-left: 6px;
-        border: 1px solid #cfd6de;
-        border-radius: 999px;
-        background: linear-gradient(180deg, #ffffff 0%, #f3f6fa 100%);
-        color: #2f3b4a;
-        min-width: 26px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 4px;
-        font-weight: 600;
-        letter-spacing: 0.02em;
+        border: 1px solid #d7d7d7;
+        border-radius: 3px;
+        background: #f9f9f9;
+        color: #444;
         font-size: 11px;
-        line-height: 1.6;
-        padding: 0 8px;
+        line-height: 1.4;
+        padding: 0 6px;
         cursor: pointer;
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 1px 1px rgba(10, 24, 40, 0.08);
-        transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
         text-decoration: none;
       }
-      .${MODULE_PREFIX}CopyFieldButton:hover,
       .${MODULE_PREFIX}FieldLinkButton:hover {
-        background: linear-gradient(180deg, #ffffff 0%, #e8eef5 100%);
-        border-color: #b9c6d3;
-        color: #1f2d3d;
-      }
-      .${MODULE_PREFIX}CopyFieldButton:focus-visible,
-      .${MODULE_PREFIX}FieldLinkButton:focus-visible {
-        outline: 2px solid rgba(45, 125, 204, 0.5);
-        outline-offset: 1px;
-        border-color: #6ea9df;
+        background: #efefef;
       }
     `;
     document.head.appendChild(style);
@@ -8476,7 +8472,7 @@
    * @returns {string} BGP.HE URL.
    */
   function buildBgpHePrefixUrl(prefix) {
-    return `https://bgp.he.net/net/${encodeURIComponent(String(prefix || "").trim())}`;
+    return `https://bgp.he.net/net/${encodeURI(String(prefix || "").trim())}`;
   }
 
   /**
@@ -8485,7 +8481,7 @@
    * @returns {string} BGP.tools URL.
    */
   function buildBgpToolsPrefixUrl(prefix) {
-    return `https://bgp.tools/prefix/${encodeURIComponent(String(prefix || "").trim())}`;
+    return `https://bgp.tools/prefix/${encodeURI(String(prefix || "").trim())}`;
   }
 
   /**
@@ -8537,7 +8533,7 @@
       heLink.href = buildBgpHePrefixUrl(prefix);
       heLink.target = "_blank";
       heLink.rel = "noopener noreferrer";
-      heLink.textContent = "HE";
+      heLink.textContent = "BGP.HE";
       heLink.title = `Open in BGP.HE (${prefix})`;
       heLink.setAttribute("aria-label", `Open in BGP.HE for ${prefix}`);
       valueCell.appendChild(heLink);
@@ -8547,9 +8543,9 @@
       toolsLink.href = buildBgpToolsPrefixUrl(prefix);
       toolsLink.target = "_blank";
       toolsLink.rel = "noopener noreferrer";
-      toolsLink.textContent = "Tools";
-      toolsLink.title = `Open in BGP.tools (${prefix})`;
-      toolsLink.setAttribute("aria-label", `Open in BGP.tools for ${prefix}`);
+      toolsLink.textContent = "BGP.TOOLS";
+      toolsLink.title = `Open in BGP.TOOLS (${prefix})`;
+      toolsLink.setAttribute("aria-label", `Open in BGP.TOOLS for ${prefix}`);
       valueCell.appendChild(toolsLink);
     });
   }
