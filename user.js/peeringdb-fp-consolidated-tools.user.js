@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.1.30.20260525
+// @version      1.1.31
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
@@ -32,7 +32,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbFpConsolidated";
-  const SCRIPT_VERSION = "1.1.30.20260525";
+  const SCRIPT_VERSION = "1.1.31";
   // RDAP fallback client is intentionally CP-only; FP does not implement RDAP lookups.
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
@@ -1354,6 +1354,9 @@
     href = "#",
     onClick,
     target = null,
+    iconType = "",
+    iconEmoji = "",
+    iconFaClass = "",
     parentSelector = "div.right.button-bar > div:first-child",
   }) {
     if (!actionId) return null;
@@ -1374,7 +1377,11 @@
     btn.style.maxWidth = "none";
     btn.style.whiteSpace = "nowrap";
     btn.style.flex = "0 0 auto";
-    btn.innerText = label;
+    setActionLabelWithIcon(btn, label, {
+      actionType: iconType || detectActionTypeFromLink({ href, target, defaultTarget: "_blank" }),
+      iconEmoji,
+      iconFaClass,
+    });
     btn.href = href;
     btn.setAttribute("data-pdb-fp-action", actionId);
 
@@ -1485,6 +1492,9 @@
     actionId,
     label,
     items,
+    iconType = "",
+    iconEmoji = "",
+    iconFaClass = "",
     parentSelector = "div.right.button-bar > div:first-child",
   }) {
     if (!actionId || !Array.isArray(items) || items.length === 0) return null;
@@ -1507,7 +1517,11 @@
     const toggle = document.createElement("a");
     toggle.className = isUiNextPage() ? "btn btn-default" : "btn btn-primary";
     toggle.href = "#";
-    toggle.textContent = label;
+    setActionLabelWithIcon(toggle, label, {
+      actionType: iconType || "submenu",
+      iconEmoji,
+      iconFaClass,
+    });
     toggle.style.cursor = "pointer";
     toggle.style.display = "inline-block";
     toggle.style.width = "auto";
@@ -1544,7 +1558,13 @@
         link.target = itemTarget;
       }
       link.rel = "noopener noreferrer";
-      link.textContent = String(item?.label || "Action");
+      setActionLabelWithIcon(link, String(item?.label || "Action"), {
+        actionType:
+          String(item?.iconType || "").trim() ||
+          detectActionTypeFromLink({ href: itemUrl, target: itemTarget, defaultTarget: "_blank" }),
+        iconEmoji: String(item?.iconEmoji || "").trim(),
+        iconFaClass: String(item?.iconFaClass || "").trim(),
+      });
       if (item?.title) {
         link.title = String(item.title);
         link.setAttribute("aria-label", String(item.title));
@@ -1608,6 +1628,82 @@
     });
 
     return wrapper;
+  }
+
+  const ACTION_ICON_EMOJI_BY_TYPE = Object.freeze({
+    submenu: "☰",
+    "new-tab": "↗",
+    "same-tab": "→",
+    "cp-new-tab": "🛠↗",
+    "cp-same-tab": "🛠→",
+    "fp-new-tab": "🌐↗",
+    "fp-same-tab": "🌐→",
+  });
+
+  /**
+   * Detects whether Font Awesome is already available on the page.
+   * Purpose: Optional icon-class support without introducing new dependencies.
+   * Necessity: Keeps icon rendering dependency-free by default while allowing existing FA pages to use classes.
+   */
+  function isFontAwesomeLoaded() {
+    return Boolean(
+      qs('link[href*="font-awesome" i], link[href*="fontawesome" i], style[id*="font-awesome" i]')
+    );
+  }
+
+  /**
+   * Parses a link destination into a compact icon action type.
+   * Purpose: Infer icon intent from existing href/target behavior with minimal call-site changes.
+   * Necessity: YAGNI icon support should reuse current link semantics instead of adding routing metadata everywhere.
+   */
+  function detectActionTypeFromLink({ href = "", target = "", defaultTarget = "_blank" } = {}) {
+    const normalizedHref = String(href || "").trim();
+    if (!normalizedHref || normalizedHref === "#") return "";
+
+    const effectiveTarget = String(target || defaultTarget || "_blank").trim();
+    const isSameTab = effectiveTarget === "_self";
+
+    let parsed = null;
+    try {
+      parsed = new URL(normalizedHref, window.location.origin);
+    } catch (_error) {
+      return isSameTab ? "same-tab" : "new-tab";
+    }
+
+    const hostname = String(parsed.hostname || "").toLowerCase();
+    const isPeeringDbHost = hostname === "peeringdb.com" || hostname === "www.peeringdb.com" || hostname === "beta.peeringdb.com";
+    if (!isPeeringDbHost) {
+      return isSameTab ? "same-tab" : "new-tab";
+    }
+
+    const isCpPath = String(parsed.pathname || "").startsWith("/cp/");
+    if (isCpPath) {
+      return isSameTab ? "cp-same-tab" : "cp-new-tab";
+    }
+
+    return isSameTab ? "fp-same-tab" : "fp-new-tab";
+  }
+
+  /**
+   * Sets button/link text and appends a right-side icon suffix.
+   * Purpose: Provide one tiny label-rendering path for emoji and optional Font Awesome class suffixes.
+   * Necessity: Keeps icon behavior consistent across top-right actions and overflow menu items.
+   */
+  function setActionLabelWithIcon(element, label, { actionType = "", iconEmoji = "", iconFaClass = "" } = {}) {
+    if (!element) return;
+
+    const baseLabel = String(label || "").trim();
+    const suffixEmoji = String(iconEmoji || "").trim() || ACTION_ICON_EMOJI_BY_TYPE[actionType] || "";
+    element.textContent = suffixEmoji ? `${baseLabel} ${suffixEmoji}` : baseLabel;
+
+    const faClass = String(iconFaClass || "").trim();
+    if (!faClass || !isFontAwesomeLoaded()) return;
+
+    const iconNode = document.createElement("i");
+    iconNode.className = faClass;
+    iconNode.style.marginLeft = "4px";
+    iconNode.setAttribute("aria-hidden", "true");
+    element.appendChild(iconNode);
   }
 
   /**
