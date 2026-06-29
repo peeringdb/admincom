@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.202
+// @version      2.0.204
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
@@ -64,7 +64,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.202";
+  const SCRIPT_VERSION = "2.0.204";
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
   const SHARED_USER_AGENT_STORAGE_KEY = "pdbAdmincom.userAgent";
@@ -8135,20 +8135,40 @@
     const style = document.createElement("style");
     style.id = styleId;
     style.textContent = `
-      .${MODULE_PREFIX}CopyFieldButton {
+      .${MODULE_PREFIX}CopyFieldButton,
+      .${MODULE_PREFIX}FieldLinkButton {
         float: right;
         margin-left: 6px;
-        border: 1px solid #d7d7d7;
-        border-radius: 3px;
-        background: #f9f9f9;
-        color: #444;
+        border: 1px solid #cfd6de;
+        border-radius: 999px;
+        background: linear-gradient(180deg, #ffffff 0%, #f3f6fa 100%);
+        color: #2f3b4a;
+        min-width: 26px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
         font-size: 11px;
-        line-height: 1.4;
-        padding: 0 6px;
+        line-height: 1.6;
+        padding: 0 8px;
         cursor: pointer;
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 1px 1px rgba(10, 24, 40, 0.08);
+        transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+        text-decoration: none;
       }
-      .${MODULE_PREFIX}CopyFieldButton:hover {
-        background: #efefef;
+      .${MODULE_PREFIX}CopyFieldButton:hover,
+      .${MODULE_PREFIX}FieldLinkButton:hover {
+        background: linear-gradient(180deg, #ffffff 0%, #e8eef5 100%);
+        border-color: #b9c6d3;
+        color: #1f2d3d;
+      }
+      .${MODULE_PREFIX}CopyFieldButton:focus-visible,
+      .${MODULE_PREFIX}FieldLinkButton:focus-visible {
+        outline: 2px solid rgba(45, 125, 204, 0.5);
+        outline-offset: 1px;
+        border-color: #6ea9df;
       }
     `;
     document.head.appendChild(style);
@@ -8401,7 +8421,71 @@
     const clone = container.cloneNode(true);
     qsa(".grp-help", clone).forEach((help) => help.remove());
     qsa(`button.${MODULE_PREFIX}CopyFieldButton`, clone).forEach((button) => button.remove());
+    qsa(`a.${MODULE_PREFIX}FieldLinkButton`, clone).forEach((link) => link.remove());
     return normalizeRenderedCopyText(clone.textContent || "");
+  }
+
+  /**
+   * Extracts the first valid CIDR prefix from rendered field text.
+   * Purpose: Resolve IX prefix values into deep-link compatible inputs.
+   * Necessity: Prefix rows may contain plain text and multiple values.
+   * @param {string} text - Rendered value text from a CP field.
+   * @returns {string} First valid CIDR string, or empty string when absent.
+   */
+  function extractFirstCidrPrefix(text) {
+    const source = String(text || "");
+    const candidates = source.match(/(?:\b(?:\d{1,3}\.){3}\d{1,3}\/\d{1,2}\b)|(?:\b[0-9a-fA-F:]+\/\d{1,3}\b)/g) || [];
+
+    for (const candidate of candidates) {
+      const cidr = String(candidate || "").trim();
+      if (!cidr) continue;
+
+      if (cidr.includes(".")) {
+        const [ip, prefixText] = cidr.split("/");
+        const prefix = Number(prefixText);
+        const octets = String(ip || "").split(".");
+        const isValidIpv4 =
+          octets.length === 4 &&
+          octets.every((octet) => /^\d+$/.test(octet) && Number(octet) >= 0 && Number(octet) <= 255) &&
+          Number.isInteger(prefix) &&
+          prefix >= 0 &&
+          prefix <= 32;
+        if (isValidIpv4) return cidr;
+        continue;
+      }
+
+      if (cidr.includes(":")) {
+        const [ip, prefixText] = cidr.split("/");
+        const prefix = Number(prefixText);
+        const isValidIpv6 =
+          Boolean(ip) &&
+          String(ip).includes(":") &&
+          Number.isInteger(prefix) &&
+          prefix >= 0 &&
+          prefix <= 128;
+        if (isValidIpv6) return cidr;
+      }
+    }
+
+    return "";
+  }
+
+  /**
+   * Builds a BGP.HE prefix deep-link URL.
+   * @param {string} prefix - Prefix CIDR.
+   * @returns {string} BGP.HE URL.
+   */
+  function buildBgpHePrefixUrl(prefix) {
+    return `https://bgp.he.net/net/${encodeURIComponent(String(prefix || "").trim())}`;
+  }
+
+  /**
+   * Builds a BGP.tools prefix deep-link URL.
+   * @param {string} prefix - Prefix CIDR.
+   * @returns {string} BGP.tools URL.
+   */
+  function buildBgpToolsPrefixUrl(prefix) {
+    return `https://bgp.tools/prefix/${encodeURIComponent(String(prefix || "").trim())}`;
   }
 
   /**
@@ -8443,6 +8527,30 @@
       });
 
       valueCell.appendChild(button);
+
+      const labelText = getFieldLabelText(valueCell);
+      const prefix = labelText === "prefixes" ? extractFirstCidrPrefix(initialValue) : "";
+      if (!prefix) return;
+
+      const heLink = document.createElement("a");
+      heLink.className = `${MODULE_PREFIX}FieldLinkButton`;
+      heLink.href = buildBgpHePrefixUrl(prefix);
+      heLink.target = "_blank";
+      heLink.rel = "noopener noreferrer";
+      heLink.textContent = "HE";
+      heLink.title = `Open in BGP.HE (${prefix})`;
+      heLink.setAttribute("aria-label", `Open in BGP.HE for ${prefix}`);
+      valueCell.appendChild(heLink);
+
+      const toolsLink = document.createElement("a");
+      toolsLink.className = `${MODULE_PREFIX}FieldLinkButton`;
+      toolsLink.href = buildBgpToolsPrefixUrl(prefix);
+      toolsLink.target = "_blank";
+      toolsLink.rel = "noopener noreferrer";
+      toolsLink.textContent = "Tools";
+      toolsLink.title = `Open in BGP.tools (${prefix})`;
+      toolsLink.setAttribute("aria-label", `Open in BGP.tools for ${prefix}`);
+      valueCell.appendChild(toolsLink);
     });
   }
 
@@ -9560,6 +9668,7 @@
           id: `${MODULE_PREFIX}AnalyzeNetworkNames`,
           label: CP_LIST_PAGE_ACTION_LABELS.ANALYZE_NETWORK_NAMES,
           insertLeft: true,
+          iconType: "submenu",
           onClick: async (event) => {
             const actionLockKey = `${MODULE_PREFIX}.analyzeNetworkNames`;
             if (!tryBeginActionLock(actionLockKey)) {
@@ -9674,6 +9783,7 @@
           id: `${MODULE_PREFIX}CopyOverviewChangeLinks`,
           label: CP_LIST_PAGE_ACTION_LABELS.COPY_CHANGE_LINKS,
           insertLeft: true,
+          iconType: "submenu",
           onClick: async (event) => {
             const links = getCurrentOverviewChangeLinks();
             if (links.length === 0) {
@@ -9769,6 +9879,7 @@
                 href: `/cp/peeringdb_server/organization/${orgId}/change/`,
                 target: "_new",
                 insertLeft: true,
+                iconType: "cp-new-tab",
               });
             }
 
@@ -9779,6 +9890,7 @@
                 href: `/cp/peeringdb_server/network/${networkId}/change/`,
                 target: "_new",
                 insertLeft: true,
+                iconType: "cp-new-tab",
               });
             }
 
@@ -9789,6 +9901,7 @@
                 href: `/cp/peeringdb_server/ixlanprefix/?q=${encodeURIComponent(ixId)}`,
                 target: "_new",
                 insertLeft: true,
+                iconType: "cp-new-tab",
               });
             }
 
@@ -9928,6 +10041,7 @@
           id: `${MODULE_PREFIX}MapsDropdown`,
           label: "Maps",
           items: mapsItems,
+          iconType: "submenu",
         });
       },
     },
@@ -10036,6 +10150,7 @@
             label: getEntityFrontendLabel("organization"),
             href: `/org/${orgId}`,
             target: "_new",
+            iconType: "fp-new-tab",
           });
 
           addToolbarAction({
@@ -10043,6 +10158,7 @@
             label: getEntityCpLabel("organization"),
             href: `/cp/peeringdb_server/organization/${orgId}/change/`,
             target: "_new",
+            iconType: "cp-new-tab",
           });
         }
 
@@ -10058,6 +10174,7 @@
               label: "IXLAN Prefix (CP)",
               href: `/cp/peeringdb_server/ixlanprefix/?q=${encodeURIComponent(ixSearchTerm)}`,
               target: "_new",
+              iconType: "cp-new-tab",
             });
           }
         }
@@ -10180,6 +10297,7 @@
         addSecondaryActionButton({
           id: `${MODULE_PREFIX}UpdateEntityName`,
           label: "Update Name",
+          iconType: "submenu",
           onClick: async (event) => {
             if (isWriteActionBlockedForHardExcludedEntity(ctx)) {
               notifyWriteActionBlockedForHardExcludedEntity("Update Name", ctx);
