@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.201.20260526
+// @version      2.0.202
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
@@ -64,7 +64,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.201.20260526";
+  const SCRIPT_VERSION = "2.0.202";
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
   const SHARED_USER_AGENT_STORAGE_KEY = "pdbAdmincom.userAgent";
@@ -5871,6 +5871,92 @@
     row.style.marginTop = `${computedOffset}px`;
   }
 
+  const ACTION_ICON_EMOJI_BY_TYPE = Object.freeze({
+    submenu: "☰",
+    "new-tab": "↗",
+    "same-tab": "→",
+    "cp-new-tab": "🛠↗",
+    "cp-same-tab": "🛠→",
+    "fp-new-tab": "🌐↗",
+    "fp-same-tab": "🌐→",
+  });
+
+  /**
+   * Detects whether Font Awesome is already available on the page.
+   * Purpose: Optional icon-class support without adding dependencies.
+   * Necessity: Keep icon rendering emoji-first and dependency-free by default.
+   * @returns {boolean} True when a likely Font Awesome stylesheet is present.
+   */
+  function isFontAwesomeLoaded() {
+    return Boolean(
+      qs('link[href*="font-awesome" i], link[href*="fontawesome" i], style[id*="font-awesome" i]')
+    );
+  }
+
+  /**
+   * Parses a link destination into a compact icon action type.
+   * Purpose: Infer icon intent from current href/target behavior with minimal call-site edits.
+   * Necessity: Preserve YAGNI by reusing existing routing semantics.
+   * @param {{ href?: string, target?: string, defaultTarget?: string }} args - Link metadata.
+   * @returns {string} Resolved action type key, or empty string when not inferable.
+   */
+  function detectActionTypeFromLink({ href = "", target = "", defaultTarget = "_blank" } = {}) {
+    const normalizedHref = String(href || "").trim();
+    if (!normalizedHref || normalizedHref === "#") return "";
+
+    const effectiveTarget = String(target || defaultTarget || "_blank").trim();
+    const isSameTab = effectiveTarget === "_self";
+
+    let parsed = null;
+    try {
+      parsed = new URL(normalizedHref, window.location.origin);
+    } catch (_error) {
+      return isSameTab ? "same-tab" : "new-tab";
+    }
+
+    const hostname = String(parsed.hostname || "").toLowerCase();
+    const isPeeringDbHost =
+      hostname === "peeringdb.com" ||
+      hostname === "www.peeringdb.com" ||
+      hostname === "beta.peeringdb.com";
+
+    if (!isPeeringDbHost) {
+      return isSameTab ? "same-tab" : "new-tab";
+    }
+
+    const isCpPath = String(parsed.pathname || "").startsWith("/cp/");
+    if (isCpPath) {
+      return isSameTab ? "cp-same-tab" : "cp-new-tab";
+    }
+
+    return isSameTab ? "fp-same-tab" : "fp-new-tab";
+  }
+
+  /**
+   * Sets button/link text and appends a right-side icon suffix.
+   * Purpose: Centralize icon decoration for toolbar and dropdown actions.
+   * Necessity: Keep icon behavior consistent across CP action constructors.
+   * @param {HTMLElement} element - Target clickable element.
+   * @param {string} label - Base label text.
+   * @param {{ actionType?: string, iconEmoji?: string, iconFaClass?: string }} [opts] - Icon options.
+   */
+  function setActionLabelWithIcon(element, label, { actionType = "", iconEmoji = "", iconFaClass = "" } = {}) {
+    if (!element) return;
+
+    const baseLabel = String(label || "").trim();
+    const suffixEmoji = String(iconEmoji || "").trim() || ACTION_ICON_EMOJI_BY_TYPE[actionType] || "";
+    element.textContent = suffixEmoji ? `${baseLabel} ${suffixEmoji}` : baseLabel;
+
+    const faClass = String(iconFaClass || "").trim();
+    if (!faClass || !isFontAwesomeLoaded()) return;
+
+    const iconNode = document.createElement("i");
+    iconNode.className = faClass;
+    iconNode.style.marginLeft = "4px";
+    iconNode.setAttribute("aria-hidden", "true");
+    element.appendChild(iconNode);
+  }
+
   /**
    * Creates and inserts a toolbar action button (link) into the primary toolbar.
    * Purpose: Standardized way to add custom buttons (Google Maps, Frontend links, etc.).
@@ -5881,7 +5967,17 @@
    *           target?: string|null, insertLeft?: boolean }} opts
    * @returns {HTMLAnchorElement|null} The created anchor element, or null on failure.
    */
-  function addToolbarAction({ id, label, href = "#", onClick, target = null, insertLeft = false }) {
+  function addToolbarAction({
+    id,
+    label,
+    href = "#",
+    onClick,
+    target = null,
+    insertLeft = false,
+    iconType = "",
+    iconEmoji = "",
+    iconFaClass = "",
+  }) {
     if (!id) return null;
 
     if (qs(`#${id}`)) {
@@ -5898,7 +5994,11 @@
     const a = document.createElement("a");
     a.id = id;
     a.href = href;
-    a.textContent = label;
+    setActionLabelWithIcon(a, label, {
+      actionType: iconType || detectActionTypeFromLink({ href, target, defaultTarget: "_blank" }),
+      iconEmoji,
+      iconFaClass,
+    });
     a.style.cursor = "pointer";
 
     const normalizedTarget = String(target || "").trim();
@@ -5963,7 +6063,15 @@
    *           resolveItemTarget?: Function }} opts
    * @returns {{ li: HTMLLIElement, toggle: HTMLAnchorElement }|null}
    */
-  function createDropdownActionListItem({ id, label, items, resolveItemTarget = null }) {
+  function createDropdownActionListItem({
+    id,
+    label,
+    items,
+    resolveItemTarget = null,
+    iconType = "",
+    iconEmoji = "",
+    iconFaClass = "",
+  }) {
     if (!id || !Array.isArray(items) || items.length === 0) return null;
     ensureDropdownGlobalCloseListener();
 
@@ -5974,7 +6082,11 @@
     const toggle = document.createElement("a");
     toggle.id = id;
     toggle.href = "#";
-    toggle.textContent = label;
+    setActionLabelWithIcon(toggle, label, {
+      actionType: iconType || "submenu",
+      iconEmoji,
+      iconFaClass,
+    });
     toggle.setAttribute("aria-expanded", "false");
     toggle.setAttribute("aria-haspopup", "true");
 
@@ -5996,7 +6108,13 @@
     items.forEach((item, index) => {
       const link = document.createElement("a");
       link.href = item.href;
-      link.textContent = item.label;
+      setActionLabelWithIcon(link, String(item?.label || "Action"), {
+        actionType:
+          String(item?.iconType || "").trim() ||
+          detectActionTypeFromLink({ href: item?.href, target: item?.target, defaultTarget: "_blank" }),
+        iconEmoji: String(item?.iconEmoji || "").trim(),
+        iconFaClass: String(item?.iconFaClass || "").trim(),
+      });
 
       const explicitTarget = String(item?.target || "").trim();
       const computedTarget =
@@ -6055,7 +6173,15 @@
    *           insertLeft?: boolean }} opts
    * @returns {HTMLAnchorElement|null} The dropdown toggle anchor element, or null on failure.
    */
-  function addToolbarDropdownAction({ id, label, items, insertLeft = false }) {
+  function addToolbarDropdownAction({
+    id,
+    label,
+    items,
+    insertLeft = false,
+    iconType = "",
+    iconEmoji = "",
+    iconFaClass = "",
+  }) {
     if (!id || !Array.isArray(items) || items.length === 0) return null;
 
     const existing = qs(`#${id}`);
@@ -6070,6 +6196,9 @@
       id,
       label,
       items,
+      iconType,
+      iconEmoji,
+      iconFaClass,
       resolveItemTarget: (item, index) => {
         const explicitTarget = String(item?.target || "").trim();
         if (explicitTarget && explicitTarget !== "_new" && explicitTarget !== "_blank") {
@@ -6166,7 +6295,16 @@
    * @param {{ id: string, label: string, href?: string, title?: string, onClick: Function }} opts
    * @returns {HTMLAnchorElement|null} The created anchor element, or null on failure.
    */
-  function addSecondaryActionButton({ id, label, href = "#", title = "", onClick }) {
+  function addSecondaryActionButton({
+    id,
+    label,
+    href = "#",
+    title = "",
+    onClick,
+    iconType = "",
+    iconEmoji = "",
+    iconFaClass = "",
+  }) {
     const row = getOrCreateSecondaryActionRow();
     if (!row || !id) return null;
 
@@ -6187,7 +6325,11 @@
     const button = document.createElement("a");
     button.id = id;
     button.href = href || "#";
-    button.textContent = label;
+    setActionLabelWithIcon(button, label, {
+      actionType: iconType || detectActionTypeFromLink({ href, target: "_blank", defaultTarget: "_blank" }),
+      iconEmoji,
+      iconFaClass,
+    });
     button.style.cursor = "pointer";
     if (title) {
       button.title = title;
@@ -6214,14 +6356,21 @@
    * @param {{ id: string, label: string, items: Array<{label: string, href: string}> }} opts
    * @returns {HTMLAnchorElement|null} The dropdown toggle anchor element, or null on failure.
    */
-  function addSecondaryDropdownAction({ id, label, items }) {
+  function addSecondaryDropdownAction({ id, label, items, iconType = "", iconEmoji = "", iconFaClass = "" }) {
     const row = getOrCreateSecondaryActionRow();
     if (!row || !id || !Array.isArray(items) || items.length === 0) return null;
 
     const existing = qs(`#${id}`);
     if (existing) return existing;
 
-    const dropdown = createDropdownActionListItem({ id, label, items });
+    const dropdown = createDropdownActionListItem({
+      id,
+      label,
+      items,
+      iconType,
+      iconEmoji,
+      iconFaClass,
+    });
     if (!dropdown) return null;
 
     const { li, toggle } = dropdown;
