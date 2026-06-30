@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.207
+// @version      2.0.208
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
@@ -64,7 +64,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.207";
+  const SCRIPT_VERSION = "2.0.208";
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
   const SHARED_USER_AGENT_STORAGE_KEY = "pdbAdmincom.userAgent";
@@ -318,8 +318,6 @@
    * Items not matched by any entry are left in their original relative order.
    */
   const TOOLBAR_PRIMARY_ORDER = [
-    `li[data-pdb-cp-action="${MODULE_PREFIX}ObjTypeWebsite"]`,
-    `li[data-pdb-cp-action="${MODULE_PREFIX}ObjOrgWebsite"]`,
     `li[data-pdb-cp-action="${MODULE_PREFIX}NetworkIxlanNetCp"]`,
     `li[data-pdb-cp-action="${MODULE_PREFIX}NetworkIxlanIxCp"]`,
     `li[data-pdb-cp-action="${MODULE_PREFIX}NetworkIxlanOrgCp"]`,
@@ -337,6 +335,8 @@
    * Items not matched by any entry are left in their original relative order.
    */
   const TOOLBAR_SECONDARY_ORDER = [
+    `li[data-pdb-cp-secondary-action="${MODULE_PREFIX}ObjTypeWebsite"]`,
+    `li[data-pdb-cp-secondary-action="${MODULE_PREFIX}ObjOrgWebsite"]`,
     `li[data-pdb-cp-secondary-action="${MODULE_PREFIX}UpdateEntityName"]`,
     `li[data-pdb-cp-secondary-action="${MODULE_PREFIX}FacilityAdvancedSearchLink"]`,
     `li[data-pdb-cp-secondary-action="${MODULE_PREFIX}MapsDropdown"]`,
@@ -10088,7 +10088,7 @@
     {
       id: "entity-website-header-links",
       match: (ctx) => ctx.isEntityChangePage,
-      preconditions: () => Boolean(getToolbarList()),
+      preconditions: () => Boolean(qs("#grp-content-title")),
       run: (ctx) => {
         const grainyIdentity = getGrainyDerivedLinkIdentity(ctx);
 
@@ -10096,23 +10096,31 @@
           getInputValue("#id_website") || getReadonlyFieldLinkHrefByLabel("Website") || "",
         ).trim();
         if (/^https?:\/\//i.test(objTypeWebsiteUrl)) {
-          addToolbarAction({
+          const objTypeTarget = `pdb_${grainyIdentity}_objtype_website`;
+          addSecondaryActionButton({
             id: `${MODULE_PREFIX}ObjTypeWebsite`,
             label: getEntityWebsiteLabel(ctx.entity),
             href: objTypeWebsiteUrl,
-            target: `pdb_${grainyIdentity}_objtype_website`,
-            insertLeft: true,
+            title: objTypeWebsiteUrl,
+            onClick: () => {
+              const resolvedUrl = new URL(objTypeWebsiteUrl, window.location.origin).toString();
+              window.open(resolvedUrl, objTypeTarget, "noopener");
+            },
           });
         }
 
         const objOrgWebsiteUrl = String(getReadonlyFieldLinkHrefByLabel("Org website") || "").trim();
         if (/^https?:\/\//i.test(objOrgWebsiteUrl)) {
-          addToolbarAction({
+          const objOrgTarget = `pdb_${grainyIdentity}_objorg_website`;
+          addSecondaryActionButton({
             id: `${MODULE_PREFIX}ObjOrgWebsite`,
             label: "Org Website",
             href: objOrgWebsiteUrl,
-            target: `pdb_${grainyIdentity}_objorg_website`,
-            insertLeft: true,
+            title: objOrgWebsiteUrl,
+            onClick: () => {
+              const resolvedUrl = new URL(objOrgWebsiteUrl, window.location.origin).toString();
+              window.open(resolvedUrl, objOrgTarget, "noopener");
+            },
           });
         }
       },
