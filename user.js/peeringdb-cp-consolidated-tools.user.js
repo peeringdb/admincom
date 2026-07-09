@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.208
+// @version      2.0.209
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
@@ -64,7 +64,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.208";
+  const SCRIPT_VERSION = "2.0.209";
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
   const SHARED_USER_AGENT_STORAGE_KEY = "pdbAdmincom.userAgent";
@@ -1418,7 +1418,8 @@
    * @ai Preserve execution ordering, locks, and route/module boundaries.
    * @returns {{ host: string, path: string[], pathName: string, isCp: boolean,
    *             entity: string, entityId: string, pageKind: string,
-   *             isEntityChangePage: boolean, isEntityListPage: boolean }}
+   *             isEntityChangePage: boolean, isEntityListPage: boolean,
+   *             isEntityHistoryPage: boolean }}
    */
   function getRouteContext() {
     const path = window.location.pathname.replace(/(^\/|\/$)/g, "").split("/");
@@ -1434,6 +1435,8 @@
         path[0] === "cp" && path[1] === "peeringdb_server" && path[4] === "change",
       isEntityListPage:
         path[0] === "cp" && path[1] === "peeringdb_server" && Boolean(path[2]) && !path[3],
+      isEntityHistoryPage:
+        path[0] === "cp" && path[1] === "peeringdb_server" && path[4] === "history",
     };
   }
 
@@ -9650,6 +9653,115 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Legacy (US/UK 12-hour) datetime formatting helpers
+  // Django's default localized DATETIME_FORMAT renders e.g. "Sept. 26, 2025,
+  // 10:42 p.m." (AP-style month abbreviations + "a.m."/"p.m."). These helpers
+  // detect that exact shape and convert it to an unambiguous 24-hour
+  // "YYYY-MM-DD HH:MM" string.
+  // ---------------------------------------------------------------------------
+  const LEGACY_MONTH_NAME_TO_NUMBER = {
+    jan: 1, january: 1,
+    feb: 2, february: 2,
+    mar: 3, march: 3,
+    apr: 4, april: 4,
+    may: 5,
+    jun: 6, june: 6,
+    jul: 7, july: 7,
+    aug: 8, august: 8,
+    sep: 9, sept: 9, september: 9,
+    oct: 10, october: 10,
+    nov: 11, november: 11,
+    dec: 12, december: 12,
+  };
+
+  const LEGACY_DATETIME_RE =
+    /^(?<month>[A-Za-z]+)\.?\s+(?<day>\d{1,2}),\s+(?<year>\d{4}),\s+(?:(?<hour>\d{1,2})(?::(?<minute>\d{2}))?\s*(?<ampm>[AaPp])\.?\s*[Mm]\.?|(?<special>noon|midnight))$/;
+
+  /**
+   * Resolves a Django AP-style month token (e.g. "Sept.", "March") to its 1-12 number.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   * @param {string} rawMonth - Month token as it appears in the rendered date.
+   * @returns {number} Month number 1-12, or 0 when unrecognized.
+   */
+  function lookupLegacyMonthNumber(rawMonth) {
+    const key = String(rawMonth || "").trim().toLowerCase().replace(/\.$/, "");
+    return LEGACY_MONTH_NAME_TO_NUMBER[key] || 0;
+  }
+
+  /**
+   * Converts a Django-localized 12-hour datetime string to 24-hour "YYYY-MM-DD HH:MM".
+   * Purpose: Let operators used to military/ISO time read history timestamps at a glance.
+   * Necessity: Django's default DATETIME_FORMAT is US/UK 12-hour with a.m./p.m., which is
+   * ambiguous to scan quickly; converting removes that friction without touching the
+   * underlying data.
+   * @ai Preserve parsing contract: return null (never throw) on any unrecognized shape.
+   * @param {string} rawText - Trimmed cell text, e.g. "Sept. 26, 2025, 10:42 p.m.".
+   * @returns {string|null} 24-hour "YYYY-MM-DD HH:MM" string, or null when not a match.
+   */
+  function convertLegacyDatetimeTo24Hour(rawText) {
+    const text = String(rawText || "").trim().replace(/\s+/g, " ");
+    const match = LEGACY_DATETIME_RE.exec(text);
+    if (!match?.groups) return null;
+
+    const groups = match.groups;
+    const month = lookupLegacyMonthNumber(groups.month);
+    if (!month) return null;
+
+    const day = parseInt(groups.day, 10);
+    const year = parseInt(groups.year, 10);
+
+    let hour24;
+    let minute;
+    if (groups.special) {
+      hour24 = groups.special.toLowerCase() === "noon" ? 12 : 0;
+      minute = 0;
+    } else {
+      const hour = parseInt(groups.hour, 10);
+      if (hour < 1 || hour > 12) return null;
+      minute = groups.minute ? parseInt(groups.minute, 10) : 0;
+      const isPm = groups.ampm.toLowerCase() === "p";
+      hour24 = hour % 12;
+      if (isPm) hour24 += 12;
+    }
+
+    const pad2 = (value) => String(value).padStart(2, "0");
+    return `${year}-${pad2(month)}-${pad2(day)} ${pad2(hour24)}:${pad2(minute)}`;
+  }
+
+  /**
+   * Rewrites the "Date" column of the Django generic history table to 24-hour timestamps.
+   * Purpose: Apply convertLegacyDatetimeTo24Hour() to every row of #change-history.
+   * Necessity: Column position isn't guaranteed, so the "Date" header is resolved by text
+   * match rather than a hardcoded index; conversion is idempotent via a dataset marker so
+   * repeated module dispatch (e.g. after a mutation-observed DOM change) is a no-op.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
+   */
+  function convertHistoryTableTimestampsTo24Hour() {
+    const table = qs("table#change-history");
+    if (!table) return;
+
+    const headerCells = qsa("thead th", table);
+    const dateColumnIndex = headerCells.findIndex((th) => {
+      const label = (th.innerText || th.textContent || "").trim().toLowerCase();
+      return label === "date";
+    });
+    if (dateColumnIndex < 0) return;
+
+    qsa("tbody tr", table).forEach((row) => {
+      const cell = row.children[dateColumnIndex];
+      if (!cell || cell.dataset.pdbTimeConverted === "1") return;
+
+      const originalText = (cell.textContent || "").trim();
+      const converted = convertLegacyDatetimeTo24Hour(originalText);
+      if (!converted) return;
+
+      cell.textContent = converted;
+      cell.title = `Original: ${originalText}`;
+      cell.dataset.pdbTimeConverted = "1";
+    });
+  }
+
+  // ---------------------------------------------------------------------------
   // Module registry
   // Each entry declares: id (string), match (ctx predicate), optional preconditions
   // (ctx predicate), and run (ctx handler that may return a dispose function).
@@ -11105,6 +11217,14 @@
       },
     },
     {
+      id: "history-24h-timestamps",
+      match: (ctx) => ctx.isCp && ctx.pageKind === "history",
+      preconditions: () => Boolean(qs("table#change-history")),
+      run: () => {
+        convertHistoryTableTimestampsTo24Hour();
+      },
+    },
+    {
       id: "ixlan-renumber-peers",
       match: (ctx) =>
         Boolean(ctx?.isEntityListPage) &&
@@ -11529,7 +11649,7 @@
   function runConsolidatedInit() {
     const ctx = getRouteContext();
 
-    if (!ctx.isCp || (!ctx.isEntityChangePage && !ctx.isEntityListPage)) {
+    if (!ctx.isCp || (!ctx.isEntityChangePage && !ctx.isEntityListPage && !ctx.isEntityHistoryPage)) {
       return;
     }
 
