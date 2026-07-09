@@ -1,5 +1,35 @@
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.code-workspace
+
+# Local reference dumps and scratch captures (e.g. full-page HTML pulls)
+*.html
+*.htm
+
+# Env / secrets
+.env
+.env.*
+
+# Node (in case build/lint tooling is ever added)
+node_modules/
+npm-debug.log*
+
+# Logs and temp files
+*.log
+*.tmp
+*.bak
+*~
+
+# Local script state
 .state/*.yaml
 .state/*.js
 .state/*.json
 .state/*.md
-*.code-workspace
