@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.209
+// @version      2.0.210
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
@@ -64,7 +64,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.209";
+  const SCRIPT_VERSION = "2.0.210";
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
   const SHARED_USER_AGENT_STORAGE_KEY = "pdbAdmincom.userAgent";
@@ -9689,14 +9689,17 @@
   }
 
   /**
-   * Converts a Django-localized 12-hour datetime string to 24-hour "YYYY-MM-DD HH:MM".
-   * Purpose: Let operators used to military/ISO time read history timestamps at a glance.
+   * Converts a Django-localized 12-hour datetime string to 24-hour "YYYY-MM-DDTHH:MMZ".
+   * Purpose: Let operators used to military/ISO time read history timestamps at a glance,
+   * in the same ISO 8601 + "Z" style CP already renders for iso_created/iso_updated on the
+   * facility (and other entity) changelist pages — this is the site's own convention, not
+   * an invented one, and the admin's __admin_utc_offset__ is 0 (UTC), so "Z" is accurate.
    * Necessity: Django's default DATETIME_FORMAT is US/UK 12-hour with a.m./p.m., which is
    * ambiguous to scan quickly; converting removes that friction without touching the
-   * underlying data.
+   * underlying data. Seconds are omitted because the source text never carries them.
    * @ai Preserve parsing contract: return null (never throw) on any unrecognized shape.
    * @param {string} rawText - Trimmed cell text, e.g. "Sept. 26, 2025, 10:42 p.m.".
-   * @returns {string|null} 24-hour "YYYY-MM-DD HH:MM" string, or null when not a match.
+   * @returns {string|null} "YYYY-MM-DDTHH:MMZ" string, or null when not a match.
    */
   function convertLegacyDatetimeTo24Hour(rawText) {
     const text = String(rawText || "").trim().replace(/\s+/g, " ");
@@ -9725,7 +9728,7 @@
     }
 
     const pad2 = (value) => String(value).padStart(2, "0");
-    return `${year}-${pad2(month)}-${pad2(day)} ${pad2(hour24)}:${pad2(minute)}`;
+    return `${year}-${pad2(month)}-${pad2(day)}T${pad2(hour24)}:${pad2(minute)}Z`;
   }
 
   /**
