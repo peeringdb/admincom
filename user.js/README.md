@@ -2,13 +2,43 @@ The `.user.js` scripts in this folder can be added to the web browser using the 
 
 Tampermonkey is available from their homepage ([tampermonkey.net](https://www.tampermonkey.net/)).
 
+## Editing these scripts
+
+`peeringdb-cp-consolidated-tools.user.js`, `peeringdb-fp-consolidated-tools.user.js`, and
+`peeringdb-deskpro-tools.user.js` are **generated** from a same-named `.src.js` source plus
+`lib/admincom-common.js` (shared gated debug logging and a retry/backoff request wrapper, identical
+across the three scripts). Edit the `.src.js` file or `lib/admincom-common.js`, then regenerate:
+
+```console
+$ python user.js/scripts/build_userscripts.py          # regenerate
+$ python user.js/scripts/build_userscripts.py --check   # verify (CI)
+```
+
+Do not hand-edit the `GENERATED BLOCK` inside a `.user.js` file directly — it will be overwritten on
+the next regeneration.
+
+`lib/admincom-common.js` provides:
+
+- `isDebugEnabled()` / `dbg`/`dbgInfo`/`dbgWarn`/`dbgGroup`/`dbgGroupEnd` — gated console logging.
+  Toggle via each script's "Debug Mode" Tampermonkey menu command, or directly with
+  `localStorage.setItem('pdbAdmincom.debug', '1')` (CP and FP share this key since both run on the
+  `peeringdb.com` origin; DeskPro's is isolated to its own origin).
+- `fetchWithRetry` / `gmRequestWithRetry` — timeout + exponential backoff + `Retry-After` header
+  handling for same-origin `fetch` and cross-origin `GM_xmlhttpRequest` calls respectively. FP has no
+  HTTP call sites today, so it only uses the debug-logging half of the lib.
+
 ## Metadata convention
 
 Each script has a matching `.meta.js` file for lightweight update checks.
 
-Script versioning follows server format:
+Script versioning follows:
 
-- `major.minor.bugfix.YYYYMMDD`
+- `major.minor.bugfix`
+
+(Older versions used a trailing `.YYYYMMDD` date segment — retired going forward. When bumping a
+script still on the old scheme, don't just drop the date segment: Tampermonkey compares versions
+segment-by-segment, so `1.7.2` reads as *older* than `1.7.2.20260525`. Bump the bugfix number
+instead, e.g. `1.7.2.20260525` → `1.7.3`.)
 
 - `@updateURL` points to the script's `.meta.js` file
 - `@downloadURL` points to the script's `.user.js` file
@@ -45,7 +75,7 @@ Both consolidated scripts support disabling specific modules with `localStorage`
 
 ### User-Agent Configuration (CP + FP)
 
-Both scripts support trust-based User-Agent generation inspired by the [python_modules/useragent.py](../python_modules/useragent.py) module:
+Both scripts support trust-based User-Agent generation:
 
 **Trust-Based Logic:**
 - **Trusted domains** (peeringdb.com, *.peeringdb.com, api.peeringdb.com, 127.0.0.1, localhost): Full-detail UA including browser platform, session UUID, e.g. `PeeringDB-Admincom-CP-Consolidated (Windows NT 10.0 uuid/123abc...)`
