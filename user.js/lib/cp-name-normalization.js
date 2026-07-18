@@ -1,0 +1,764 @@
+// Org/RDAP name-normalization helpers for the CP consolidated userscript.
+//
+// This is a source fragment, not a standalone script: it is inlined into
+// peeringdb-cp-consolidated-tools.user.js by scripts/build_userscripts.py at
+// the `/* @include cp-name-normalization.js */` marker in that script's
+// .src.js. Edit this file, then re-run the build script -- do not hand-edit
+// the generated block inside the .user.js file, your changes will be
+// overwritten.
+//
+// Pure string-transform helpers: no DOM, storage, or network access. Used by
+// the RDAP org-name fallback flow and by the network/organization name-sync
+// modules elsewhere in the including script.
+
+/**
+ * Strips leading and trailing legal company-type prefixes and suffixes from a name.
+ * Purpose: Keep network short Name concise while preserving full legal form
+ * in Long Name.
+ * Necessity: Organizations frequently include legal prefixes (e.g. PT, CV) and
+ * suffixes (e.g. LTDA, SAS) that are better suited for Long Name than short Name.
+ * @ai Keep behavior stable and prefer minimal, localized edits.
+ * @param {string} name - Full organization name.
+ * @returns {string} Name without leading company-type prefix or trailing suffix tokens.
+ */
+function stripCompanyTypeSuffix(name) {
+  const original = String(name || "").trim().replace(/\s+/g, " ");
+  if (!original) return "";
+
+  // Known false positive: keep brand name intact (do not strip trailing "ME").
+  if (original === "Trade Me") return original;
+
+  const legalSuffixPatterns = [
+    "Corporation",
+    "Incorporated",
+    "Foundation",
+    "Private\\s+Limited",
+    "Limited",
+    "Limitada",
+    "L\\.?\\s*T\\.?\\s*D\\.?\\s*A\\.?\\s*-?\\s*E\\.?\\s*P\\.?\\s*P\\.?",
+    "L\\.?\\s*T\\.?\\s*D\\.?\\s*A\\.?\\s*-?\\s*M\\.?\\s*E\\.?",
+    "E\\.?\\s*I\\.?\\s*R\\.?\\s*E\\.?\\s*L\\.?\\s*I\\.?\\s*-?\\s*M\\.?\\s*E\\.?",
+    "Limitada\\s*-?\\s*M\\.?\\s*E\\.?",
+    "Limitada\\s*-?\\s*E\\.?\\s*P\\.?\\s*P\\.?",
+    "G\\.?\\s*M\\.?\\s*B\\.?\\s*H\\.?\\s*&\\s*C\\.?\\s*O\\.?\\s*K\\.?\\s*G\\.?",
+    "S\\.?\\s*A\\.?\\s*de\\s*C\\.?\\s*V\\.?",
+    "S\\.?\\s*de\\s*R\\.?\\s*L\\.?\\s*de\\s*C\\.?\\s*V\\.?",
+    "Unipessoal\\s+L\\.?\\s*d\\.?\\s*a\\.?",
+    "P\\.?\\s*v\\.?\\s*t\\.?\\s*L\\.?\\s*t\\.?\\s*d\\.?",
+    "S\\.?\\s*d\\.?\\s*n\\.?\\s*B\\.?\\s*h\\.?\\s*d\\.?",
+    "j\\.?\\s*d\\.?\\s*o\\.?\\s*o\\.?",
+    "E\\.?\\s*O\\.?\\s*O\\.?\\s*D\\.?",
+    "L\\.?\\s*[tT]\\.?\\s*[dD]\\.?\\s*\\u015e[tT][iI\\u0130\\u0131]\\.?",
+    "B\\.?\\s*V\\.?\\s*B\\.?\\s*A\\.?",
+    "C\\.?\\s*V\\.?\\s*B\\.?\\s*A\\.?",
+    "K\\.?\\s*G\\.?\\s*a\\.?\\s*A\\.?",
+    "S\\.?\\s*A\\.?\\s*S\\.?\\s*U\\.?",
+    "C\\.?\\s*o\\.?[,\\s]*L\\.?\\s*t\\.?\\s*d\\.?",
+    "S\\.?\\s*p\\.?\\s*z\\.?\\s*o\\.?\\s*o\\.?",
+    "P\\.?\\s*J\\.?\\s*S\\.?\\s*C\\.?",
+    "J\\.?\\s*S\\.?\\s*C\\.?\\s*B\\.?",
+    "J\\.?\\s*S\\.?\\s*C\\.?",
+    "L\\.?\\s*T\\.?\\s*D\\.?\\s*A\\.?",
+    "E\\.?\\s*I\\.?\\s*R\\.?\\s*E\\.?\\s*L\\.?\\s*I\\.?",
+    "E\\.?\\s*U\\.?\\s*R\\.?\\s*L\\.?",
+    "S\\.?\\s*A\\.?\\s*R\\.?\\s*L\\.?",
+    "S\\.?\\s*A\\.?\\s*S\\.?",
+    "S\\.?\\s*P\\.?\\s*R\\.?\\s*L\\.?",
+    "S\\.?\\s*P\\.?\\s*A\\.?",
+    "S\\.?\\s*R\\.?\\s*L\\.?",
+    "S\\.?\\s*R\\.?\\s*O\\.?",
+    "S\\.?\\s*C\\.?\\s*A\\.?",
+    "S\\.?\\s*N\\.?\\s*C\\.?",
+    "S\\.?\\s*C\\.?\\s*C\\.?",
+    "S\\.?\\s*L\\.?\\s*U\\.?",
+    "G\\.?\\s*M\\.?\\s*B\\.?\\s*H\\.?",
+    "P\\.?\\s*L\\.?\\s*L\\.?\\s*C\\.?",
+    "V\\.?\\s*O\\.?\\s*F\\.?",
+    "O\\.?\\s*H\\.?\\s*G\\.?",
+    "O\\.?\\s*O\\.?\\s*O\\.?",
+    "P\\.?\\s*A\\.?\\s*O\\.?",
+    "P\\.?\\s*A\\.?\\s*T\\.?",
+    "O\\.?\\s*O\\.?\\s*D\\.?",
+    "D\\.?\\s*O\\.?\\s*O\\.?",
+    "T\\.?\\s*O\\.?\\s*V\\.?",
+    "E\\.?\\s*P\\.?\\s*E\\.?",
+    "I\\.?\\s*K\\.?\\s*E\\.?",
+    "E\\.?\\s*P\\.?\\s*P\\.?",
+    "M\\.?\\s*E\\.?\\s*I\\.?",
+    "N\\.?\\s*y\\.?\\s*r\\.?\\s*t\\.?",
+    "Z\\.?\\s*r\\.?\\s*t\\.?",
+    "K\\.?\\s*f\\.?\\s*t\\.?",
+    "A\\.?\\s*p\\.?\\s*S\\.?",
+    "A\\.?\\s*N\\.?\\s*S\\.?",
+    "A\\.?\\s*S\\.?\\s*A\\.?",
+    "O\\.?\\s*y\\.?\\s*j\\.?",
+    "S\\.?\\s*p\\.?\\s*k\\.?",
+    "S\\.?\\s*p\\.?\\s*j\\.?",
+    "d\\.?\\s*o\\.?\\s*o\\.?",
+    "L\\.?\\s*d\\.?\\s*a\\.?",
+    "U\\.?\\s*A\\.?\\s*B\\.?",
+    "S\\.?\\s*I\\.?\\s*A\\.?",
+    "Z\\.?\\s*A\\.?\\s*O\\.?",
+    "L\\.?\\s*T\\.?\\s*D\\.?",
+    "L\\.?\\s*L\\.?\\s*C\\.?",
+    "L\\.?\\s*L\\.?\\s*P\\.?",
+    "I\\.?\\s*N\\.?\\s*C\\.?",
+    "P\\.?\\s*L\\.?\\s*C\\.?",
+    "P\\.?\\s*T\\.?\\s*E\\.?",
+    "P\\.?\\s*T\\.?\\s*Y\\.?",
+    "L\\.?\\s*P\\.?",
+    "A\\.?\\s*G\\.?",
+    "K\\.?\\s*G\\.?",
+    "U\\.?\\s*G\\.?",
+    "O\\.?\\s*G\\.?",
+    "G\\.?\\s*b\\.?\\s*R\\.?",
+    "e\\.?\\s*V\\.?",
+    "e\\.?\\s*K\\.?",
+    "e\\.?\\s*G\\.?",
+    "m\\.?\\s*b\\.?\\s*H\\.?",
+    "B\\.?\\s*V\\.?",
+    "N\\.?\\s*V\\.?",
+    "C\\.?\\s*V\\.?",
+    "A\\.?\\s*B\\.?",
+    "H\\.?\\s*B\\.?",
+    "K\\.?\\s*B\\.?",
+    "O\\.?\\s*y\\.?",
+    "A\\/S",
+    "K\\/S",
+    "I\\/S",
+    "A\\.?\\s*S\\.?",
+    "A\\.?\\s*O\\.?",
+    "K\\.?\\s*K\\.?",
+    "G\\.?\\s*K\\.?",
+    "P\\.?\\s*v\\.?\\s*t\\.?",
+    "B\\.?\\s*h\\.?\\s*d\\.?",
+    "B\\.?\\s*t\\.?",
+    "d\\.?\\s*d\\.?",
+    "C\\.?\\s*o\\.?\\s*r\\.?\\s*p\\.?",
+    "C\\.?\\s*C\\.?",
+    "S[a\\u00e0]rl",
+    "A\\.?\\s*\\u015e\\.?",
+    "A\\.?\\s*D\\.?",
+    "A\\.?\\s*E\\.?",
+    "O\\.?\\s*E\\.?",
+    "E\\.?\\s*E\\.?",
+    "P\\.?\\s*P\\.?",
+    "a\\.?\\s*s\\.?",
+    "O[\\u00dc\\u00fc]|OU",
+    "S\\.?\\s*E\\.?",
+    "M\\.?\\s*B\\.?",
+    "S\\.?\\s*A\\.?",
+    "S\\.?\\s*L\\.?",
+    "S\\.?\\s*C\\.?",
+    "C\\.?\\s*A\\.?",
+    "C\\.?\\s*O\\.?",
+    "S\\.?\\s*S\\.?",
+    "M\\.?\\s*E\\.?",
+  ];
+
+  const legalPrefixPatterns = [
+    "P\\.?\\s*T\\.?", // PT / P.T. (Indonesia)
+    "C\\.?\\s*V\\.?", // CV / C.V. (Indonesia)
+    "U\\.?\\s*D\\.?", // UD / U.D. (Indonesia)
+    "P\\.?\\s*D\\.?", // PD / P.D. (Indonesia)
+    "T\\.?\\s*O\\.?\\s*O\\.?", // TOO / T.O.O. (Kazakhstan)
+    "O\\.?\\s*O\\.?\\s*O\\.?", // OOO / O.O.O. (Russia)
+    "O\\.?\\s*A\\.?\\s*O\\.?", // OAO / O.A.O. (Russia)
+    "E\\.?\\s*O\\.?\\s*O\\.?\\s*D\\.?", // EOOD / E.O.O.D. (Bulgaria)
+    "O\\.?\\s*O\\.?\\s*D\\.?", // OOD / O.O.D. (Bulgaria)
+    "SPOLKA\\s+JAWNA", // Spolka Jawna (Polish general partnership)
+    "SP\\.?\\s*J\\.?", // Sp. J. (Polish general partnership)
+    "N\\.?\\s*V\\.?", // NV / N.V.
+    "E\\.?\\s*V\\.?", // e.V. / EV (Germany: eingetragener Verein)
+    "EINGETRAGENER\\s+VEREIN", // Eingetragener Verein (Germany)
+    "I\\.?\\s*K\\.?\\s*E\\.?", // IKE / I.K.E. (Greece)
+    "PRIVATE\\s+ENTERPRISE", // Private Enterprise (common legal form label)
+    "F\\.?\\s*O\\.?\\s*P\\.?", // FOP / F.O.P. (Ukraine: sole proprietor)
+    "FIZYCHNA\\s+OSOBA\\s+PIDPRYYEMETS", // Full transliterated FOP legal form (Ukraine)
+    "PRIVATELY\\s+OWNED\\s+ENTREPRENEUR", // Privately owned entrepreneur (sole proprietor legal form)
+    "AKTSIONERNO\\s+DRUZHESTVO", // Aktsionerno Druzhestvo (Bulgarian joint-stock company)
+    "K\\.?\\s*K\\.?", // K.K. / KK (Japan: Kabushiki Kaisha)
+    "Z\\.?\\s*S\\.?", // z.s. / zs (Czech: zapsany spolek, registered association)
+    "LIMITED\\s+LIABILITY\\s+COMPANY", // Limited Liability Company (full legal form)
+    "PUBLIC\\s+JOINT[-\\s]+STOCK\\s+COMPANY", // Public Joint Stock Company (full legal form)
+    "OPEN\\s+JOINT[-\\s]+STOCK\\s+COMPANY", // Open Joint Stock Company (full legal form)
+    "P\\.?\\s*J\\.?\\s*S\\.?\\s*C\\.?", // PJSC / P.J.S.C.
+    "O\\.?\\s*J\\.?\\s*S\\.?\\s*C\\.?", // OJSC / O.J.S.C.
+    "J\\.?\\s*C\\.?\\s*S\\.?", // JCS / J.C.S.
+    "J\\.?\\s*S\\.?\\s*C\\.?", // JSC / J.S.C.
+    "S\\.?\\s*R\\.?\\s*L\\.?\\s*S\\.?", // SRLS / S.R.L.S.
+    "CLOSED\\s+JOINT[-\\s]+STOCK\\s+COMPANY", // Closed Joint Stock Company (full legal form)
+    "C\\.?\\s*J\\.?\\s*S\\.?\\s*C\\.?", // CJSC / C.J.S.C. (Closed Joint-Stock Company)
+    "M\\.?\\s*\\/\\s*S\\.?", // M/S. / M/s. (South Asia, "Messrs.")
+    "L\\.?\\s*L\\.?\\s*C\\.?", // LLC / L.L.C. when used as a leading legal designator
+    "UAB", // UAB (Lithuania: Uzdaroji akcine bendrove, private limited company)
+    "O\\.?\\s*U\\.?", // OU (Estonia: Osaühing)
+    "O\\.?\\s*Y\\.?", // OY (Finland: Osakeyhtiö)
+    "LİMİTED\\s+ŞİRKETİ", // Limited Şirketi (Turkey: Limited Company)
+    "A\\.?\\s*Ş\\.?", // A.Ş. (Turkey: Anonim Şirket - Joint Stock Company)
+  ];
+
+  const suffixRegex = new RegExp(
+    `(?:[\\s,()._-]+)(?:${legalSuffixPatterns.join("|")})\\.?[\\s,()._-]*$`,
+    "i",
+  );
+  const prefixRegex = new RegExp(
+    `^(?:${legalPrefixPatterns.join("|")})\\.?[\\s,._-]+`,
+    "i",
+  );
+  const trailingPrefixRegex = new RegExp(
+    `(?:[\\s,()._-]+)(?:${legalPrefixPatterns.join("|")})\\.?[\\s,()._-]*$`,
+    "i",
+  );
+
+  let candidate = original;
+  let previous = "";
+  const hadPrivatelyOwnedEntrepreneurPrefix = /^PRIVATELY\s+OWNED\s+ENTREPRENEUR\b/i.test(original);
+
+  // Normalize names that append a location after EOOD/OOD/DOO, so legal stripping can proceed.
+  // Example: "DGM EOOD, Sofia, Bulgaria" -> "DGM EOOD".
+  const llcWithTrailingLocationRegex = /(.*?)(?:[\s,().-]+)((?:E\.?\s*O\.?\s*O\.?\s*D\.?)|(?:O\.?\s*O\.?\s*D\.?)|(?:D\.?\s*O\.?\s*O\.?))\b(?:[\s,.-]+[A-Za-z\u00C0-\u024F][A-Za-z\u00C0-\u024F'-]*){1,3}[\s,().-]*$/i;
+  const llcWithTrailingLocationMatch = candidate.match(llcWithTrailingLocationRegex);
+  if (llcWithTrailingLocationMatch?.[1] && llcWithTrailingLocationMatch?.[2]) {
+    candidate = `${llcWithTrailingLocationMatch[1].trim()} ${llcWithTrailingLocationMatch[2].trim()}`.trim();
+  }
+
+  // Normalize "<name> <legal suffix> <country token>" ordering so legal stripping can proceed.
+  // Example: "Phylaxis, Inc. USA" -> "Phylaxis Inc." -> "Phylaxis".
+  const legalWithTrailingCountryCodeRegex = new RegExp(
+    `(.*?)(?:[\\s,().-]+)((?:${legalSuffixPatterns.join("|")}))\\b(?:[\\s,.-]+)(?:[A-Z]{2}|[A-Z]{3})[\\s,().-]*$`,
+    "i",
+  );
+  if (!suffixRegex.test(candidate)) {
+    const legalWithTrailingCountryCodeMatch = candidate.match(legalWithTrailingCountryCodeRegex);
+    if (legalWithTrailingCountryCodeMatch?.[1] && legalWithTrailingCountryCodeMatch?.[2]) {
+      candidate = `${legalWithTrailingCountryCodeMatch[1].trim()} ${legalWithTrailingCountryCodeMatch[2].trim()}`.trim();
+    }
+  }
+
+  // Strip leading prefix once
+  candidate = candidate.replace(prefixRegex, "").trim();
+
+  // Strip trailing suffixes (may be multiple layers)
+  while (candidate && candidate !== previous && suffixRegex.test(candidate)) {
+    previous = candidate;
+    candidate = candidate.replace(suffixRegex, "").trim().replace(/[\s,().-]+$/g, "").trim();
+  }
+
+  // Strip trailing prefix-type legal tokens when source ordering is reversed
+  // (e.g. "Company PT" instead of "PT Company").
+  previous = "";
+  while (candidate && candidate !== previous && trailingPrefixRegex.test(candidate)) {
+    previous = candidate;
+    candidate = candidate.replace(trailingPrefixRegex, "").trim().replace(/[\s,().-]+$/g, "").trim();
+  }
+
+  // For "Privately owned entrepreneur ..." names, drop trailing ISO country code tails.
+  // Example: "Example Person Name, UA" -> "Example Person Name".
+  if (hadPrivatelyOwnedEntrepreneurPrefix) {
+    candidate = candidate.replace(/(?:[\s,()._-]+)[A-Z]{2}\.?[\s,()._-]*$/, "").trim();
+  }
+
+  // Strip Bulgarian "AD" legal form (Aktsionerno Druzhestvo) in uppercase form only.
+  // Case-sensitive intentionally to avoid false positives with ordinary lowercase words.
+  const bulgarianAdPrefixRegex = /^A\.?\s*D\.?[\s,._-]+/;
+  if (bulgarianAdPrefixRegex.test(candidate)) {
+    candidate = candidate
+      .replace(bulgarianAdPrefixRegex, "")
+      .trim()
+      .replace(/[\s,().-]+$/g, "")
+      .trim();
+  }
+
+  const bulgarianAdSuffixRegex = /(?:[\s,()._-]+)A\.?\s*D\.?[\s,()._-]*$/;
+  if (bulgarianAdSuffixRegex.test(candidate)) {
+    candidate = candidate
+      .replace(bulgarianAdSuffixRegex, "")
+      .trim()
+      .replace(/[\s,().-]+$/g, "")
+      .trim();
+  }
+
+  // Strip Scandinavian "AS" suffix (Aksjeselskap/Aktieselskab, NO/DK).
+  // Case-sensitive intentionally: avoids false positives with English "as".
+  // Must run after the main suffix loop so multi-layer strips have already resolved.
+  const scandinavianAsSuffixRegex = /(?:[\s,().-]+)AS\.?[\s,().-]*$/;
+  if (scandinavianAsSuffixRegex.test(candidate)) {
+    const stripped = candidate
+      .replace(scandinavianAsSuffixRegex, "")
+      .trim()
+      .replace(/[\s,().-]+$/g, "")
+      .trim();
+    if (stripped) candidate = stripped;
+  }
+
+  // Remove wrapping quotes after legal prefix/suffix stripping.
+  candidate = candidate.replace(/^["'\u201c\u201d\u2018\u2019]+|["'\u201c\u201d\u2018\u2019]+$/g, "").trim();
+
+  // Keep quote behavior consistent for short-name normalization.
+  // If ASCII double-quotes are unbalanced (odd count), drop all of them.
+  const asciiDoubleQuoteCount = (candidate.match(/"/g) || []).length;
+  if (asciiDoubleQuoteCount % 2 === 1) {
+    candidate = candidate.replace(/"/g, "").replace(/\s+/g, " ").trim();
+  }
+
+  return candidate || original;
+}
+
+/**
+ * Trims obvious organizational unit descriptors after a comma.
+ * Purpose: Keep short Name concise when source names include department/division text.
+ * Necessity: Names like "Company, Data Network Management Division" should keep
+ * the unit in Long Name while using company core in Name.
+ * @ai Keep behavior stable and prefer minimal, localized edits.
+ * @param {string} name - Full organization/network name.
+ * @returns {string} Name with trailing unit descriptor removed when confidently detected.
+ */
+function stripOrganizationalUnitDescriptor(name) {
+  const original = String(name || "").trim().replace(/\s+/g, " ");
+  if (!original || !original.includes(",")) return original;
+
+  const parts = original
+    .split(",")
+    .map((part) => String(part || "").trim())
+    .filter(Boolean);
+  if (parts.length < 2) return original;
+
+  const rightSide = parts.slice(1).join(" ").toLowerCase();
+  const unitDescriptorRegex = /\b(division|department|directorate|bureau|office|branch|section|team|unit|director\s+general|ministry|province|provincial|regional)\b/i;
+  const leftSide = parts[0];
+
+  // Handle "Name, legal-form, ISP descriptor" style strings.
+  // Example: "NovInvestRezerv, LLC, ISP NIR-Telecom" -> "NovInvestRezerv".
+  const standaloneLegalMiddleTokenRegex = /^(?:L\.?\s*L\.?\s*C\.?|L\.?\s*L\.?\s*P\.?|L\.?\s*T\.?\s*D\.?|I\.?\s*N\.?\s*C\.?|G\.?\s*M\.?\s*B\.?\s*H\.?|S\.?\s*R\.?\s*L\.?|S\.?\s*P\.?\s*J\.?)$/i;
+  const telecomDescriptorRegex = /\b(isp|telecom|telecommunications|internet\s+provider|provider)\b/i;
+  if (
+    parts.length >= 3
+    && standaloneLegalMiddleTokenRegex.test(parts[1])
+    && telecomDescriptorRegex.test(parts.slice(2).join(" "))
+    && leftSide.length >= 3
+  ) {
+    return leftSide;
+  }
+
+  if (!unitDescriptorRegex.test(rightSide) || leftSide.length < 3) {
+    return original;
+  }
+
+  return leftSide;
+}
+
+/**
+ * Resolves canonical short name from comma-separated legal aliases.
+ * Purpose: Handle patterns like "FOO SDN BHD, Foo Berhad" and keep one compact short name.
+ * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+ * @param {string} name - Full organization/network name.
+ * @returns {string} Canonical compact alias, or empty string when not confidently resolvable.
+ */
+function resolveCompactNameFromCommaLegalAliases(name) {
+  const original = String(name || "").trim().replace(/\s+/g, " ");
+  if (!original.includes(",")) return "";
+
+  const parts = original
+    .split(",")
+    .map((part) => String(part || "").trim())
+    .filter(Boolean);
+  if (parts.length < 2) return "";
+
+  const strippedParts = parts
+    .map((part) => stripCompanyTypeSuffix(part))
+    .map((part) => String(part || "").trim())
+    .filter(Boolean);
+  if (strippedParts.length < 2) return "";
+
+  const normalized = strippedParts.map((part) => part.toLowerCase());
+  const allMatch = normalized.every((value) => value === normalized[0]);
+  if (!allMatch) return "";
+
+  const preferred = strippedParts.find((part) => /[a-z]/.test(part));
+  return preferred || strippedParts[0] || "";
+}
+
+/**
+ * Removes trailing registration-number segment when appended after a comma.
+ * Example: "Company PTE. LTD., 202208375N" -> "Company PTE. LTD."
+ * @ai Keep behavior stable and prefer minimal, localized edits.
+ * @param {string} name - Raw full name.
+ * @returns {string} Name without trailing registration segment when confidently detected.
+ */
+function stripTrailingRegistrationIdentifier(name) {
+  const original = String(name || "").trim().replace(/\s+/g, " ");
+  if (!original.includes(",")) return original;
+
+  const parts = original
+    .split(",")
+    .map((part) => String(part || "").trim())
+    .filter(Boolean);
+  if (parts.length < 2) return original;
+
+  const registrationCandidate = parts[parts.length - 1];
+
+  // Drop obvious trailing symbol-noise segments.
+  // Example: "GLOBALGRID SASU, ************" -> "GLOBALGRID SASU"
+  const compactRegistrationCandidate = registrationCandidate.replace(/\s+/g, "");
+  const looksLikeTrailingSymbolNoise = /^(?:[*#._~=-]){6,}$/.test(compactRegistrationCandidate);
+  if (looksLikeTrailingSymbolNoise) {
+    const base = parts.slice(0, -1).join(", ");
+    return base || original;
+  }
+
+  // Drop trailing opaque token-like blobs and BEGIN/END token banners.
+  // Examples:
+  // - "Shuma Watanabe, OCITOKEN::201345:97cb..."
+  // - "WizardTales GmbH, -----BEGIN TOKEN-----996d...-----END TOKEN-----"
+  const looksLikeTokenBanner = /BEGIN\s+[A-Z0-9_-]+/i.test(registrationCandidate)
+    || /END\s+[A-Z0-9_-]+/i.test(registrationCandidate)
+    || /-+\s*BEGIN\b/i.test(registrationCandidate)
+    || /\bEND\s+[A-Z0-9_-]+\s*-+/i.test(registrationCandidate);
+  const looksLikeOpaqueTrailingToken =
+    !/\s/.test(registrationCandidate)
+    && /[A-F0-9]{24,}/i.test(registrationCandidate)
+    && /[:_-]/.test(registrationCandidate)
+    && registrationCandidate.length >= 32;
+  if (looksLikeTokenBanner || looksLikeOpaqueTrailingToken) {
+    const base = parts.slice(0, -1).join(", ");
+    return base || original;
+  }
+
+  const hasWhitespace = /\s/.test(registrationCandidate);
+  if (hasWhitespace) return original;
+
+  const looksLikeRegistrationId = /^(?:\d{6,}[a-z]?|[a-z]{1,4}\d{4,}[a-z0-9-]*)$/i.test(registrationCandidate);
+  if (!looksLikeRegistrationId) return original;
+
+  const base = parts.slice(0, -1).join(", ");
+  if (!base) return original;
+
+  // Only drop the registration segment when base already looks like a legal-form name.
+  const baseCompacted = stripCompanyTypeSuffix(base);
+  const baseHasLegalForm = String(baseCompacted || "").trim() !== base;
+  return baseHasLegalForm ? base : original;
+}
+
+/**
+ * Compacts an entity name for short Name field while preserving legal/full form in Long Name.
+ * @ai Keep behavior stable and prefer minimal, localized edits.
+ * @param {string} name - Source full name.
+ * @returns {{ shortName: string, longName: string }} Compacted short name and optional long name.
+ */
+function compactEntityNameWithLongNameFallback(name) {
+  const fullName = String(name || "").trim().replace(/\s+/g, " ");
+  if (!fullName) return { shortName: "", longName: "" };
+
+  // Strip trailing "AS<digits>" patterns (e.g., "Cogeco Connexion Inc. AS27168" -> "Cogeco Connexion Inc.")
+  const withoutAsns = fullName.replace(/\s+AS\s*\d+\s*$/i, "").trim();
+
+  const normalizedFullName = stripTrailingRegistrationIdentifier(withoutAsns);
+
+  const fromLegalAliases = resolveCompactNameFromCommaLegalAliases(normalizedFullName);
+
+  // When the comma-parts are NOT legal aliases of each other (fromLegalAliases empty) but the
+  // first part alone has a legal corporate form (e.g. "V D C Net Company Limited, Ultra Net"),
+  // use only the first part as the canonical full name so Long Name can be populated correctly.
+  let effectiveFullName = normalizedFullName;
+  if (!fromLegalAliases && normalizedFullName.includes(",")) {
+    const firstPart = normalizedFullName.split(",")[0].trim();
+    const firstPartCompacted = stripCompanyTypeSuffix(firstPart);
+    if (firstPartCompacted && firstPartCompacted !== firstPart) {
+      effectiveFullName = firstPart;
+    }
+  }
+
+  const withoutUnit = stripOrganizationalUnitDescriptor(fromLegalAliases || effectiveFullName) || (fromLegalAliases || effectiveFullName);
+  const withoutLegalType = stripCompanyTypeSuffix(withoutUnit) || withoutUnit;
+  let compactBaseShortName = withoutLegalType || effectiveFullName;
+  compactBaseShortName = normalizeSimpleSingleDashAlphabeticName(compactBaseShortName);
+
+  // A compact network short name must not end with a dangling ampersand.
+  const shortName = String(compactBaseShortName || "")
+    .replace(/(?:\s*&\s*)+$/g, "")
+    .replace(/[\s,;:.!?-]+$/g, "")
+    .trim() || compactBaseShortName;
+
+  const normalizedEffectiveFullName = normalizeSimpleSingleDashAlphabeticName(effectiveFullName);
+  const longName = shortName !== normalizedEffectiveFullName ? normalizedEffectiveFullName : "";
+  return { shortName, longName };
+}
+
+/**
+ * Normalizes simple single-dash alphabetic forms into spaced words.
+ * Example: "Locl-net" -> "Locl Net".
+ * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+ * @param {string} value - Source string.
+ * @returns {string} Normalized string.
+ */
+function normalizeSimpleSingleDashAlphabeticName(value) {
+  const raw = String(value || "").trim();
+  if (/^[A-Za-z]{3,}-[A-Za-z]{2,}$/.test(raw)) {
+    return raw.replace(/-/g, " ");
+  }
+  return raw;
+}
+
+/**
+ * Collapses exact comma-separated duplicate names.
+ * Example: "Name, Name" -> "Name"
+ * @ai Keep behavior stable and prefer minimal, localized edits.
+ * @param {string} name - Raw name candidate.
+ * @returns {string} Deduplicated name when exact duplication is detected.
+ */
+function collapseExactCommaDuplicateName(name) {
+  const original = String(name || "").trim().replace(/\s+/g, " ");
+  if (!original.includes(",")) return original;
+
+  const parts = original
+    .split(",")
+    .map((part) => String(part || "").trim())
+    .filter(Boolean);
+  if (parts.length < 2) return original;
+
+  // 2-part case: direct comparison.
+  if (parts.length === 2) {
+    const left = parts[0].replace(/^['""\u201c\u201d\u2018\u2019]+|['""\u201c\u201d\u2018\u2019]+$/g, "").trim();
+    const right = parts[1].replace(/^['""\u201c\u201d\u2018\u2019]+|['""\u201c\u201d\u2018\u2019]+$/g, "").trim();
+    if (!left || !right) return original;
+    return left.toLowerCase() === right.toLowerCase() ? left : original;
+  }
+
+  // Even-count case: split into two equal halves and compare rejoined halves.
+  // Handles e.g. "COMPANY CO., LTD, COMPANY CO., LTD" (4 parts).
+  if (parts.length % 2 === 0) {
+    const mid = parts.length / 2;
+    const left = parts.slice(0, mid).join(", ");
+    const right = parts.slice(mid).join(", ");
+    if (left.toLowerCase() === right.toLowerCase()) return left;
+  }
+
+  return original;
+}
+
+/**
+ * Detects ASN-like token variants inside free-form text.
+ * Examples: "AS123456", "ASN 123456", "123456".
+ * @ai Keep behavior stable and prefer minimal, localized edits.
+ * @param {string} value - Input text to inspect.
+ * @returns {boolean} True when an ASN-like token is present.
+ */
+function containsAsnLikeToken(value) {
+  const text = String(value || "").trim();
+  if (!text) return false;
+
+  // Optional AS/ASN prefix + 4-10 digit ASN-like number.
+  return /\b(?:AS|ASN)?\s*[-:]?\s*\d{4,10}\b/i.test(text);
+}
+
+/**
+ * Detects names that look like generated maintainer/registry handles.
+ * Purpose: Avoid setting network short Name to opaque handle-like values.
+ * @ai Keep behavior stable and prefer minimal, localized edits.
+ * @param {string} value - Candidate name.
+ * @returns {boolean} True when the value looks autogenerated/handle-like.
+ */
+function isLikelyGeneratedHandleName(value) {
+  const raw = String(value || "").trim();
+  const normalized = raw.toUpperCase();
+  if (!normalized) return false;
+
+  // Typical maintainer/registry style handles (e.g. VIPY-MNT, ACME-MAINT).
+  if (/^[A-Z0-9]{3,}[-_](?:MNT|MAINT|MNTNER|NIC)$/i.test(normalized)) {
+    return true;
+  }
+
+  // Compact uppercase token + "-AS" pattern often indicates generated naming.
+  if (/^[A-Z0-9]{5,}[-_]AS$/i.test(normalized)) {
+    return true;
+  }
+
+  // ASN-prefixed handles (e.g. AS-RSSWS, AS_FOO) are often auto-generated.
+  if (/^AS[-_][A-Z0-9]{3,}$/i.test(normalized)) {
+    return true;
+  }
+
+  // Lowercase cc-prefix compact tokens are often machine-style handles
+  // (e.g. ru-atss) rather than operator-facing display names.
+  if (/^[a-z]{2}[-_][a-z0-9]{3,8}$/.test(raw)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Sanitizes malformed RDAP organization names that contain corruption patterns.
+ * Purpose: Clean up org names that include remarks, embedded person entries, or garbage data.
+ * Necessity: RDAP data sometimes includes extraneous content like contact remarks mixed into org names.
+ * Patterns handled:
+*   - "PERSON trading as COMPANY", "PERSON t/a COMPANY", or "PERSON dba COMPANY" → extracts "COMPANY"
+ *   - "Name, remarks: GARBAGE" → extracts "Name"
+ *   - Leading/trailing whitespace and punctuation cleanup
+ * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+ * @param {string} name - Organization name possibly containing corruption.
+ * @returns {string} Cleaned organization name, or original if no corruption detected.
+ */
+function sanitizeRdapOrgName(name) {
+  const original = String(name || "").trim();
+  if (!original || original.length < 2) return original;
+
+  let candidate = original;
+
+  // Split at ", remarks:" and take the first part (removes appended remarks/garbage)
+  const remarksMatch = candidate.match(/^(.+?)\s*,\s*remarks\s*:/i);
+  if (remarksMatch) {
+    candidate = remarksMatch[1].trim();
+  }
+
+  // Collapse exact duplicate form "Name, Name".
+  candidate = collapseExactCommaDuplicateName(candidate);
+
+  // Collapse legal-alias duplicate form "Name Ltd, Name Pvt Ltd".
+  const collapsedLegalAlias = resolveCompactNameFromCommaLegalAliases(candidate);
+  if (collapsedLegalAlias) {
+    candidate = collapsedLegalAlias;
+  }
+
+  // Extract text after trading-as patterns if present.
+  const tradingAsMatch = candidate.match(/(?:trading\s+as|t\s*\/\s*a|d\s*\/?\s*b\s*\/?\s*a|dba)\s+(.+)$/i);
+  if (tradingAsMatch) {
+    const extracted = tradingAsMatch[1].trim();
+    // Use the extraction if it's substantially longer than or similar to the person part (avoid picking the person name)
+    if (extracted.length >= 5) {
+      candidate = extracted;
+    }
+  }
+
+  // Clean trailing punctuation and comma separators
+  candidate = candidate.replace(/[\s,;:.!?-]+$/g, "").trim();
+
+  // Validate the result is still meaningful
+  return candidate && candidate.length >= 2 ? candidate : original;
+}
+
+/**
+* Extracts normalized organization identity from RDAP names containing
+* trading-as patterns (e.g., "trading as", "t/a", "dba").
+ * Purpose: Split legal/person prefix into AKA while keeping company name as canonical name.
+ * Example: "Remzi Toker trading as VENTURESDC" -> { name: "VENTURESDC", knownAs: "Remzi Toker" }
+ * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+ * @param {string} name - Raw organization name.
+ * @returns {{ name: string, knownAs: string }} Parsed identity values.
+ */
+function parseRdapTradingAsIdentity(name) {
+  const original = String(name || "").trim();
+  if (!original) return { name: "", knownAs: "" };
+
+  // Remove trailing remarks noise before parsing trading-as pattern.
+  const base = original.replace(/^(.+?)\s*,\s*remarks\s*:.*/i, "$1").trim();
+  const match = base.match(/^(.+?)\s+(?:trading\s+as|t\s*\/\s*a|d\s*\/?\s*b\s*\/?\s*a|dba)\s+(.+)$/i);
+  if (!match) {
+    return { name: sanitizeRdapOrgName(original), knownAs: "" };
+  }
+
+  const knownAs = String(match[1] || "").trim().replace(/[\s,;:.!?-]+$/g, "").trim();
+  const parsedName = String(match[2] || "").trim().replace(/[\s,;:.!?-]+$/g, "").trim();
+
+  return {
+    name: sanitizeRdapOrgName(parsedName || original),
+    knownAs,
+  };
+}
+
+/**
+ * Extracts identity from Polish civil-partnership naming style:
+ * "<Company> S.C. <Partner Initial Surname ...>".
+ * Purpose: Keep legal form in long/full name while moving partner tail to AKA.
+ * Example:
+* "NET-KONT@KT S.C. <PARTNER_1> <PARTNER_2>"
+* -> { name: "NET-KONT@KT S.C.", knownAs: "<PARTNER_1> <PARTNER_2>" }
+ * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+ * @param {string} name - Raw organization name.
+ * @returns {{ name: string, knownAs: string }} Parsed identity values.
+ */
+function parsePolishScPartnerIdentity(name) {
+  const original = String(name || "").trim();
+  if (!original) return { name: "", knownAs: "" };
+
+  const base = original.replace(/^(.+?)\s*,\s*remarks\s*:.*/i, "$1").trim();
+  const match = base.match(/^(.*?\bS\.?\s*C\.?)\s+(.+)$/i);
+  if (!match) {
+    return { name: sanitizeRdapOrgName(original), knownAs: "" };
+  }
+
+  const companyWithLegalForm = String(match[1] || "").trim().replace(/[\s,;:.!?-]+$/g, "").trim();
+  const partnerTail = String(match[2] || "").trim().replace(/[\s,;:.!?-]+$/g, "").trim();
+
+  // Require at least two partner-like person tokens to avoid false positives.
+  // Accept either:
+  // - "Initial + Surname" forms (e.g. "A. Kowalski")
+  // - Full "GivenName Surname" forms (e.g. "Dariusz Koper")
+  const initialSurnameTokens = partnerTail.match(/[A-Z]\.?\s+[A-Za-z\u00C0-\u024F'’-]+/g) || [];
+  const fullNameTokens = partnerTail.match(/[A-Z][A-Za-z\u00C0-\u024F'’-]+\s+[A-Z][A-Za-z\u00C0-\u024F'’-]+/g) || [];
+  const looksLikePartnerTail = initialSurnameTokens.length >= 2 || fullNameTokens.length >= 2;
+  if (!looksLikePartnerTail) {
+    return { name: sanitizeRdapOrgName(original), knownAs: "" };
+  }
+
+  return {
+    name: sanitizeRdapOrgName(companyWithLegalForm || original),
+    knownAs: partnerTail,
+  };
+}
+
+/**
+ * Resolves canonical name + AKA identity from known malformed/alias patterns.
+ * Purpose: Keep all AKA extraction rules in one place.
+ * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+ * @param {string} name - Raw organization name.
+ * @returns {{ name: string, knownAs: string }} Parsed identity values.
+ */
+function parseOrganizationNameIdentity(name) {
+  const tradingAsIdentity = parseRdapTradingAsIdentity(name);
+  if (String(tradingAsIdentity?.knownAs || "").trim()) {
+    return tradingAsIdentity;
+  }
+
+  const scIdentity = parsePolishScPartnerIdentity(name);
+  if (String(scIdentity?.knownAs || "").trim()) {
+    return scIdentity;
+  }
+
+  return tradingAsIdentity;
+}
+
+/**
+ * Generates a deterministic non-AS fallback network name with optional suffix.
+ * Purpose: Keep required name fields populated when higher-quality sources fail.
+ * Necessity: Explicitly avoids AS<id>/AS<asn> placeholder formats.
+ * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+ * @param {string|number} _asn - Unused (kept for signature compatibility).
+ * @param {string|number} networkId - CP network record ID used as fallback.
+ * @param {string} [suffix=""] - Optional suffix to append (e.g., " #42" for deleted records).
+ * @returns {string} Generated fallback name string (e.g., "Network 42 #42").
+ */
+function getDeterministicNetworkFallbackName(asn, networkId, suffix = "") {
+  void asn;
+  return `Network ${networkId}${suffix}`;
+}
+
+/**
+ * Selects the first meaningful non-handle network name from candidate strings.
+ * Purpose: Prefer human-readable naming before falling back to deterministic placeholders.
+ * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+ * @param {string[]} candidates - Raw candidate name strings ordered by preference.
+ * @returns {string} Best compacted non-handle name, or empty string when none found.
+ */
+function pickPreferredNetworkNameCandidate(candidates) {
+  for (const candidate of candidates || []) {
+    const compacted = compactEntityNameWithLongNameFallback(String(candidate || "").trim());
+    const base = String(compacted?.shortName || candidate || "").trim();
+    if (!base) continue;
+    if (isLikelyGeneratedHandleName(base)) continue;
+    if (/^AS\s*\d+$/i.test(base)) continue;
+    return base;
+  }
+  return "";
+}
