@@ -8,9 +8,8 @@ Tampermonkey.
 
 ## Layout
 
-- `*.user.js` — **generated** distributable scripts, installed directly into Tampermonkey. Never
-  hand-edit the `GENERATED BLOCK` inside these — edit the matching `.src.js` and regenerate; hand-edits
-  are overwritten on the next build.
+- `*.user.js` — **generated** distributable scripts, installed directly into Tampermonkey (see "Rules
+  when editing a script here" below before touching one).
 - `*.src.js` — editable sources for the three consolidated scripts (CP, FP, DeskPro).
 - `lib/admincom-common.js` — shared fragment (gated debug logging + retry/backoff request wrapper)
   inlined into every `.user.js` by the build script.
@@ -18,6 +17,10 @@ Tampermonkey.
 - `*.meta.js` — lightweight update-check manifests, one per script, hand-maintained (not generated).
 - `README.md` — human-facing docs: installation, module catalog, feature-flag console recipes,
   User-Agent configuration reference, metadata/version convention.
+- `docs/` — deeper codebase docs: [ARCHITECTURE.md](docs/ARCHITECTURE.md) (module-registry pattern,
+  system flow, layer boundaries), [CONCERNS.md](docs/CONCERNS.md) (known risks/debt/security gaps),
+  [INTEGRATIONS.md](docs/INTEGRATIONS.md) (external systems, retry/reliability behavior),
+  [CONVENTIONS.md](docs/CONVENTIONS.md) (naming, logging, error handling).
 - `.github/ISSUE_TEMPLATE/` (repo root) — issue templates for admin add/remove requests. No CI
   workflows exist in this repo.
 
@@ -60,12 +63,13 @@ There is no automated test suite (no CI workflow, no package.json, no test runne
   read it as a downgrade). Don't touch `@updateURL`/`@downloadURL`/`@supportURL`.
 - Don't rename the `pdbCpConsolidated.*` / `pdbFpConsolidated.*` storage-key namespaces or the shared
   `pdbAdmincom.debug` flag (CP + FP intentionally share that one key since both run on the
-  `peeringdb.com` origin) — saved user config depends on these.
+  `peeringdb.com` origin) — saved user config depends on these. General naming pattern:
+  [docs/CONVENTIONS.md](docs/CONVENTIONS.md) "Naming Rules".
 - Adding a module to CP or FP? Give it a stable ID, gate it through the existing `disabledModules`
   pattern like its neighbors, and add the ID to README's Module ID catalog so it stays in sync.
 - A function tagged `@ai Preserve ...` or `@ai Keep behavior stable and prefer minimal, localized
   edits.` encodes a contract something else depends on — read the annotation before refactoring past
-  it.
+  it. Full convention: [docs/CONVENTIONS.md](docs/CONVENTIONS.md) "Documentation convention".
 - A script listed under README's "Legacy scripts" section is a deprecation stub — don't add real
   logic to it, point users at the consolidated replacement instead.
 
