@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.211
+// @version      2.0.212
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
@@ -1924,6 +1924,41 @@
       .join(", ");
 
     return [address1, localityLine, country].filter(Boolean).join(", ");
+  }
+
+  /**
+   * Collects saved (non-empty-template, non-deleted) rows from a Django admin
+   * tabular inline formset on the User change page.
+   * Purpose: Locate existing TOTP device / Webauthn security key rows so their
+   * pks can be turned into direct links to the standalone CP change page.
+   * Necessity: Both inlines only expose row data via numbered form fields
+   * (prefix-index-field); the empty "add another" template row shares the
+   * same field names via the "__prefix__" placeholder and must be excluded,
+   * as should rows the user has marked for deletion but not yet saved.
+   * @ai Preserve selector contracts; keep filtering rules (numeric id, DELETE
+   * checkbox) in sync with Django admin inline formset conventions.
+   * @param {string} prefix - Formset prefix, e.g. "totpdevice_set".
+   * @returns {Array<{ pk: string, name: string }>} Saved row entries.
+   */
+  function getUserInlineFormsetEntries(prefix) {
+    const idInputs = qsa(`input[id^="id_${prefix}-"][id$="-id"]`);
+    const entries = [];
+
+    idInputs.forEach((idInput) => {
+      const pk = String(idInput.value || "").trim();
+      if (!/^\d+$/.test(pk)) return;
+
+      const rowIndex = idInput.id.slice(`id_${prefix}-`.length, -"-id".length);
+      if (!/^\d+$/.test(rowIndex)) return;
+
+      const deleteCheckbox = qs(`#id_${prefix}-${rowIndex}-DELETE`);
+      if (deleteCheckbox?.checked) return;
+
+      const name = getInputValue(`#id_${prefix}-${rowIndex}-name`);
+      entries.push({ pk, name });
+    });
+
+    return entries;
   }
 
   /**
@@ -10340,6 +10375,65 @@
       match: (ctx) => ctx.isEntityChangePage && ctx.entity === "network",
       preconditions: () => Boolean(qs("form") && (qs("input[name='_save']") || qs("input[name='_continue']") || qs("input[name='_addanother']"))),
       run: () => bindNetworkSaveActionInlineDeletionGuard(),
+    },
+    {
+      id: "user-mfa-device-quick-links",
+      match: (ctx) => ctx.isEntityChangePage && ctx.entity === "user",
+      preconditions: () => Boolean(getOrCreateSecondaryActionRow()),
+      run: () => {
+        const totpEntries = getUserInlineFormsetEntries("totpdevice_set");
+        const securityKeyEntries = getUserInlineFormsetEntries("webauthn_security_keys");
+
+        if (totpEntries.length === 1) {
+          const { pk, name } = totpEntries[0];
+          const href = `https://www.peeringdb.com/cp/otp_totp/totpdevice/${pk}/change/`;
+          addSecondaryActionButton({
+            id: `${MODULE_PREFIX}UserTotpDevice`,
+            label: `TOTP Device${name ? ` (${name})` : ""} #${pk}`,
+            href,
+            title: href,
+            onClick: (event) => {
+              event?.preventDefault?.();
+              window.open(href, "_blank", "noopener,noreferrer");
+            },
+          });
+        } else if (totpEntries.length > 1) {
+          addSecondaryDropdownAction({
+            id: `${MODULE_PREFIX}UserTotpDevicesDropdown`,
+            label: "TOTP Devices",
+            iconType: "submenu",
+            items: totpEntries.map(({ pk, name }) => ({
+              label: `${name || "Device"} #${pk}`,
+              href: `https://www.peeringdb.com/cp/otp_totp/totpdevice/${pk}/change/`,
+            })),
+          });
+        }
+
+        if (securityKeyEntries.length === 1) {
+          const { pk, name } = securityKeyEntries[0];
+          const href = `https://www.peeringdb.com/cp/django_security_keys/securitykey/${pk}/change/`;
+          addSecondaryActionButton({
+            id: `${MODULE_PREFIX}UserSecurityKey`,
+            label: `Security Key${name ? ` (${name})` : ""} #${pk}`,
+            href,
+            title: href,
+            onClick: (event) => {
+              event?.preventDefault?.();
+              window.open(href, "_blank", "noopener,noreferrer");
+            },
+          });
+        } else if (securityKeyEntries.length > 1) {
+          addSecondaryDropdownAction({
+            id: `${MODULE_PREFIX}UserSecurityKeysDropdown`,
+            label: "Security Keys",
+            iconType: "submenu",
+            items: securityKeyEntries.map(({ pk, name }) => ({
+              label: `${name || "Key"} #${pk}`,
+              href: `https://www.peeringdb.com/cp/django_security_keys/securitykey/${pk}/change/`,
+            })),
+          });
+        }
+      },
     },
     {
       id: "facility-google-maps",
