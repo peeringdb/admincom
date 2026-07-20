@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.213
+// @version      2.0.214
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
@@ -9431,6 +9431,39 @@
               label: `${name || "Key"} #${pk}`,
               href: `https://www.peeringdb.com/cp/django_security_keys/securitykey/${pk}/change/`,
             })),
+          });
+        }
+
+        // OTP Email/Static devices have no inline on the User change page (unlike
+        // TOTP/security keys above), so link to a username-filtered changelist
+        // search instead of a specific pk. EmailDeviceAdmin/StaticDeviceAdmin are
+        // stock django_otp admin classes (not customized by peeringdb_server) whose
+        // search_fields include user__username by default, confirmed against
+        // django-otp==1.7.0 (the version pinned in peeringdb/uv.lock) upstream source.
+        const username = getInputValue("#id_username");
+        if (username) {
+          const otpEmailHref = `https://www.peeringdb.com/cp/otp_email/emaildevice/?q=${encodeURIComponent(username)}`;
+          addSecondaryActionButton({
+            id: `${MODULE_PREFIX}UserOtpEmailSearch`,
+            label: "OTP Email",
+            href: otpEmailHref,
+            title: otpEmailHref,
+            onClick: (event) => {
+              event?.preventDefault?.();
+              window.open(otpEmailHref, "_blank", "noopener,noreferrer");
+            },
+          });
+
+          const otpStaticHref = `https://www.peeringdb.com/cp/otp_static/staticdevice/?q=${encodeURIComponent(username)}`;
+          addSecondaryActionButton({
+            id: `${MODULE_PREFIX}UserOtpStaticSearch`,
+            label: "OTP Static",
+            href: otpStaticHref,
+            title: otpStaticHref,
+            onClick: (event) => {
+              event?.preventDefault?.();
+              window.open(otpStaticHref, "_blank", "noopener,noreferrer");
+            },
           });
         }
       },
