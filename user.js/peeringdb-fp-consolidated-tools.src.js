@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.1.31
+// @version      1.1.32
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
@@ -32,7 +32,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbFpConsolidated";
-  const SCRIPT_VERSION = "1.1.31";
+  const SCRIPT_VERSION = "1.1.32";
   // RDAP fallback client is intentionally CP-only; FP does not implement RDAP lookups.
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
@@ -3105,34 +3105,50 @@
       },
     },
     {
-      id: "org-pending-fac-cp-edit-links",
+      id: "org-related-listing-cp-edit-links",
       match: (ctx) => ctx.type === "org" && ctx.isEntityPage,
       run: () => {
-        const ATTR = "data-pdb-fp-fac-cp-edit";
+        // Formerly "org-pending-fac-cp-edit-links": facility-only, pending-status-only.
+        // Generalized to all five org-page related-object listings (both the legacy
+        // "site" and "site_next" templates share identical #api-listing-<x> container
+        // ids and .row.item[data-edit-id] row markup - confirmed against
+        // peeringdb_server/templates/{site,site_next}/view_organization_{side,bottom}.html)
+        // and to every row regardless of status, since approved rows benefit from the
+        // same one-click CP shortcut as pending ones.
+        const ATTR = "data-pdb-fp-related-cp-edit";
+        const LISTINGS = [
+          { containerId: "api-listing-fac", cpModel: "facility" },
+          { containerId: "api-listing-net", cpModel: "network" },
+          { containerId: "api-listing-ix", cpModel: "internetexchange" },
+          { containerId: "api-listing-carrier", cpModel: "carrier" },
+          { containerId: "api-listing-campus", cpModel: "campus" },
+        ];
 
-        qsa("#api-listing-fac .row.item.status-pending[data-edit-id]").forEach((row) => {
-          const facId = String(row.getAttribute("data-edit-id") || "").trim();
-          if (!/^\d+$/.test(facId)) return;
-          if (row.querySelector(`a[${ATTR}]`)) return;
+        LISTINGS.forEach(({ containerId, cpModel }) => {
+          qsa(`#${containerId} .row.item[data-edit-id]`).forEach((row) => {
+            const entityId = String(row.getAttribute("data-edit-id") || "").trim();
+            if (!/^\d+$/.test(entityId)) return;
+            if (row.querySelector(`a[${ATTR}]`)) return;
 
-          const cpUrl = `https://www.peeringdb.com/cp/peeringdb_server/facility/${facId}/change/`;
+            const cpUrl = `https://www.peeringdb.com/cp/peeringdb_server/${cpModel}/${entityId}/change/`;
 
-          const link = document.createElement("a");
-          link.setAttribute(ATTR, facId);
-          link.href = cpUrl;
-          link.target = "_blank";
-          link.rel = "noopener noreferrer";
-          link.textContent = "⚙️";
-          link.title = `Edit facility #${facId} in CP`;
-          link.setAttribute("aria-label", `Edit facility #${facId} in CP`);
-          link.style.textDecoration = "none";
+            const link = document.createElement("a");
+            link.setAttribute(ATTR, entityId);
+            link.href = cpUrl;
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            link.textContent = "⚙️";
+            link.title = `Edit ${cpModel} #${entityId} in CP`;
+            link.setAttribute("aria-label", `Edit ${cpModel} #${entityId} in CP`);
+            link.style.textDecoration = "none";
 
-          const col = document.createElement("div");
-          col.className = "col-md-2";
-          col.style.textAlign = "right";
-          col.style.paddingRight = "8px";
-          col.appendChild(link);
-          row.appendChild(col);
+            const col = document.createElement("div");
+            col.className = "col-md-2";
+            col.style.textAlign = "right";
+            col.style.paddingRight = "8px";
+            col.appendChild(link);
+            row.appendChild(col);
+          });
         });
       },
     },
