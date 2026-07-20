@@ -457,11 +457,22 @@ function stripTrailingRegistrationIdentifier(name) {
     || /END\s+[A-Z0-9_-]+/i.test(registrationCandidate)
     || /-+\s*BEGIN\b/i.test(registrationCandidate)
     || /\bEND\s+[A-Z0-9_-]+\s*-+/i.test(registrationCandidate);
+  // A bare hash/verification-token blob (e.g. an RDAP ownership-proof remark like RIPE's
+  // "add this string to your object" tokens) has none of the ":"/"_"/"-" punctuation the
+  // check below relies on to flag it as noise -- it's just 24-64 raw hex characters. No
+  // real person/company name segment is composed purely of the letters a-f plus digits at
+  // that length, so this shape alone is enough to call it opaque, independent of whether
+  // the preceding text looks like a company (unlike the registration-ID path further down).
+  // Example: "Samuel Cosgrove, f2939b32ff3768abf6202405ced14e89" -> "Samuel Cosgrove"
+  const looksLikeBareHashToken = /^[a-f0-9]{24,64}$/i.test(registrationCandidate);
   const looksLikeOpaqueTrailingToken =
     !/\s/.test(registrationCandidate)
-    && /[A-F0-9]{24,}/i.test(registrationCandidate)
-    && /[:_-]/.test(registrationCandidate)
-    && registrationCandidate.length >= 32;
+    && (
+      (registrationCandidate.length >= 32
+        && /[A-F0-9]{24,}/i.test(registrationCandidate)
+        && /[:_-]/.test(registrationCandidate))
+      || looksLikeBareHashToken
+    );
   if (looksLikeTokenBanner || looksLikeOpaqueTrailingToken) {
     const base = parts.slice(0, -1).join(", ");
     return base || original;
