@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.216
+// @version      2.0.217
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
@@ -146,6 +146,10 @@
   const NETWORK_DELETE_CONFIRM_TTL_MS = 5 * 60 * 1000;
   const POST_UPDATE_NAME_HISTORY_REDIRECT_STORAGE_KEY = `${MODULE_PREFIX}.postUpdateNameHistoryRedirect`;
   const POST_UPDATE_NAME_HISTORY_REDIRECT_TTL_MS = 10 * 60 * 1000;
+  // User-configurable keyboard shortcut that clicks the Update Name button.
+  // Unset by default; see "CP: Set Update Name Shortcut" in the Tampermonkey menu.
+  const UPDATE_NAME_SHORTCUT_STORAGE_KEY = `${MODULE_PREFIX}.updateNameShortcut`;
+  const UPDATE_NAME_SHORTCUT_BUTTON_ID = `${MODULE_PREFIX}UpdateEntityName`;
   const ORG_NAME_CACHE_TTL_MS = CACHE_TTL_MS;
   const ORG_NAME_TAB_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.orgNameTabCache.`;
   const ORG_NAME_TAB_CACHE_TTL_MS = 30 * 60 * 1000;
@@ -11743,6 +11747,123 @@
   let cpMenuCommandsRegistered = false;
 
   /**
+   * Parses a user-typed shortcut string (e.g. "Alt+U", "ctrl+shift+n") into a
+   * canonical "Ctrl+Alt+Shift+Meta+KEY" form, or null when unparseable/unsafe.
+   * Requires at least one of Ctrl/Alt/Meta so the binding can never fire while
+   * the user is typing an ordinary (optionally shifted) letter into a form
+   * field - Shift alone is not accepted as a qualifying modifier.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {string} raw - User-entered shortcut text.
+   * @returns {string|null} Canonical combo string, or null if invalid.
+   */
+  function normalizeShortcutComboString(raw) {
+    const tokens = String(raw || "")
+      .split("+")
+      .map((token) => token.trim())
+      .filter(Boolean);
+    if (!tokens.length) return null;
+
+    const modifiers = { ctrl: false, alt: false, shift: false, meta: false };
+    let mainKey = "";
+
+    for (const token of tokens) {
+      const lower = token.toLowerCase();
+      if (lower === "ctrl" || lower === "control") modifiers.ctrl = true;
+      else if (lower === "alt" || lower === "option") modifiers.alt = true;
+      else if (lower === "shift") modifiers.shift = true;
+      else if (lower === "meta" || lower === "cmd" || lower === "command" || lower === "win") modifiers.meta = true;
+      else if (!mainKey) mainKey = token.length === 1 ? token.toUpperCase() : lower;
+      else return null; // more than one non-modifier token
+    }
+
+    if (!mainKey) return null;
+    if (!modifiers.ctrl && !modifiers.alt && !modifiers.meta) return null;
+
+    const parts = [];
+    if (modifiers.ctrl) parts.push("Ctrl");
+    if (modifiers.alt) parts.push("Alt");
+    if (modifiers.shift) parts.push("Shift");
+    if (modifiers.meta) parts.push("Meta");
+    parts.push(mainKey);
+    return parts.join("+");
+  }
+
+  /**
+   * Builds the same canonical combo string as normalizeShortcutComboString(),
+   * from a live KeyboardEvent.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {KeyboardEvent} event - Keydown event.
+   * @returns {string} Canonical combo string for the pressed keys.
+   */
+  function getShortcutComboFromKeydownEvent(event) {
+    const parts = [];
+    if (event.ctrlKey) parts.push("Ctrl");
+    if (event.altKey) parts.push("Alt");
+    if (event.shiftKey) parts.push("Shift");
+    if (event.metaKey) parts.push("Meta");
+
+    const key = String(event.key || "");
+    parts.push(key.length === 1 ? key.toUpperCase() : key.toLowerCase());
+    return parts.join("+");
+  }
+
+  /**
+   * Reads the user-configured Update Name shortcut combo from storage.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   * @returns {string} Canonical combo string, or "" when unset.
+   */
+  function getUpdateNameShortcutCombo() {
+    return String(window.localStorage?.getItem(UPDATE_NAME_SHORTCUT_STORAGE_KEY) || "").trim();
+  }
+
+  /**
+   * Persists (or clears, when passed "") the Update Name shortcut combo.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   * @param {string} combo - Canonical combo string, or "" to clear.
+   */
+  function setUpdateNameShortcutCombo(combo) {
+    try {
+      if (combo) {
+        window.localStorage?.setItem(UPDATE_NAME_SHORTCUT_STORAGE_KEY, combo);
+      } else {
+        window.localStorage?.removeItem(UPDATE_NAME_SHORTCUT_STORAGE_KEY);
+      }
+    } catch (_error) {
+      // Ignore localStorage write failures.
+    }
+  }
+
+  let updateNameShortcutListenerBound = false;
+
+  /**
+   * Installs one document-level keydown listener that clicks the Update Name
+   * button when the user-configured shortcut combo is pressed.
+   * Purpose: Let power users trigger Update Name without a mouse click.
+   * Necessity: Opt-in (unset by default) and gated on at least one of
+   * Ctrl/Alt/Meta by normalizeShortcutComboString(), so it can never collide
+   * with ordinary typing in form fields. Clicking the real button (rather
+   * than re-implementing its handler) means every existing guard - hard-excluded
+   * entity check, pending-status check, action lock - still runs unchanged.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
+   */
+  function ensureUpdateNameShortcutListener() {
+    if (updateNameShortcutListenerBound) return;
+    updateNameShortcutListenerBound = true;
+
+    document.addEventListener("keydown", (event) => {
+      const combo = getUpdateNameShortcutCombo();
+      if (!combo) return;
+      if (getShortcutComboFromKeydownEvent(event) !== combo) return;
+
+      const button = qs(`#${UPDATE_NAME_SHORTCUT_BUTTON_ID}`);
+      if (!button) return;
+
+      event.preventDefault();
+      button.click();
+    });
+  }
+
+  /**
    * Registers one-time Tampermonkey menu commands for common CP actions.
    * Purpose: Provide keyboard/popup access to frequent actions without toolbar clicks.
    * Necessity: Power users benefit from script actions in the Tampermonkey command menu.
@@ -11776,6 +11897,55 @@
     registerMenuCommandForButton(`${MODULE_PREFIX}CopyUserProfileUrl`, "Copy User Profile URL");
     registerMenuCommandForButton(`${MODULE_PREFIX}CopyOrganizationUrl`, "Copy Org URL");
     registerMenuCommandForButton(`${MODULE_PREFIX}ResetNetworkInformation`, "Reset Information");
+
+    let updateNameShortcutCommandId = null;
+
+    const getUpdateNameShortcutMenuLabel = () => {
+      const combo = getUpdateNameShortcutCombo();
+      return combo
+        ? `CP: Update Name Shortcut [${combo}] (change...)`
+        : "CP: Set Update Name Shortcut...";
+    };
+
+    const refreshUpdateNameShortcutMenuCommand = () => {
+      if (updateNameShortcutCommandId != null && typeof GM_unregisterMenuCommand === "function") {
+        GM_unregisterMenuCommand(updateNameShortcutCommandId);
+      }
+
+      updateNameShortcutCommandId = GM_registerMenuCommand(getUpdateNameShortcutMenuLabel(), () => {
+        const current = getUpdateNameShortcutCombo();
+        const input = window.prompt(
+          "Set the keyboard shortcut for Update Name (e.g. Alt+U, Ctrl+Shift+N).\n" +
+            "Must include Ctrl, Alt, and/or Meta so it never collides with typing.\n" +
+            "Leave blank and OK to clear the shortcut.",
+          current,
+        );
+        if (input === null) return; // user cancelled the prompt
+
+        const trimmed = input.trim();
+        if (!trimmed) {
+          setUpdateNameShortcutCombo("");
+          notifyUser({ title: "PeeringDB CP", text: "Update Name shortcut cleared." });
+          refreshUpdateNameShortcutMenuCommand();
+          return;
+        }
+
+        const normalized = normalizeShortcutComboString(trimmed);
+        if (!normalized) {
+          notifyUser({
+            title: "PeeringDB CP",
+            text: "Invalid shortcut - include Ctrl, Alt, and/or Meta plus one key (e.g. Alt+U).",
+          });
+          return;
+        }
+
+        setUpdateNameShortcutCombo(normalized);
+        notifyUser({ title: "PeeringDB CP", text: `Update Name shortcut set to ${normalized}.` });
+        refreshUpdateNameShortcutMenuCommand();
+      });
+    };
+
+    refreshUpdateNameShortcutMenuCommand();
 
     GM_registerMenuCommand("CP: Clear Org Name Cache", () => {
       clearOrganizationNameCache();
@@ -12007,6 +12177,7 @@
     dispatchModules(ctx);
     enforceToolbarButtonOrder(ctx);
     registerCpMenuCommands();
+    ensureUpdateNameShortcutListener();
   }
 
   if (document.readyState === "loading") {
