@@ -29,131 +29,136 @@ function stripCompanyTypeSuffix(name) {
   if (original === "Trade Me") return original;
 
   const legalSuffixPatterns = [
-    "Corporation",
-    "Incorporated",
-    "Foundation",
-    "Private\\s+Limited",
-    "Limited",
-    "Limitada",
-    "L\\.?\\s*T\\.?\\s*D\\.?\\s*A\\.?\\s*-?\\s*E\\.?\\s*P\\.?\\s*P\\.?",
-    "L\\.?\\s*T\\.?\\s*D\\.?\\s*A\\.?\\s*-?\\s*M\\.?\\s*E\\.?",
-    "E\\.?\\s*I\\.?\\s*R\\.?\\s*E\\.?\\s*L\\.?\\s*I\\.?\\s*-?\\s*M\\.?\\s*E\\.?",
-    "Limitada\\s*-?\\s*M\\.?\\s*E\\.?",
-    "Limitada\\s*-?\\s*E\\.?\\s*P\\.?\\s*P\\.?",
-    "G\\.?\\s*M\\.?\\s*B\\.?\\s*H\\.?\\s*&\\s*C\\.?\\s*O\\.?\\s*K\\.?\\s*G\\.?",
-    "S\\.?\\s*A\\.?\\s*de\\s*C\\.?\\s*V\\.?",
-    "S\\.?\\s*de\\s*R\\.?\\s*L\\.?\\s*de\\s*C\\.?\\s*V\\.?",
-    "Unipessoal\\s+L\\.?\\s*d\\.?\\s*a\\.?",
-    "P\\.?\\s*v\\.?\\s*t\\.?\\s*L\\.?\\s*t\\.?\\s*d\\.?",
-    "S\\.?\\s*d\\.?\\s*n\\.?\\s*B\\.?\\s*h\\.?\\s*d\\.?",
-    "j\\.?\\s*d\\.?\\s*o\\.?\\s*o\\.?",
-    "E\\.?\\s*O\\.?\\s*O\\.?\\s*D\\.?",
-    "L\\.?\\s*[tT]\\.?\\s*[dD]\\.?\\s*\\u015e[tT][iI\\u0130\\u0131]\\.?",
-    "B\\.?\\s*V\\.?\\s*B\\.?\\s*A\\.?",
-    "C\\.?\\s*V\\.?\\s*B\\.?\\s*A\\.?",
-    "K\\.?\\s*G\\.?\\s*a\\.?\\s*A\\.?",
-    "S\\.?\\s*A\\.?\\s*S\\.?\\s*U\\.?",
-    "C\\.?\\s*o\\.?[,\\s]*L\\.?\\s*t\\.?\\s*d\\.?",
-    "S\\.?\\s*p\\.?\\s*z\\.?\\s*o\\.?\\s*o\\.?",
-    "P\\.?\\s*J\\.?\\s*S\\.?\\s*C\\.?",
-    "J\\.?\\s*S\\.?\\s*C\\.?\\s*B\\.?",
-    "J\\.?\\s*S\\.?\\s*C\\.?",
-    "L\\.?\\s*T\\.?\\s*D\\.?\\s*A\\.?",
-    "E\\.?\\s*I\\.?\\s*R\\.?\\s*E\\.?\\s*L\\.?\\s*I\\.?",
-    "E\\.?\\s*U\\.?\\s*R\\.?\\s*L\\.?",
-    "S\\.?\\s*A\\.?\\s*R\\.?\\s*L\\.?",
-    "S\\.?\\s*A\\.?\\s*S\\.?",
-    "S\\.?\\s*P\\.?\\s*R\\.?\\s*L\\.?",
-    "S\\.?\\s*P\\.?\\s*A\\.?",
-    "S\\.?\\s*R\\.?\\s*L\\.?",
-    "S\\.?\\s*R\\.?\\s*O\\.?",
-    "S\\.?\\s*C\\.?\\s*A\\.?",
-    "S\\.?\\s*N\\.?\\s*C\\.?",
-    "S\\.?\\s*C\\.?\\s*C\\.?",
-    "S\\.?\\s*L\\.?\\s*U\\.?",
-    "G\\.?\\s*M\\.?\\s*B\\.?\\s*H\\.?",
-    "P\\.?\\s*L\\.?\\s*L\\.?\\s*C\\.?",
-    "V\\.?\\s*O\\.?\\s*F\\.?",
-    "O\\.?\\s*H\\.?\\s*G\\.?",
-    "O\\.?\\s*O\\.?\\s*O\\.?",
-    "P\\.?\\s*A\\.?\\s*O\\.?",
-    "P\\.?\\s*A\\.?\\s*T\\.?",
-    "O\\.?\\s*O\\.?\\s*D\\.?",
-    "D\\.?\\s*O\\.?\\s*O\\.?",
-    "T\\.?\\s*O\\.?\\s*V\\.?",
-    "E\\.?\\s*P\\.?\\s*E\\.?",
-    "I\\.?\\s*K\\.?\\s*E\\.?",
-    "E\\.?\\s*P\\.?\\s*P\\.?",
-    "M\\.?\\s*E\\.?\\s*I\\.?",
-    "N\\.?\\s*y\\.?\\s*r\\.?\\s*t\\.?",
-    "Z\\.?\\s*r\\.?\\s*t\\.?",
-    "K\\.?\\s*f\\.?\\s*t\\.?",
-    "A\\.?\\s*p\\.?\\s*S\\.?",
-    "A\\.?\\s*N\\.?\\s*S\\.?",
-    "A\\.?\\s*S\\.?\\s*A\\.?",
-    "O\\.?\\s*y\\.?\\s*j\\.?",
-    "S\\.?\\s*p\\.?\\s*k\\.?",
-    "S\\.?\\s*p\\.?\\s*j\\.?",
-    "d\\.?\\s*o\\.?\\s*o\\.?",
-    "L\\.?\\s*d\\.?\\s*a\\.?",
-    "U\\.?\\s*A\\.?\\s*B\\.?",
-    "S\\.?\\s*I\\.?\\s*A\\.?",
-    "Z\\.?\\s*A\\.?\\s*O\\.?",
-    "L\\.?\\s*T\\.?\\s*D\\.?",
-    "L\\.?\\s*L\\.?\\s*C\\.?",
-    "L\\.?\\s*L\\.?\\s*P\\.?",
-    "I\\.?\\s*N\\.?\\s*C\\.?",
-    "P\\.?\\s*L\\.?\\s*C\\.?",
-    "P\\.?\\s*T\\.?\\s*E\\.?",
-    "P\\.?\\s*T\\.?\\s*Y\\.?",
-    "L\\.?\\s*P\\.?",
-    "A\\.?\\s*G\\.?",
-    "K\\.?\\s*G\\.?",
-    "U\\.?\\s*G\\.?",
-    "O\\.?\\s*G\\.?",
-    "G\\.?\\s*b\\.?\\s*R\\.?",
-    "e\\.?\\s*V\\.?",
-    "e\\.?\\s*K\\.?",
-    "e\\.?\\s*G\\.?",
-    "m\\.?\\s*b\\.?\\s*H\\.?",
-    "B\\.?\\s*V\\.?",
-    "N\\.?\\s*V\\.?",
-    "C\\.?\\s*V\\.?",
-    "A\\.?\\s*B\\.?",
-    "H\\.?\\s*B\\.?",
-    "K\\.?\\s*B\\.?",
-    "O\\.?\\s*y\\.?",
-    "A\\/S",
-    "K\\/S",
-    "I\\/S",
-    "A\\.?\\s*S\\.?",
-    "A\\.?\\s*O\\.?",
-    "K\\.?\\s*K\\.?",
-    "G\\.?\\s*K\\.?",
-    "P\\.?\\s*v\\.?\\s*t\\.?",
-    "B\\.?\\s*h\\.?\\s*d\\.?",
-    "B\\.?\\s*t\\.?",
-    "d\\.?\\s*d\\.?",
-    "C\\.?\\s*o\\.?\\s*r\\.?\\s*p\\.?",
-    "C\\.?\\s*C\\.?",
-    "S[a\\u00e0]rl",
-    "A\\.?\\s*\\u015e\\.?",
-    "A\\.?\\s*D\\.?",
-    "A\\.?\\s*E\\.?",
-    "O\\.?\\s*E\\.?",
-    "E\\.?\\s*E\\.?",
-    "P\\.?\\s*P\\.?",
-    "a\\.?\\s*s\\.?",
-    "O[\\u00dc\\u00fc]|OU",
-    "S\\.?\\s*E\\.?",
-    "M\\.?\\s*B\\.?",
-    "S\\.?\\s*A\\.?",
-    "S\\.?\\s*L\\.?",
-    "S\\.?\\s*C\\.?",
-    "C\\.?\\s*A\\.?",
-    "C\\.?\\s*O\\.?",
-    "S\\.?\\s*S\\.?",
-    "M\\.?\\s*E\\.?",
+    "Corporation", // Corporation (US and other common-law jurisdictions)
+    "Incorporated", // Incorporated (US)
+    "Foundation", // Foundation (generic non-profit/foundation legal form, many jurisdictions)
+    "Private\\s+Limited", // Private Limited (UK/Commonwealth: India, Singapore, Hong Kong, etc.)
+    "Limited", // Limited (UK/Commonwealth)
+    "Limitada", // Limitada (Spanish/Portuguese "Limited" - Latin America, Spain, Portugal, Brazil)
+    "L\\.?\\s*T\\.?\\s*D\\.?\\s*A\\.?\\s*-?\\s*E\\.?\\s*P\\.?\\s*P\\.?", // LTDA-EPP (Brazil: Sociedade Limitada - Empresa de Pequeno Porte, small-business tax regime)
+    "L\\.?\\s*T\\.?\\s*D\\.?\\s*A\\.?\\s*-?\\s*M\\.?\\s*E\\.?", // LTDA-ME (Brazil: Sociedade Limitada - Microempresa, micro-business tax regime)
+    "E\\.?\\s*I\\.?\\s*R\\.?\\s*E\\.?\\s*L\\.?\\s*I\\.?\\s*-?\\s*M\\.?\\s*E\\.?", // EIRELI-ME (Brazil: Empresa Individual de Responsabilidade Limitada - Microempresa)
+    "Limitada\\s*-?\\s*M\\.?\\s*E\\.?", // Limitada-ME (Brazil: spelled-out Limitada + Microempresa)
+    "Limitada\\s*-?\\s*E\\.?\\s*P\\.?\\s*P\\.?", // Limitada-EPP (Brazil: spelled-out Limitada + Empresa de Pequeno Porte)
+    "G\\.?\\s*M\\.?\\s*B\\.?\\s*H\\.?\\s*&\\s*C\\.?\\s*O\\.?\\s*K\\.?\\s*G\\.?", // GmbH & Co. KG (Germany/Austria: limited partnership with a GmbH as general partner)
+    "S\\.?\\s*A\\.?\\s*de\\s*C\\.?\\s*V\\.?", // S.A. de C.V. (Mexico: Sociedad Anónima de Capital Variable)
+    "S\\.?\\s*de\\s*R\\.?\\s*L\\.?\\s*de\\s*C\\.?\\s*V\\.?", // S. de R.L. de C.V. (Mexico: Sociedad de Responsabilidad Limitada de Capital Variable)
+    "Unipessoal\\s+L\\.?\\s*d\\.?\\s*a\\.?", // Unipessoal Lda (Portugal: single-member limited company)
+    "P\\.?\\s*v\\.?\\s*t\\.?\\s*L\\.?\\s*t\\.?\\s*d\\.?", // Pvt Ltd (India/South Asia: Private Limited)
+    "S\\.?\\s*d\\.?\\s*n\\.?\\s*B\\.?\\s*h\\.?\\s*d\\.?", // Sdn Bhd (Malaysia: Sendirian Berhad - private limited company)
+    "j\\.?\\s*d\\.?\\s*o\\.?\\s*o\\.?", // j.d.o.o. (Croatia: jednostavno društvo s ograničenom odgovornošću - simplified LLC)
+    "E\\.?\\s*O\\.?\\s*O\\.?\\s*D\\.?", // EOOD (Bulgaria: Ednolichno Druzhestvo s Ogranichena Otgovornost - single-owner LLC)
+    "L\\.?\\s*[tT]\\.?\\s*[dD]\\.?\\s*\\u015e[tT][iI\\u0130\\u0131]\\.?", // Ltd Şti (Turkey: alternate ordering of Limited Şirketi)
+    "B\\.?\\s*V\\.?\\s*B\\.?\\s*A\\.?", // BVBA (Belgium, Dutch: Besloten Vennootschap met Beperkte Aansprakelijkheid - former private limited form)
+    "C\\.?\\s*V\\.?\\s*B\\.?\\s*A\\.?", // CVBA (Belgium, Dutch: Coöperatieve Vennootschap met Beperkte Aansprakelijkheid - limited-liability cooperative)
+    "K\\.?\\s*G\\.?\\s*a\\.?\\s*A\\.?", // KGaA (Germany: Kommanditgesellschaft auf Aktien - partnership limited by shares)
+    "S\\.?\\s*A\\.?\\s*S\\.?\\s*U\\.?", // SASU (France: Société par Actions Simplifiée Unipersonnelle - single-shareholder SAS)
+    "C\\.?\\s*o\\.?[,\\s]*L\\.?\\s*t\\.?\\s*d\\.?", // Co., Ltd (generic East Asia: Japan, Korea, China, Taiwan, Hong Kong)
+    "S\\.?\\s*p\\.?\\s*z\\.?\\s*o\\.?\\s*o\\.?", // Sp. z o.o. (Poland: Spółka z ograniczoną odpowiedzialnością - LLC)
+    "P\\.?\\s*J\\.?\\s*S\\.?\\s*C\\.?", // PJSC (Public Joint Stock Company - Russia, Ukraine, UAE and other post-Soviet/Gulf jurisdictions)
+    "J\\.?\\s*S\\.?\\s*C\\.?\\s*B\\.?", // JSCB (Joint Stock Commercial Bank - Russia/Uzbekistan and other post-Soviet banks)
+    "J\\.?\\s*S\\.?\\s*C\\.?", // JSC (Joint Stock Company - Russia and other post-Soviet states, generic)
+    "L\\.?\\s*T\\.?\\s*D\\.?\\s*A\\.?", // LTDA (Brazil/Latin America: Sociedade/Sociedad Limitada)
+    "E\\.?\\s*I\\.?\\s*R\\.?\\s*E\\.?\\s*L\\.?\\s*I\\.?", // EIRELI (Brazil: Empresa Individual de Responsabilidade Limitada - single-owner LLC)
+    "E\\.?\\s*U\\.?\\s*R\\.?\\s*L\\.?", // EURL (France: Entreprise Unipersonnelle à Responsabilité Limitée - single-member LLC)
+    "S\\.?\\s*A\\.?\\s*R\\.?\\s*L\\.?", // SARL (France and Francophone countries: Société à Responsabilité Limitée)
+    "S\\.?\\s*A\\.?\\s*S\\.?", // SAS (France: Société par Actions Simplifiée; Colombia: Sociedad por Acciones Simplificada)
+    "S\\.?\\s*P\\.?\\s*R\\.?\\s*L\\.?", // SPRL (Belgium, French: Société Privée à Responsabilité Limitée)
+    "S\\.?\\s*P\\.?\\s*A\\.?", // SPA (Italy: Società per Azioni - joint-stock company)
+    "S\\.?\\s*R\\.?\\s*L\\.?", // SRL (Italy: Società a Responsabilità Limitata; also Latin America: Sociedad de Responsabilidad Limitada)
+    "S\\.?\\s*R\\.?\\s*O\\.?", // SRO (Czech Republic/Slovakia: Společnost s ručením omezeným - LLC)
+    "S\\.?\\s*C\\.?\\s*A\\.?", // SCA (France/Belgium/Luxembourg: Société en Commandite par Actions - partnership limited by shares)
+    "S\\.?\\s*N\\.?\\s*C\\.?", // SNC (France: Société en Nom Collectif; Italy: Società in Nome Collettivo - general partnership)
+    "S\\.?\\s*C\\.?\\s*C\\.?", // SCC - jurisdiction/legal form not confirmed by research; kept as pre-existing pattern, verify before relying on it
+    "S\\.?\\s*L\\.?\\s*U\\.?", // SLU (Spain: Sociedad Limitada Unipersonal - single-member LLC)
+    "G\\.?\\s*M\\.?\\s*B\\.?\\s*H\\.?", // GmbH (Germany/Austria: Gesellschaft mit beschränkter Haftung - LLC)
+    "P\\.?\\s*L\\.?\\s*L\\.?\\s*C\\.?", // PLLC (US: Professional Limited Liability Company)
+    "V\\.?\\s*O\\.?\\s*F\\.?", // VOF (Netherlands: Vennootschap Onder Firma - general partnership)
+    "O\\.?\\s*H\\.?\\s*G\\.?", // OHG (Germany: Offene Handelsgesellschaft - general partnership)
+    "O\\.?\\s*O\\.?\\s*O\\.?", // OOO (Russia: Obshchestvo s Ogranichennoy Otvetstvennostyu - LLC)
+    "P\\.?\\s*A\\.?\\s*O\\.?", // PAO (Russia: Publichnoye Aktsionernoye Obshchestvo - public joint stock company, post-2014 term)
+    "P\\.?\\s*A\\.?\\s*T\\.?", // PAT (Ukraine: publichne aktsionerne tovarystvo - public joint stock company)
+    "O\\.?\\s*O\\.?\\s*D\\.?", // OOD (Bulgaria: Druzhestvo s Ogranichena Otgovornost - LLC)
+    "D\\.?\\s*O\\.?\\s*O\\.?", // DOO (Balkans - Croatia/Serbia/Bosnia/Slovenia: Društvo s ograničenom odgovornošću - LLC)
+    "T\\.?\\s*O\\.?\\s*V\\.?", // TOV (Ukraine: tovarystvo z obmezhenoyu vidpovidalnistyu - LLC)
+    "E\\.?\\s*P\\.?\\s*E\\.?", // EPE (Greece: Etaireia Periorismenis Efthinis - limited liability company)
+    "I\\.?\\s*K\\.?\\s*E\\.?", // IKE (Greece: Idiotiki Kefalaiouchiki Etaireia - private capital company)
+    "E\\.?\\s*P\\.?\\s*P\\.?", // EPP (Brazil: Empresa de Pequeno Porte - small-business tax regime, standalone form)
+    "M\\.?\\s*E\\.?\\s*I\\.?", // MEI (Brazil: Microempreendedor Individual - individual micro-entrepreneur)
+    "N\\.?\\s*y\\.?\\s*r\\.?\\s*t\\.?", // Nyrt (Hungary: Nyilvánosan működő részvénytársaság - public limited company)
+    "Z\\.?\\s*r\\.?\\s*t\\.?", // Zrt (Hungary: Zártkörűen működő részvénytársaság - private limited company)
+    "K\\.?\\s*f\\.?\\s*t\\.?", // Kft (Hungary: Korlátolt Felelősségű Társaság - LLC)
+    "A\\.?\\s*p\\.?\\s*S\\.?", // ApS (Denmark: Anpartsselskab - private limited company)
+    "A\\.?\\s*N\\.?\\s*S\\.?", // ANS (Norway: Ansvarlig Selskap - general partnership)
+    "A\\.?\\s*S\\.?\\s*A\\.?", // ASA (Norway: Allmennaksjeselskap - public limited company)
+    "O\\.?\\s*y\\.?\\s*j\\.?", // Oyj (Finland: julkinen osakeyhtiö - public limited company)
+    "S\\.?\\s*p\\.?\\s*k\\.?", // Spk (Poland: Sp.k. / spółka komandytowa - limited partnership)
+    "S\\.?\\s*p\\.?\\s*j\\.?", // Spj (Poland: Sp.j. / spółka jawna - general partnership)
+    "d\\.?\\s*o\\.?\\s*o\\.?", // doo (Balkans lowercase variant of DOO above - LLC)
+    "L\\.?\\s*d\\.?\\s*a\\.?", // Lda (Portugal: lowercase Limitada abbreviation)
+    "U\\.?\\s*A\\.?\\s*B\\.?", // UAB (Lithuania: Uždaroji akcinė bendrovė - private limited company)
+    "S\\.?\\s*I\\.?\\s*A\\.?", // SIA (Latvia: Sabiedrība ar ierobežotu atbildību - LLC)
+    "Z\\.?\\s*A\\.?\\s*O\\.?", // ZAO (Russia: Zakrytoye Aktsionernoye Obshchestvo - closed joint stock company, pre-2014 term)
+    "L\\.?\\s*T\\.?\\s*D\\.?", // LTD (generic Commonwealth/international: Limited)
+    "L\\.?\\s*L\\.?\\s*C\\.?", // LLC (US and international: Limited Liability Company)
+    "L\\.?\\s*L\\.?\\s*P\\.?", // LLP (US/UK: Limited Liability Partnership)
+    "I\\.?\\s*N\\.?\\s*C\\.?", // INC (US: Incorporated)
+    "P\\.?\\s*L\\.?\\s*C\\.?", // PLC (UK: Public Limited Company)
+    "P\\.?\\s*T\\.?\\s*E\\.?", // PTE (Singapore: Private, used as "Pte Ltd")
+    "P\\.?\\s*T\\.?\\s*Y\\.?", // PTY (Australia/South Africa: Proprietary, used as "Pty Ltd")
+    "L\\.?\\s*P\\.?", // LP (US/UK: Limited Partnership)
+    "A\\.?\\s*G\\.?", // AG (Germany/Switzerland/Austria: Aktiengesellschaft - stock corporation)
+    "K\\.?\\s*G\\.?", // KG (Germany/Austria: Kommanditgesellschaft - limited partnership)
+    "U\\.?\\s*G\\.?", // UG (Germany: Unternehmergesellschaft - low-capital "mini-GmbH")
+    "O\\.?\\s*G\\.?", // OG (Austria: Offene Gesellschaft - general partnership)
+    "G\\.?\\s*b\\.?\\s*R\\.?", // GbR (Germany: Gesellschaft bürgerlichen Rechts - civil law partnership)
+    "e\\.?\\s*V\\.?", // eV (Germany: eingetragener Verein - registered association)
+    "e\\.?\\s*K\\.?", // eK (Germany: eingetragener Kaufmann - registered sole trader)
+    "e\\.?\\s*G\\.?", // eG (Germany: eingetragene Genossenschaft - registered cooperative)
+    "m\\.?\\s*b\\.?\\s*H\\.?", // mbH (Germany/Austria: standalone "mit beschränkter Haftung" fragment of GmbH)
+    "B\\.?\\s*V\\.?", // BV (Netherlands: Besloten Vennootschap - private limited company)
+    "N\\.?\\s*V\\.?", // NV (Netherlands/Belgium: Naamloze Vennootschap - public limited company)
+    "C\\.?\\s*V\\.?", // CV (Netherlands: Commanditaire Vennootschap - limited partnership)
+    "A\\.?\\s*B\\.?", // AB (Sweden: Aktiebolag - limited company)
+    "H\\.?\\s*B\\.?", // HB (Sweden: Handelsbolag - general/trading partnership)
+    "K\\.?\\s*B\\.?", // KB (Sweden: Kommanditbolag - limited partnership)
+    "O\\.?\\s*y\\.?", // Oy (Finland: Osakeyhtiö - limited company)
+    "A\\/S", // A/S (Denmark/Norway: Aktieselskab - stock company)
+    "K\\/S", // K/S (Denmark: Kommanditselskab - limited partnership)
+    "I\\/S", // I/S (Denmark: Interessentskab - general partnership)
+    // E.A.S. / EAS (Paraguay: Empresa por Acciones Simplificadas). Listed before the
+    // bare "A.?S.?" (Nordic A/S) pattern below so the full 3-letter form strips as one
+    // unit; without it, "A.?S.?" alone still matches the "A.S" tail of "Foo E.A.S" and
+    // leaves a dangling "E" attached to the short name (e.g. "Foo E" instead of "Foo").
+    "E\\.?\\s*A\\.?\\s*S\\.?", // EAS (Paraguay: Empresa por Acciones Simplificadas)
+    "A\\.?\\s*S\\.?", // A.S. / AS (Turkey: Anonim Şirket; also dotted form of Nordic A/S above)
+    "A\\.?\\s*O\\.?", // A.O. (Russia: Aktsionernoye Obshchestvo - joint stock company, unified post-2014 term)
+    "K\\.?\\s*K\\.?", // K.K. (Japan: Kabushiki Kaisha - stock company)
+    "G\\.?\\s*K\\.?", // G.K. (Japan: Godo Kaisha - Japanese LLC-equivalent)
+    "P\\.?\\s*v\\.?\\s*t\\.?", // P.v.t. (India: dotted "Pvt" fragment - Private, standalone fallback without Ltd)
+    "B\\.?\\s*h\\.?\\s*d\\.?", // B.h.d. (Malaysia: dotted "Bhd" fragment - Berhad, standalone fallback without Sdn)
+    "B\\.?\\s*t\\.?", // B.t. (Hungary: dotted Bt - betéti társaság, limited partnership)
+    "d\\.?\\s*d\\.?", // d.d. (Croatia/Slovenia: dioničko društvo / delniška družba - joint stock company)
+    "C\\.?\\s*o\\.?\\s*r\\.?\\s*p\\.?", // C.o.r.p. (dotted abbreviated form of "Corp" - Corporation)
+    "C\\.?\\s*C\\.?", // C.C. - jurisdiction/legal form not confirmed by research; kept as pre-existing pattern, verify before relying on it
+    "S[a\\u00e0]rl", // Sàrl (Switzerland, French-speaking cantons: accented variant of SARL)
+    "A\\.?\\s*\\u015e\\.?", // A.Ş. (Turkey: Anonim Şirket, accented Turkish spelling)
+    "A\\.?\\s*D\\.?", // A.D. (Bulgaria/North Macedonia/Serbia: Akcionersko Druzhestvo / Akcionarsko Društvo - joint stock company)
+    "A\\.?\\s*E\\.?", // A.E. (Greece: Anonymi Etaireia - societe anonyme / joint stock company)
+    "O\\.?\\s*E\\.?", // O.E. (Greece: Omorrythmos Etaireia - general partnership)
+    "E\\.?\\s*E\\.?", // E.E. (Greece: Eterorrythmos Etaireia - limited partnership)
+    "P\\.?\\s*P\\.?", // P.P. - jurisdiction/legal form not confirmed by research; kept as pre-existing pattern, verify before relying on it
+    "a\\.?\\s*s\\.?", // a.s. (Czech Republic/Slovakia: akciová společnost - joint stock company; lowercase distinguishes from Nordic AS)
+    "O[\\u00dc\\u00fc]|OU", // OÜ / OU (Estonia: Osaühing - private limited company)
+    "S\\.?\\s*E\\.?", // S.E. (EU-wide: Societas Europaea - European public company)
+    "M\\.?\\s*B\\.?", // M.B. - jurisdiction/legal form not confirmed by research; kept as pre-existing pattern, verify before relying on it
+    "S\\.?\\s*A\\.?", // S.A. (generic: Sociedad/Société/Società Anónima/Anonyme - Spain, France, Latin America, Switzerland, Belgium, Greece, etc.)
+    "S\\.?\\s*L\\.?", // S.L. (Spain: Sociedad Limitada - limited company)
+    "S\\.?\\s*C\\.?", // S.C. (Poland: spółka cywilna - civil law partnership; also used generically for "société civile"-style forms elsewhere)
+    "C\\.?\\s*A\\.?", // C.A. (Venezuela: Compañía Anónima - joint stock company)
+    "C\\.?\\s*O\\.?", // C.O. (generic dotted abbreviation of "Co." - Company; not tied to a specific jurisdiction)
+    "S\\.?\\s*S\\.?", // S.S. - jurisdiction/legal form not confirmed by research; kept as pre-existing pattern, verify before relying on it
+    "M\\.?\\s*E\\.?", // M.E. (Brazil: Microempresa - micro-business tax regime, standalone form)
   ];
 
   const legalPrefixPatterns = [
