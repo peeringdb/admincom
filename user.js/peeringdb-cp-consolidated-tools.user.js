@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.212
+// @version      2.0.213
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
@@ -291,20 +291,13 @@
     ixlanprefix: "ixpfx",
     carrierfacility: "carrierfac",
   };
+  /**
+   * Derived from ENTITY_API_RESOURCE_MAP (single source of truth for CP
+   * entity -> reftag) rather than hand-duplicated, so a future reftag
+   * addition/typo there can't silently drift out of sync with this set.
+   */
   const OPENAPI_KNOWN_RESOURCE_SLUGS = new Set([
-    "org",
-    "fac",
-    "net",
-    "ix",
-    "carrier",
-    "campus",
-    "poc",
-    "netfac",
-    "netixlan",
-    "ixfac",
-    "ixlan",
-    "ixpfx",
-    "carrierfac",
+    ...Object.values(ENTITY_API_RESOURCE_MAP),
   ]);
 
   /**
@@ -312,6 +305,20 @@
    * Used by markDeletedNetworkInlinesForDeletion to iterate all inline sets.
    */
   const NETWORK_INLINE_SET_PREFIXES = ["poc_set", "netfac_set", "netixlan_set"];
+
+  /**
+   * Django admin inline-set DOM ID prefixes for the User change page's MFA
+   * device inlines (UserDeviceInline / UserWebauthnSecurityKeyInline).
+   * Unlike NETWORK_INLINE_SET_PREFIXES, these come from third-party packages
+   * (django_otp, django_security_keys) not vendored in this repo: neither
+   * their fk related_name nor their formset prefix can be checked against
+   * local source, so both were verified against a live rendered CP page
+   * rather than package source. Re-verify against a live page if either
+   * package is upgraded and the buttons that use these silently stop
+   * appearing.
+   */
+  const USER_TOTP_DEVICE_SET_PREFIX = "totpdevice_set";
+  const USER_SECURITY_KEY_SET_PREFIX = "webauthn_security_keys";
 
   /**
    * Deterministic left-to-right priority order for the primary CP toolbar.
@@ -10381,8 +10388,8 @@
       match: (ctx) => ctx.isEntityChangePage && ctx.entity === "user",
       preconditions: () => Boolean(getOrCreateSecondaryActionRow()),
       run: () => {
-        const totpEntries = getUserInlineFormsetEntries("totpdevice_set");
-        const securityKeyEntries = getUserInlineFormsetEntries("webauthn_security_keys");
+        const totpEntries = getUserInlineFormsetEntries(USER_TOTP_DEVICE_SET_PREFIX);
+        const securityKeyEntries = getUserInlineFormsetEntries(USER_SECURITY_KEY_SET_PREFIX);
 
         if (totpEntries.length === 1) {
           const { pk, name } = totpEntries[0];
