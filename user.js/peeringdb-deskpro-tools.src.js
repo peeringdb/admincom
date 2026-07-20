@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name            PeeringDB DP - Consolidated Tools
 // @namespace       https://www.peeringdb.com/
-// @version         1.7.3
+// @version         1.7.4
 // @description     Consolidated DeskPro tools: linkifies/enriches PeeringDB links (ASN/IP/IX/NET), copies mailto addresses, normalizes PeeringDB CP double-slash links, generates pihole whitelist commands for IX/NET/FAC/Carrier approval tickets
 // @author          <chriztoffer@peeringdb.com>
 // @match           https://peeringdb.deskpro.com/app*
@@ -44,7 +44,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbDp";
-  const SCRIPT_VERSION = "1.7.3";
+  const SCRIPT_VERSION = "1.7.4";
   // RDAP fallback client is intentionally CP-only; DP does not implement RDAP lookups.
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
@@ -1834,6 +1834,21 @@
   }
 
   /**
+   * Determines whether a node is inside (or is) a live contenteditable region.
+   * Purpose: Avoid modifying DeskPro editor content (message composer, or a
+   * single message opened for in-place editing) while snippets are
+   * inserted/managed. Mutating text nodes/anchors under an active rich-text
+   * editor's selection can desync the editor and hang the tab.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   * @param {Node} node - Element or text node to evaluate.
+   * @returns {boolean} True when inside a contenteditable ancestor.
+   */
+  function isNodeInsideEditableRegion(node) {
+    const el = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+    return Boolean(el?.closest?.(EDITABLE_CONTAINER_SELECTOR));
+  }
+
+  /**
    * Determines whether an anchor is inside an editable composer region.
    * Purpose: Avoid modifying DeskPro editor content while snippets are inserted/managed.
    * @ai Keep behavior stable and prefer minimal, localized edits.
@@ -1841,7 +1856,7 @@
    * @returns {boolean} True when inside a contenteditable ancestor.
    */
   function isAnchorInsideEditableRegion(anchor) {
-    return Boolean(anchor?.closest?.(EDITABLE_CONTAINER_SELECTOR));
+    return isNodeInsideEditableRegion(anchor);
   }
 
   /**
@@ -2564,6 +2579,9 @@
     if (!node || (node.nodeType !== Node.ELEMENT_NODE && node.nodeType !== Node.TEXT_NODE)) {
       return false;
     }
+    // Never touch a message that's currently open for in-place editing
+    // (or the reply composer) — see isNodeInsideEditableRegion().
+    if (isNodeInsideEditableRegion(node)) return false;
     const container = getScopedMessageContainer();
     if (!container) return false;
     return container === node || container.contains(node);
