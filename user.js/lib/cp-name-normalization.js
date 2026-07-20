@@ -714,24 +714,119 @@ function parsePolishScPartnerIdentity(name) {
 }
 
 /**
+ * Countries where LACNIC (and similarly-structured RIRs) are known to represent an
+ * individually-held resource's org name as "<Person Name> (<Trade Name>)", with no
+ * separate incorporated-entity record to hold the trade name. Confirmed for Guatemala
+ * via RDAP (autnum vs. entity contact record) plus independent bgp.tools corroboration
+ * for AS272876 ("EDWIN RAYMUNDO HERNÁNDEZ PEC (IMPORTADORA Y EXPORTADORA INTERCEL)").
+ * Extend only after confirming a new country follows the same convention - this list is
+ * the primary guard against misreading unrelated parenthetical usage (e.g. "Acme Corp
+ * (Brazil)", "Acme (formerly Foo)") as a person/trade-name split.
+ * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+ */
+const PARENTHESIZED_TRADE_NAME_COUNTRIES = new Set(["GT"]);
+
+/**
+ * Corporate/descriptive words that disqualify a parenthesis-preceding phrase from being
+ * treated as a personal name, even if it otherwise has the right word count and casing.
+ * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+ */
+const PARENTHESIZED_TRADE_NAME_DISQUALIFYING_WORDS = new Set([
+  "network", "networks", "telecom", "telecomunicaciones", "internet",
+  "systems", "solutions", "group", "grupo", "corp", "corporation",
+  "company", "compania", "compañía", "servicios", "services",
+]);
+
+/**
+ * Checks whether text has the shape of a Latin American full personal name: a small
+ * number of capitalized words, no digits, and no corporate/descriptive vocabulary.
+ * Purpose: Second guard (alongside the country allow-list) for
+ * parseParenthesizedTradeNameIdentity(), so the split only fires when the text before
+ * the parenthesis plausibly names a person rather than a company.
+ * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+ * @param {string} text - Candidate text preceding a parenthesis.
+ * @returns {boolean} True when the text looks like a personal name.
+ */
+function looksLikePersonalNameShape(text) {
+  const trimmed = String(text || "").trim().replace(/\s+/g, " ");
+  if (!trimmed || /\d/.test(trimmed)) return false;
+
+  const words = trimmed.split(" ").filter(Boolean);
+  if (words.length < 3 || words.length > 5) return false;
+
+  if (words.some((word) => PARENTHESIZED_TRADE_NAME_DISQUALIFYING_WORDS.has(word.toLowerCase()))) {
+    return false;
+  }
+
+  const wordShapeRegex = /^[A-ZÀ-ÖØ-Þ][a-zà-öø-þ]*$|^[A-ZÀ-ÖØ-Þ]+$/;
+  return words.every((word) => wordShapeRegex.test(word));
+}
+
+/**
+ * Extracts identity from "<Person Name> (<Trade Name>)" org names used by some RIRs
+ * for individually-held (non-incorporated) resources.
+ * Purpose: Move the trade name to canonical Name while keeping the person's legal name
+ * as AKA, gated on country + personal-name shape to avoid misreading unrelated
+ * parenthetical usage as a person/trade-name split.
+ * Example: "EDWIN RAYMUNDO HERNÁNDEZ PEC (IMPORTADORA Y EXPORTADORA INTERCEL)" (GT)
+ * -> { name: "IMPORTADORA Y EXPORTADORA INTERCEL", knownAs: "EDWIN RAYMUNDO HERNÁNDEZ PEC" }
+ * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+ * @param {string} name - Raw organization name.
+ * @param {string} [countryCode=""] - ISO country code for the record being named.
+ * @returns {{ name: string, knownAs: string }} Parsed identity values.
+ */
+function parseParenthesizedTradeNameIdentity(name, countryCode = "") {
+  const original = String(name || "").trim();
+  if (!original) return { name: "", knownAs: "" };
+
+  const normalizedCountry = String(countryCode || "").trim().toUpperCase();
+  if (!PARENTHESIZED_TRADE_NAME_COUNTRIES.has(normalizedCountry)) {
+    return { name: sanitizeRdapOrgName(original), knownAs: "" };
+  }
+
+  const match = original.match(/^(.+?)\s*\(([^()]+)\)\s*$/);
+  if (!match) return { name: sanitizeRdapOrgName(original), knownAs: "" };
+
+  const personCandidate = String(match[1] || "").trim();
+  const tradeNameCandidate = String(match[2] || "").trim();
+  if (!tradeNameCandidate || !looksLikePersonalNameShape(personCandidate)) {
+    return { name: sanitizeRdapOrgName(original), knownAs: "" };
+  }
+
+  return {
+    name: sanitizeRdapOrgName(tradeNameCandidate),
+    knownAs: personCandidate,
+  };
+}
+
+/**
  * Resolves canonical name + AKA identity from known malformed/alias patterns.
  * Purpose: Keep all AKA extraction rules in one place.
  * @ai Preserve normalization/parsing rules and backward-compatible output formats.
  * @param {string} name - Raw organization name.
- * @returns {{ name: string, knownAs: string }} Parsed identity values.
+ * @param {string} [countryCode=""] - ISO country code, used by country-gated rules
+ *   (currently only parseParenthesizedTradeNameIdentity).
+ * @returns {{ name: string, knownAs: string, fullName: string }} Parsed identity values.
+ *   fullName is the original untouched input, populated only when a split occurred
+ *   (knownAs non-empty), so callers can preserve it as Long Name.
  */
-function parseOrganizationNameIdentity(name) {
+function parseOrganizationNameIdentity(name, countryCode = "") {
   const tradingAsIdentity = parseRdapTradingAsIdentity(name);
   if (String(tradingAsIdentity?.knownAs || "").trim()) {
-    return tradingAsIdentity;
+    return { ...tradingAsIdentity, fullName: String(name || "").trim() };
   }
 
   const scIdentity = parsePolishScPartnerIdentity(name);
   if (String(scIdentity?.knownAs || "").trim()) {
-    return scIdentity;
+    return { ...scIdentity, fullName: String(name || "").trim() };
   }
 
-  return tradingAsIdentity;
+  const parenIdentity = parseParenthesizedTradeNameIdentity(name, countryCode);
+  if (String(parenIdentity?.knownAs || "").trim()) {
+    return { ...parenIdentity, fullName: String(name || "").trim() };
+  }
+
+  return { ...tradingAsIdentity, fullName: "" };
 }
 
 /**
