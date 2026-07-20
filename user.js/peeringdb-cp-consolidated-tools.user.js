@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.218
+// @version      2.0.219
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
@@ -64,7 +64,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.211";
+  const SCRIPT_VERSION = "2.0.219";
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
   const SHARED_USER_AGENT_STORAGE_KEY = "pdbAdmincom.userAgent";
@@ -2164,6 +2164,30 @@
   // modules elsewhere in the including script.
 
   /**
+   * Checks whether a string has balanced parentheses (every close matched by an
+   * earlier open, none left dangling).
+   * Purpose: Guard legal-suffix/prefix stripping below. Their separator/punctuation
+   * character classes intentionally include "(" and ")" so a suffix itself wrapped in
+   * parens (e.g. "Foo (Ltd)") can be stripped as a unit -- but that same class can
+   * otherwise swallow a real, meaningful closing paren immediately preceding a legal
+   * suffix (e.g. "Power Line (HK) Co." -> "Power Line (HK"), since nothing previously
+   * distinguished "decorative punctuation around the suffix" from "part of the name".
+   * @param {string} value - Candidate string.
+   * @returns {boolean} True when parentheses are balanced (and never go negative).
+   */
+  function hasBalancedParens(value) {
+    let depth = 0;
+    for (const ch of String(value || "")) {
+      if (ch === "(") depth += 1;
+      else if (ch === ")") {
+        depth -= 1;
+        if (depth < 0) return false;
+      }
+    }
+    return depth === 0;
+  }
+
+  /**
    * Strips leading and trailing legal company-type prefixes and suffixes from a name.
    * Purpose: Keep network short Name concise while preserving full legal form
    * in Long Name.
@@ -2399,7 +2423,12 @@
     // Strip trailing suffixes (may be multiple layers)
     while (candidate && candidate !== previous && suffixRegex.test(candidate)) {
       previous = candidate;
-      candidate = candidate.replace(suffixRegex, "").trim().replace(/[\s,().-]+$/g, "").trim();
+      const stripped = candidate.replace(suffixRegex, "").trim().replace(/[\s,().-]+$/g, "").trim();
+      // Reject a strip that orphans a real "(" that was balanced before this step --
+      // see hasBalancedParens() above for why the separator class can do this.
+      if (!hasBalancedParens(candidate) || hasBalancedParens(stripped)) {
+        candidate = stripped;
+      }
     }
 
     // Strip trailing prefix-type legal tokens when source ordering is reversed
@@ -2407,7 +2436,10 @@
     previous = "";
     while (candidate && candidate !== previous && trailingPrefixRegex.test(candidate)) {
       previous = candidate;
-      candidate = candidate.replace(trailingPrefixRegex, "").trim().replace(/[\s,().-]+$/g, "").trim();
+      const stripped = candidate.replace(trailingPrefixRegex, "").trim().replace(/[\s,().-]+$/g, "").trim();
+      if (!hasBalancedParens(candidate) || hasBalancedParens(stripped)) {
+        candidate = stripped;
+      }
     }
 
     // For "Privately owned entrepreneur ..." names, drop trailing ISO country code tails.
@@ -2429,11 +2461,14 @@
 
     const bulgarianAdSuffixRegex = /(?:[\s,()._-]+)A\.?\s*D\.?[\s,()._-]*$/;
     if (bulgarianAdSuffixRegex.test(candidate)) {
-      candidate = candidate
+      const stripped = candidate
         .replace(bulgarianAdSuffixRegex, "")
         .trim()
         .replace(/[\s,().-]+$/g, "")
         .trim();
+      if (!hasBalancedParens(candidate) || hasBalancedParens(stripped)) {
+        candidate = stripped;
+      }
     }
 
     // Strip Scandinavian "AS" suffix (Aksjeselskap/Aktieselskab, NO/DK).
@@ -2446,7 +2481,9 @@
         .trim()
         .replace(/[\s,().-]+$/g, "")
         .trim();
-      if (stripped) candidate = stripped;
+      if (stripped && (!hasBalancedParens(candidate) || hasBalancedParens(stripped))) {
+        candidate = stripped;
+      }
     }
 
     // Remove wrapping quotes after legal prefix/suffix stripping.
