@@ -223,7 +223,20 @@ function stripCompanyTypeSuffix(name) {
     "UAB", // UAB (Lithuania: Uzdaroji akcine bendrove, private limited company)
     "O\\.?\\s*U\\.?", // OU (Estonia: Osaühing)
     "O\\.?\\s*Y\\.?", // OY (Finland: Osakeyhtiö)
-    "LİMİTED\\s+ŞİRKETİ", // Limited Şirketi (Turkey: Limited Company)
+    // Limited Şirketi (Turkey: Limited Company). "İ" (U+0130, dotted capital I) is a
+    // distinct Unicode character from plain "I"/"i" -- not a case-fold pair -- so a
+    // literal "İ" only ever matches an all-caps Turkish legal-register rendering.
+    // Ordinary mixed-case text ("Limited Şirketi") spells those same letters as plain
+    // ASCII "i", which the bare literal below would silently reject. [İIi] tolerates
+    // both.
+    "L[İIi]M[İIi]TED\\s+Ş[İIi]RKET[İIi]",
+    // ASCII-transliterated spelling of the same Turkish legal form: "Ş" (U+015E) itself
+    // replaced by plain "S", as commonly seen in RDAP/RIPE data (e.g. "AnatoliaCore
+    // Teknoloji Limited Sirketi", AS219349). Without this, the name never gets recognized
+    // as having a legal suffix at all, which also stops
+    // resolveCompactNameFromCommaLegalAliases() from collapsing a duplicate
+    // "Name Ltd Sirketi, NAME" alias pair into one clean name.
+    "LIMITED\\s+SIRKETI", // Limited Sirketi (Turkey: fully ASCII spelling of Limited Şirketi)
     "A\\.?\\s*Ş\\.?", // A.Ş. (Turkey: Anonim Şirket - Joint Stock Company)
   ];
 
@@ -510,11 +523,20 @@ function compactEntityNameWithLongNameFallback(name) {
 
   const fromLegalAliases = resolveCompactNameFromCommaLegalAliases(normalizedFullName);
 
-  // When the comma-parts are NOT legal aliases of each other (fromLegalAliases empty) but the
-  // first part alone has a legal corporate form (e.g. "V D C Net Company Limited, Ultra Net"),
-  // use only the first part as the canonical full name so Long Name can be populated correctly.
   let effectiveFullName = normalizedFullName;
-  if (!fromLegalAliases && normalizedFullName.includes(",")) {
+  if (fromLegalAliases) {
+    // The comma-parts were recognized as aliases of the SAME underlying name (e.g.
+    // "AnatoliaCore Teknoloji Limited Sirketi, ANATOLIACORE TEKNOLOJI" -- one with a
+    // legal suffix, one without, or differently cased). There's no additional
+    // information in the raw joined string beyond what's already in the resolved
+    // value, so treat it as the full name too. Otherwise shortName and Long Name
+    // would diverge below, leaking the redundant raw "Name Ltd, NAME" string into
+    // Long Name instead of leaving it empty (nothing extra worth preserving).
+    effectiveFullName = fromLegalAliases;
+  } else if (normalizedFullName.includes(",")) {
+    // The comma-parts are NOT legal aliases of each other, but the first part alone has
+    // a legal corporate form (e.g. "V D C Net Company Limited, Ultra Net") -- use only
+    // the first part as the canonical full name so Long Name can be populated correctly.
     const firstPart = normalizedFullName.split(",")[0].trim();
     const firstPartCompacted = stripCompanyTypeSuffix(firstPart);
     if (firstPartCompacted && firstPartCompacted !== firstPart) {
