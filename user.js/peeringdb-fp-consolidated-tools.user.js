@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.1.32
+// @version      1.1.33
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
@@ -32,7 +32,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbFpConsolidated";
-  const SCRIPT_VERSION = "1.1.32";
+  const SCRIPT_VERSION = "1.1.33";
   // RDAP fallback client is intentionally CP-only; FP does not implement RDAP lookups.
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
@@ -121,6 +121,7 @@
     user: "user",
     oauthapplication: "oauth",
   };
+  const TITLE_SEP = " | ";
   const activeActionLocks = new Set();
   const pendingDomUpdates = new Map();
   const lastFetchFailureByUrl = new Map();
@@ -2362,6 +2363,101 @@
     });
   }
 
+  /**
+   * Strips a trailing slash (except for the root "/") so path matching in
+   * STATIC_PAGE_TITLES doesn't need to special-case both forms per entry.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   */
+  function normalizePathname(pathname) {
+    const trimmed = String(pathname || "").replace(/\/+$/, "");
+    return trimmed || "/";
+  }
+
+  /**
+   * Trims and caps free-text (e.g. a search query) for use inside a tab title.
+   * Purpose: Prevent an unbounded query string from producing an unreadable tab title.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   */
+  function truncateForTitle(text, maxLen = 60) {
+    const trimmed = String(text || "").trim();
+    if (trimmed.length <= maxLen) return trimmed;
+    return `${trimmed.slice(0, maxLen - 1).trimEnd()}…`;
+  }
+
+  /**
+   * Builds the /search and /search/v2 title, reflecting the "q" query params
+   * PeeringDB's render_search_result()/extract_query() join into the original query.
+   * Purpose: Surface what was actually searched for in the tab title.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   */
+  function buildSearchPageTitle() {
+    const params = new URLSearchParams(window.location.search || "");
+    const q = params.getAll("q").join(" ").trim();
+    return q ? `PDB${TITLE_SEP}Search: "${truncateForTitle(q)}"` : `PDB${TITLE_SEP}Search`;
+  }
+
+  /**
+   * Lookup table of non-entity FP pages worth a bespoke title, evaluated top-down.
+   * Purpose: Give the highest-traffic static/account pages an informative,
+   * consistent title without hand-maintaining every future PeeringDB route.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   */
+  const STATIC_PAGE_TITLES = [
+    { test: (p) => p === "/", title: () => `PDB${TITLE_SEP}Home` },
+    { test: (p) => p === "/search" || p === "/search/v2", title: buildSearchPageTitle },
+    { test: (p) => p === "/advanced_search", title: () => `PDB${TITLE_SEP}Advanced Search` },
+    { test: (p) => p === "/sponsors", title: () => `PDB${TITLE_SEP}Sponsors` },
+    { test: (p) => p === "/about", title: () => `PDB${TITLE_SEP}About` },
+    { test: (p) => p === "/aup", title: () => `PDB${TITLE_SEP}Acceptable Use Policy (AUP)` },
+    { test: (p) => p === "/maintenance", title: () => `PDB${TITLE_SEP}Maintenance` },
+    { test: (p) => p === "/suggest/fac", title: () => `PDB${TITLE_SEP}Suggest Facility` },
+    { test: (p) => p === "/_search", title: () => `PDB${TITLE_SEP}ES Search` },
+    { test: (p) => p === "/register", title: () => `PDB${TITLE_SEP}Register` },
+    { test: (p) => p === "/verify" || p === "/profile", title: () => `PDB${TITLE_SEP}My Profile` },
+    {
+      test: (p) => p === "/account/passkey",
+      title: () => `PDB${TITLE_SEP}Account Security - Passkeys`,
+    },
+    {
+      test: (p) => p === "/reset-password",
+      title: () => `PDB${TITLE_SEP}Account Recovery - Reset Password`,
+    },
+    {
+      test: (p) => p === "/username-retrieve" || p === "/username-retrieve/complete",
+      title: () => `PDB${TITLE_SEP}Account Recovery - Retrieve Username`,
+    },
+    { test: (p) => p === "/request-ownership", title: () => `PDB${TITLE_SEP}Request Ownership` },
+    { test: (p) => p === "/remove-affiliation", title: () => `PDB${TITLE_SEP}Remove Affiliation` },
+    {
+      test: (p) => p === "/verified-update" || p === "/verified-update/accept",
+      title: () => `PDB${TITLE_SEP}Verified Update`,
+    },
+  ];
+
+  /**
+   * Resolves a STATIC_PAGE_TITLES entry for the current pathname, if any.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   * @returns {string} The built title, or "" when no entry matches.
+   */
+  function buildStaticPageTitle() {
+    const path = normalizePathname(window.location.pathname);
+    const entry = STATIC_PAGE_TITLES.find((candidate) => candidate.test(path));
+    return entry ? entry.title() : "";
+  }
+
+  /**
+   * Last-resort title normalizer for every FP page not covered by a more
+   * specific builder above (2FA/allauth pages, future new routes, error pages).
+   * Purpose: Guarantee a consistent "PDB | ..." tab title everywhere without
+   * hand-maintaining an exhaustive route table.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   */
+  function applyGenericTitleFallback() {
+    const current = String(document.title || "").trim();
+    if (!current || current.startsWith("PDB")) return;
+    document.title = `PDB${TITLE_SEP}${current}`;
+  }
+
   const modules = [
     {
       id: "fix-double-slashes",
@@ -2432,9 +2528,9 @@
     },
     {
       id: "set-window-title",
-      match: (ctx) => ctx.isEntityPage || ctx.isCpEntityChangePage,
+      match: () => true,
       run: (ctx) => {
-        const sep = " | ";
+        const sep = TITLE_SEP;
 
         if (ctx.isCpEntityChangePage) {
           const cpType = ctx.cpEntity;
@@ -2461,32 +2557,43 @@
           return;
         }
 
-        let pdbType = ctx.type;
-        let title = qs('div[data-edit-name="name"]')?.getAttribute("data-edit-value") || "";
-        const legalLongName = getText('div[data-edit-name="name_long"]');
-        let extra = "";
+        if (ctx.isEntityPage) {
+          let pdbType = ctx.type;
+          let title = qs('div[data-edit-name="name"]')?.getAttribute("data-edit-value") || "";
+          const legalLongName = getText('div[data-edit-name="name_long"]');
+          let extra = "";
 
-        if (ctx.type === "asn" || ctx.type === "net") {
-          const asn = getText('div[data-edit-name="asn"]');
-          if (asn) {
-            pdbType = `as${asn.replace(/\D/g, "")}`;
+          if (ctx.type === "asn" || ctx.type === "net") {
+            const asn = getText('div[data-edit-name="asn"]');
+            if (asn) {
+              pdbType = `as${asn.replace(/\D/g, "")}`;
+            }
+            if (legalLongName) title = legalLongName;
+            const aka = getText('div[data-edit-name="aka"]');
+            if (aka && aka !== title) {
+              title += ` (a.k.a. ${aka})`;
+            }
+            extra = sep + "net.peeringdb.com";
+          } else if (["org", "fac", "carrier", "campus"].includes(ctx.type)) {
+            if (legalLongName) title = legalLongName;
+          } else if (ctx.type === "ix") {
+            pdbType = "ixp";
+            if (legalLongName) title = legalLongName;
           }
-          if (legalLongName) title = legalLongName;
-          const aka = getText('div[data-edit-name="aka"]');
-          if (aka && aka !== title) {
-            title += ` (a.k.a. ${aka})`;
+
+          if (title) {
+            document.title = `PDB${sep}${pdbType.toUpperCase()}${sep}${title}${extra}`;
+            return;
           }
-          extra = sep + "net.peeringdb.com";
-        } else if (["org", "fac", "carrier", "campus"].includes(ctx.type)) {
-          if (legalLongName) title = legalLongName;
-        } else if (ctx.type === "ix") {
-          pdbType = "ixp";
-          if (legalLongName) title = legalLongName;
         }
 
-        if (title) {
-          document.title = `PDB${sep}${pdbType.toUpperCase()}${sep}${title}${extra}`;
+        const staticTitle = buildStaticPageTitle();
+        if (staticTitle) {
+          document.title = staticTitle;
+          return;
         }
+
+        applyGenericTitleFallback();
       },
     },
     {
@@ -3890,6 +3997,18 @@
 
     window.addEventListener("popstate", onRouteChange);
     window.addEventListener("hashchange", onRouteChange);
+  }
+
+  // Test-only escape hatch: Node's test runner sets window.__PDB_TEST__ on a
+  // fake window/document before evaluating this script, so it can exercise
+  // module logic (e.g. title builders) directly without running the real
+  // browser bootstrap (MutationObserver/requestAnimationFrame/event
+  // listeners), which a minimal test DOM doesn't implement. Never set by
+  // Tampermonkey in production, so real page behavior is unchanged.
+  // @ai Preserve execution ordering, locks, and route/module boundaries.
+  if (typeof window !== "undefined" && window.__PDB_TEST__) {
+    window.__pdbFpTestHooks__ = { getRouteContext, modules };
+    return;
   }
 
   bootstrapConsolidatedInit();
