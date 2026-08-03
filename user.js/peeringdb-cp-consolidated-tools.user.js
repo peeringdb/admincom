@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.221
+// @version      2.0.222
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
-// @match        https://www.peeringdb.com/cp/peeringdb_server/*
-// @match        https://beta.peeringdb.com/cp/peeringdb_server/*
+// @match        https://www.peeringdb.com/cp/*
+// @match        https://beta.peeringdb.com/cp/*
 // @icon         https://icons.duckduckgo.com/ip2/peeringdb.com.ico
 // @grant        GM_xmlhttpRequest
 // @grant        GM_notification
@@ -64,7 +64,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.221";
+  const SCRIPT_VERSION = "2.0.222";
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
   const SHARED_USER_AGENT_STORAGE_KEY = "pdbAdmincom.userAgent";
@@ -1652,27 +1652,33 @@
    * Necessity: Multiple modules need entity type, entity ID, and page kind without
    * re-parsing the URL each time — centralizing parsing prevents divergent path logic.
    * @ai Preserve execution ordering, locks, and route/module boundaries.
-   * @returns {{ host: string, path: string[], pathName: string, isCp: boolean,
-   *             entity: string, entityId: string, pageKind: string,
+   * @returns {{ host: string, path: string[], pathName: string, isAdminPage: boolean,
+   *             isCp: boolean, entity: string, entityId: string, pageKind: string,
    *             isEntityChangePage: boolean, isEntityListPage: boolean,
-   *             isEntityHistoryPage: boolean }}
+   *             isEntityAddPage: boolean, isEntityDeletePage: boolean,
+   *             isEntityHistoryPage: boolean, isOrgMergeToolPage: boolean }}
    */
   function getRouteContext() {
     const path = window.location.pathname.replace(/(^\/|\/$)/g, "").split("/");
+    const isCp = path[0] === "cp" && path[1] === "peeringdb_server";
     return {
       host: window.location.hostname,
       path,
       pathName: window.location.pathname,
-      isCp: path[0] === "cp" && path[1] === "peeringdb_server",
+      // True anywhere under /cp/ (admin dashboard + every registered app, not just
+      // peeringdb_server) -- broader than isCp, used to gate script-wide init now
+      // that @match covers the whole admin site rather than peeringdb_server only.
+      isAdminPage: path[0] === "cp",
+      isCp,
       entity: path[2] || "",
       entityId: path[3] || "",
       pageKind: path[4] || "",
-      isEntityChangePage:
-        path[0] === "cp" && path[1] === "peeringdb_server" && path[4] === "change",
-      isEntityListPage:
-        path[0] === "cp" && path[1] === "peeringdb_server" && Boolean(path[2]) && !path[3],
-      isEntityHistoryPage:
-        path[0] === "cp" && path[1] === "peeringdb_server" && path[4] === "history",
+      isEntityChangePage: isCp && path[4] === "change",
+      isEntityListPage: isCp && Boolean(path[2]) && !path[3],
+      isEntityAddPage: isCp && path[3] === "add" && !path[4],
+      isEntityDeletePage: isCp && path[4] === "delete",
+      isEntityHistoryPage: isCp && path[4] === "history",
+      isOrgMergeToolPage: isCp && path[2] === "organization" && path[3] === "org-merge-tool",
     };
   }
 
@@ -11696,13 +11702,12 @@
     },
     {
       id: "set-window-title",
-      match: (ctx) =>
-        ctx.isCp && (ctx.isEntityChangePage || (ctx.entity === "network" && ctx.pageKind === "history")),
+      match: () => true,
       run: (ctx) => {
         const sep = " | ";
-        let title = "";
 
         if (ctx.isEntityChangePage) {
+          let title = "";
           if (ctx.entity === "user") {
             const username = getInputValue("#id_username");
             const email = getInputValue("#id_email");
@@ -11717,33 +11722,63 @@
           return;
         }
 
-        // Extract historyName from breadcrumbs first
-        let historyName = "";
-        const breadcrumbAnchors = qsa("#grp-breadcrumbs a");
-        for (let i = breadcrumbAnchors.length - 1; i >= 0; i--) {
-          const text = breadcrumbAnchors[i]?.innerText?.trim() || "";
-          if (text && !/\bhistory\b/i.test(text)) {
-            historyName = text;
-            break;
+        if (ctx.isEntityHistoryPage) {
+          // Extract historyName from breadcrumbs first
+          let historyName = "";
+          const breadcrumbAnchors = qsa("#grp-breadcrumbs a");
+          for (let i = breadcrumbAnchors.length - 1; i >= 0; i--) {
+            const text = breadcrumbAnchors[i]?.innerText?.trim() || "";
+            if (text && !/\bhistory\b/i.test(text)) {
+              historyName = text;
+              break;
+            }
           }
-        }
 
-        // Fallback: try #grp-content-title h1, h1 with trailing history token stripped
-        if (!historyName) {
-          const rawHistoryName = qs("#grp-content-title h1, h1")?.innerText?.trim() || "";
-          historyName = rawHistoryName.replace(/\s*\bhistory\b\s*$/i, "").trim();
-        }
+          // Fallback: try #grp-content-title h1, h1 with trailing history token stripped
+          if (!historyName) {
+            const rawHistoryName = qs("#grp-content-title h1, h1")?.innerText?.trim() || "";
+            historyName = rawHistoryName.replace(/\s*\bhistory\b\s*$/i, "").trim();
+          }
 
-        // Final fallback
-        if (!historyName) {
-          historyName = `network#${ctx.entityId}`;
-        }
+          // Final fallback
+          if (!historyName) {
+            historyName = `${ctx.entity}#${ctx.entityId}`;
+          }
 
-        const historyTitle = `PDB CP${sep}NETWORK${sep}${historyName}${sep}History`;
-        document.title = historyTitle;
-        setTimeout(() => {
+          const historyTitle = `PDB CP${sep}${ctx.entity.toUpperCase()}${sep}${historyName}${sep}History`;
           document.title = historyTitle;
-        }, 250);
+          setTimeout(() => {
+            document.title = historyTitle;
+          }, 250);
+          return;
+        }
+
+        if (ctx.isOrgMergeToolPage) {
+          document.title = `PDB CP${sep}Org Merge Tool`;
+          return;
+        }
+
+        if (ctx.isEntityListPage) {
+          document.title = `PDB CP${sep}${ctx.entity.toUpperCase()}${sep}List`;
+          return;
+        }
+
+        if (ctx.isEntityAddPage) {
+          document.title = `PDB CP${sep}${ctx.entity.toUpperCase()}${sep}Add`;
+          return;
+        }
+
+        if (ctx.isEntityDeletePage) {
+          document.title = `PDB CP${sep}${ctx.entity.toUpperCase()}${sep}Delete #${ctx.entityId}`;
+          return;
+        }
+
+        // Last-resort normalizer for every other admin page (dashboard, non-peeringdb_server
+        // apps' admin screens, future new page kinds) -- guarantees a consistent "PDB CP | ..."
+        // tab title without hand-maintaining an exhaustive page-kind table.
+        const current = String(document.title || "").trim();
+        if (!current || current.startsWith("PDB")) return;
+        document.title = `PDB CP${sep}${current}`;
       },
     },
     {
@@ -12340,7 +12375,11 @@
   function runConsolidatedInit() {
     const ctx = getRouteContext();
 
-    if (!ctx.isCp || (!ctx.isEntityChangePage && !ctx.isEntityListPage && !ctx.isEntityHistoryPage)) {
+    // isAdminPage covers all of /cp/* (dashboard + every registered app), not just
+    // peeringdb_server pages -- widened alongside @match so set-window-title's generic
+    // fallback can run anywhere the script now loads. Individual modules still gate
+    // themselves on ctx.isCp where their behavior is peeringdb_server-specific.
+    if (!ctx.isAdminPage) {
       return;
     }
 
@@ -12359,7 +12398,15 @@
     ensureUpdateNameShortcutListener();
   }
 
-  if (document.readyState === "loading") {
+  // Test-only escape hatch: Node's test runner sets window.__PDB_TEST__ on a
+  // fake window/document before evaluating this script, so it can exercise
+  // module logic (e.g. title builders) directly without running the real
+  // browser bootstrap, which a minimal test DOM doesn't implement. Never set
+  // by Tampermonkey in production, so real page behavior is unchanged.
+  // @ai Preserve execution ordering, locks, and route/module boundaries.
+  if (typeof window !== "undefined" && window.__PDB_TEST__) {
+    window.__pdbCpTestHooks__ = { getRouteContext, modules };
+  } else if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", runConsolidatedInit, { once: true });
   } else {
     runConsolidatedInit();

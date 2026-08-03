@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.221
+// @version      2.0.222
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
-// @match        https://www.peeringdb.com/cp/peeringdb_server/*/*/change/*
-// @match        https://beta.peeringdb.com/cp/peeringdb_server/*/*/change/*
+// @match        https://www.peeringdb.com/cp/*
+// @match        https://beta.peeringdb.com/cp/*
 // @icon         https://icons.duckduckgo.com/ip2/peeringdb.com.ico
 // @grant        GM_xmlhttpRequest
 // @grant        GM_notification
