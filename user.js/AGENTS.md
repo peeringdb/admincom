@@ -45,8 +45,32 @@ Run these from the repo root (the script resolves `user.js/` as a relative path)
 
 ## Testing
 
-There is no automated test suite (no CI workflow, no package.json, no test runner). Verification is:
+There is no CI workflow and no package.json (deliberately zero-dependency — see "Additional notes"
+below). There is a small behavioral test suite for CP/FP under `user.js/tests/`, using Node's
+built-in test runner (`node:test`/`node:assert`, no new dependency beyond Node itself, which is
+already required for `node --check`). It currently covers the `set-window-title` module's title
+format for every page kind in both scripts — the highest-regression-risk surface, since these
+strings are asserted verbatim. It does **not** cover other modules; those still rely on manual
+smoke testing.
 
+- `node --test` (run from `user.js/`) — runs the full suite; auto-discovers `tests/**/*.test.js`.
+- `user.js/tests/helpers/browser-shim.js` — hand-rolled fake `window`/`document` (no jsdom): loads
+  a generated `.user.js` into a `node:vm` context and reads `.match()`/`.run()` off a module grabbed
+  by ID from `window.__pdbFpTestHooks__`/`window.__pdbCpTestHooks__`. Those hooks only exist when
+  `window.__PDB_TEST__` is set on the sandbox before eval (see the bottom of each `.src.js`) — this
+  skips the real browser bootstrap (MutationObserver/requestAnimationFrame/GM_* calls) that a
+  minimal test DOM can't support, and is never set by Tampermonkey, so production behavior is
+  unchanged. Tests run against the generated `.user.js` (the artifact users actually install), so
+  regenerate before running tests if you've edited a `.src.js`.
+- `user.js/tests/live/` — opt-in, network-touching hardening tests (currently just FP entity-page
+  titles) that fetch a handful of real records from the public PeeringDB API and check the title
+  format against real field values/shapes, not just synthetic fixtures. **Not** part of the default
+  `node --test` run — skipped unless `PDB_LIVE_TESTS=1` is set — because PeeringDB's public API is
+  rate-limited to 20 requests/minute for anonymous callers and a network dependency doesn't belong
+  in the suite that runs on every edit. Run explicitly with
+  `PDB_LIVE_TESTS=1 node --test tests/live/*.test.js` (from `user.js/`); each file in there makes at
+  most a handful of spaced-out requests — re-check that budget before adding more calls, and never
+  loop it or wire it into CI on every push.
 - `node --check user.js/*.user.js` — syntax sanity check only; catches parse errors, not behavior.
 - `python user.js/scripts/build_userscripts.py --check` — confirms generated output matches source.
 - Manual smoke test: install the regenerated `.user.js` in Tampermonkey and exercise the affected
@@ -88,8 +112,9 @@ effectively deploys — Tampermonkey auto-updates by polling the `.meta.js` on t
   the DeskPro script — prefer `dp` for new commits to converge), `git`, `root`. Check
   `git log --oneline` for recent examples before picking a scope.
 - No enforced CI checks exist today. Before opening a PR: run the regenerate + `--check` commands
-  above, confirm `node --check` passes on any changed `.user.js`, and bump `@version` per the
-  metadata convention.
+  above, confirm `node --check` passes on any changed `.user.js`, run `node --test` from `user.js/`
+  (add/update cases under `user.js/tests/` if you touched `set-window-title` or want similar
+  coverage for another module), and bump `@version` per the metadata convention.
 
 ## Additional notes
 
