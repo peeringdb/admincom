@@ -51,11 +51,17 @@ There is no CI workflow and no package.json (deliberately zero-dependency — se
 below). There is a small behavioral test suite for all three scripts under `user.js/tests/`, using
 Node's built-in test runner (`node:test`/`node:assert`, no new dependency beyond Node itself, which
 is already required for `node --check`). It currently covers: the `set-window-title` module's title
-format for every page kind in CP and FP, and DP's org-link-shortcut behavior (`ensureOrgShortcut` /
+format for every page kind in CP and FP; DP's org-link-shortcut behavior (`ensureOrgShortcut` /
 `hydrateExistingPeeringDbAnchor` — every entity kind now gets the owning org's link inserted beside
-it, not just shown in the tooltip). These are the highest-regression-risk surfaces, since the
-strings/DOM output are asserted verbatim. It does **not** cover every module in every script; most
-still rely on manual smoke testing.
+it, not just shown in the tooltip); and the unified cross-script API-entity cache (`user.js/tests/
+shared-cache.test.js` — CP and FP genuinely share cached org/entity data via
+`getCachedDataFromStorage`/`setCachedDataInStorage` in `lib/admincom-common.js`, both same-origin on
+`peeringdb.com`; simulated by pointing two separate `loadScript()` calls at the same fake
+`localStorage` instance via `browser-shim.js`'s `makeFakeStorage()`/`localStorage` option — DP is
+deliberately excluded from that test since it runs on a different origin and can never share with
+CP/FP regardless of code). These are the highest-regression-risk surfaces, since the strings/DOM
+output are asserted verbatim. It does **not** cover every module in every script; most still rely on
+manual smoke testing.
 
 - `node --test` (run from `user.js/`) — runs the full suite; auto-discovers `tests/**/*.test.js`.
 - `user.js/tests/helpers/browser-shim.js` — hand-rolled fake `window`/`document` (no jsdom): loads
@@ -66,11 +72,13 @@ still rely on manual smoke testing.
   GM_* calls/menu registration) that a minimal test DOM can't support, and is never set by
   Tampermonkey, so production behavior is unchanged. The shim also provides a minimal
   `document.createElement`-capable `FakeElement` (supports `insertAdjacentElement`/`append`/
-  attributes — enough to test code that creates and inserts DOM nodes, e.g. DP's org shortcut) and
-  an optional `fetchMap` (exact request URL → JSON body) that backs a fake `fetch()`, so
-  API-calling functions run for real against canned data with zero live network access. Tests run
-  against the generated `.user.js` (the artifact users actually install), so regenerate before
-  running tests if you've edited a `.src.js`.
+  attributes — enough to test code that creates and inserts DOM nodes, e.g. DP's org shortcut), an
+  optional `fetchMap` (exact request URL → JSON body) that backs a fake `fetch()` so API-calling
+  functions run for real against canned data with zero live network access, and an optional
+  `localStorage` override (`makeFakeStorage()`, exported) so two separate `loadScript()` calls can be
+  pointed at the *same* fake storage instance to simulate two same-origin scripts sharing real
+  browser storage (used to test CP/FP cache sharing). Tests run against the generated `.user.js` (the
+  artifact users actually install), so regenerate before running tests if you've edited a `.src.js`.
 - `user.js/tests/live/` — opt-in, network-touching hardening tests (currently just FP entity-page
   titles) that fetch a handful of real records from the public PeeringDB API and check the title
   format against real field values/shapes, not just synthetic fixtures. **Not** part of the default

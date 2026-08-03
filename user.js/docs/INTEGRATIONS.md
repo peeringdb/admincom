@@ -19,6 +19,7 @@ CP and FP have zero other `@require` directives; DeskPro's PSL `@require` has no
 | Store | Role | Access layer | Key risk |
 |-------|------|---------------|----------|
 | Browser `localStorage` | Per-script settings (disabled modules, custom User-Agent, debug flag) | Direct `window.localStorage.getItem/setItem` calls throughout each `.src.js` | Shared origin means CP and FP settings can collide if a key isn't properly namespaced (mitigated: `${MODULE_PREFIX}.*` namespacing, see [README.md](../README.md)) |
+| Browser `localStorage` (API-entity cache) | Caches resolved PeeringDB API objects (org/net/ix/fac/carrier/asn) to cut down repeat requests | `getCachedDataFromStorage`/`setCachedDataInStorage` in `lib/admincom-common.js`, key format `pdbAdmincom.cache.<type>.<id>`, versioned schema + TTL per entry | Origin-scoped: CP and FP genuinely share entries (both run on `peeringdb.com`); DP (`peeringdb.deskpro.com`) uses the identical mechanism but can **never** see CP/FP's entries or vice versa — that's the browser's same-origin storage isolation, not a bug to fix |
 | Browser `sessionStorage` | Per-tab session UUID for User-Agent fingerprinting | `window.sessionStorage.getItem/setItem` | None significant — session-scoped, non-sensitive |
 
 No server-side database — there is no server component to this repo at all.

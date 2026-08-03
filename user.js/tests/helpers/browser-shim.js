@@ -123,6 +123,10 @@ class FakeElement {
  *   API-calling functions (e.g. DP's fetchNetById/fetchOrgWithUsers) can be tested without any
  *   real network access; a URL not present in the map resolves as a 404. Omit entirely for
  *   scripts/tests that never call fetch().
+ * @param {Storage} [opts.localStorage] - Externally-supplied fake localStorage (see
+ *   makeFakeStorage()), for simulating two same-origin scripts (e.g. CP + FP) sharing real
+ *   browser storage across separate loadScript() calls. Omit for a fresh, isolated instance
+ *   (the default -- most tests want this).
  * @returns {{ window: object, document: object, hooks: { getRouteContext: Function, modules: Array } }}
  */
 function loadScript(scriptPath, opts) {
@@ -135,6 +139,7 @@ function loadScript(scriptPath, opts) {
     elements = {},
     elementLists = {},
     fetchMap = {},
+    localStorage = makeFakeStorage(),
   } = opts;
 
   const source = fs.readFileSync(scriptPath, 'utf-8');
@@ -164,7 +169,7 @@ function loadScript(scriptPath, opts) {
       origin: `https://${hostname}`,
       href: `https://${hostname}${pathname}${search}`,
     },
-    localStorage: makeFakeStorage(),
+    localStorage,
     sessionStorage: makeFakeStorage(),
     navigator: { userAgent: 'node-test', platform: 'node', language: 'en-US', hardwareConcurrency: 4 },
     console,
@@ -223,13 +228,25 @@ function makeFakeFetch(fetchMap) {
   };
 }
 
+/**
+ * Builds a fake Storage (localStorage/sessionStorage) instance -- full enough
+ * to support both plain get/set/remove and the key-enumeration sweeps used
+ * by the legacy-cache-migration functions (storage.length + storage.key(i)),
+ * not just a Map wrapper.
+ */
 function makeFakeStorage() {
   const store = new Map();
   return {
     getItem: (key) => (store.has(key) ? store.get(key) : null),
     setItem: (key, value) => store.set(key, String(value)),
     removeItem: (key) => store.delete(key),
+    get length() {
+      return store.size;
+    },
+    key(index) {
+      return Array.from(store.keys())[index] ?? null;
+    },
   };
 }
 
-module.exports = { loadScript, el, FakeElement };
+module.exports = { loadScript, el, FakeElement, makeFakeStorage };

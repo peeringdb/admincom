@@ -7,7 +7,7 @@
 | Files | kebab-case, `<name>.{meta,src,user}.js` triad | `peeringdb-cp-consolidated-tools.src.js` |
 | Functions/methods | camelCase, verb-first | `dispatchModules`, `notifyUser`, `tryBeginActionLock` |
 | Constants | SCREAMING_SNAKE_CASE | `MODULE_PREFIX`, `FEATURE_FLAGS_STORAGE_KEY`, `RETRYABLE_STATUS` |
-| Storage keys (localStorage/sessionStorage) | dot-namespaced, `${MODULE_PREFIX}.<setting>`, except a few deliberately shared cross-script keys | `pdbCpConsolidated.disabledModules`, shared `pdbAdmincom.debug` / `pdbAdmincom.userAgent` — see [README.md](../README.md) |
+| Storage keys (localStorage/sessionStorage) | dot-namespaced, `${MODULE_PREFIX}.<setting>`, except a few deliberately shared cross-script keys | `pdbCpConsolidated.disabledModules`, shared `pdbAdmincom.debug` / `pdbAdmincom.userAgent` / `pdbAdmincom.cache.<type>.<id>` (API-entity cache, see [INTEGRATIONS.md](INTEGRATIONS.md) "Data Stores") — see [README.md](../README.md) |
 
 No classes are used anywhere in the codebase (no `class ` declarations in any `.src.js`) — the
 codebase is entirely closures/plain functions inside a top-level IIFE per script, so there's no
@@ -50,5 +50,6 @@ bundler/linter without discussing it first (see [AGENTS.md](../AGENTS.md) "Addit
 
 ## Testing
 
-No test files, framework, or directory exist anywhere in the repo — see [AGENTS.md](../AGENTS.md)
-"Testing" for the manual verification workflow that stands in for one.
+A small `node:test` suite exists under `user.js/tests/` — see [AGENTS.md](../AGENTS.md) "Testing" for
+what it covers, how to run it, and the manual-smoke-test workflow that still applies to everything
+else.
