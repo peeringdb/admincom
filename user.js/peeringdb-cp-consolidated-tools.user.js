@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.222
+// @version      2.0.223
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/*
@@ -64,7 +64,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.222";
+  const SCRIPT_VERSION = "2.0.223";
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
   const SHARED_USER_AGENT_STORAGE_KEY = "pdbAdmincom.userAgent";
@@ -135,7 +135,10 @@
   const PDB_API_TIMEOUT_MS = 12000;
   const PDB_API_RETRIES = 1;
   const CACHE_TTL_MS = 7.5 * 60 * 60 * 1000;
-  const ORG_NAME_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.orgNameCache.`;
+  // Legacy org-name-cache key prefixes -- no longer written to; kept only so
+  // migrateLegacyOrgNameCacheKeys() can sweep and remove old entries once.
+  const LEGACY_ORG_NAME_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.orgNameCache.`;
+  const LEGACY_ORG_NAME_TAB_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.orgNameTabCache.`;
   const NETWORK_NAME_CACHE_KEY = `${MODULE_PREFIX}.networkNameCache`;
   const NETWORK_NAME_SCAN_CACHE_KEY = `${MODULE_PREFIX}.networkNameScanCache`;
   const NETWORK_NAME_SCAN_CACHE_TTL_MS = CACHE_TTL_MS;
@@ -150,21 +153,16 @@
   // Unset by default; see "CP: Set Update Name Shortcut" in the Tampermonkey menu.
   const UPDATE_NAME_SHORTCUT_STORAGE_KEY = `${MODULE_PREFIX}.updateNameShortcut`;
   const UPDATE_NAME_SHORTCUT_BUTTON_ID = `${MODULE_PREFIX}UpdateEntityName`;
+  // TTL policy for org entries in the shared cache (see lib/admincom-common.js
+  // getCachedDataFromStorage/setCachedDataInStorage) -- CP owns the policy
+  // value, the mechanism itself is shared with FP/DP.
   const ORG_NAME_CACHE_TTL_MS = CACHE_TTL_MS;
-  const ORG_NAME_TAB_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.orgNameTabCache.`;
-  const ORG_NAME_TAB_CACHE_TTL_MS = 30 * 60 * 1000;
   const NETWORK_NAME_CACHE_TTL_MS = CACHE_TTL_MS;
   const NETWORK_NAME_SCAN_PAGE_SIZE = 2000;
   const NETWORK_NAME_SCAN_TARGET_COUNT = 0;
   const NETWORK_NAME_SCAN_MAX_REQUESTS = 40;
   const NETWORK_NAME_SCAN_MIN_SUSPICIOUS_SCORE = 14;
   const NETWORK_NAME_SCAN_HIGH_CONFIDENCE_MIN_SCORE = 20;
-  /**
-   * Increment this integer whenever the shape of a stored org-name cache entry changes.
-   * On first read after a script update, any entry whose stored v field does not match
-   * is treated as stale and evicted, preventing silent misreads of old formats.
-   */
-  const ORG_NAME_CACHE_SCHEMA_VERSION = 2;
   const ENTITY_TYPES = new Set([
     "facility",
     "network",
@@ -492,6 +490,20 @@
   // (classifyRetry) instead of one GM_xmlhttpRequest-only wrapper, because
   // these scripts mix same-origin fetch (PeeringDB API) with cross-origin
   // GM_xmlhttpRequest (RDAP registries, cdnjs).
+  //
+  // Cache primitives (getCachedDataFromStorage/setCachedDataInStorage/etc.):
+  // moved here from DP, where this exact mechanism originated -- previously
+  // DP, CP, and FP each had their own independent, differently-keyed,
+  // non-interoperable localStorage cache for API entity data (DP:
+  // pdbAdmincom.cache.{type}.{id} full objects; CP: pdbCpConsolidated.
+  // orgNameCache.{id} name strings only; FP: pdbFpConsolidated.apiPayloadCache.
+  // {url} keyed by exact request URL). This is now the one canonical
+  // mechanism all three use. localStorage is origin-scoped: CP+FP genuinely
+  // share a cache (both run on peeringdb.com), but DP (peeringdb.deskpro.com)
+  // physically cannot -- that's a browser same-origin-policy boundary, not a
+  // limitation of this code. Each script still owns its own TTL policy
+  // constants and calls these with an explicit ttlMs; CACHE_DEFAULT_TTL_MS
+  // below is only a fallback for callers that omit it.
 
   const DIAGNOSTICS_STORAGE_KEY = "pdbAdmincom.debug";
   // Abort a stalled request instead of letting it hang the UI indefinitely.
@@ -699,6 +711,130 @@
       }
       throw err;
     }
+  }
+
+  // Shared cache namespace (used by DP, FP, CP) for API data deduplication.
+  // See the header comment above for the origin-isolation caveat.
+  const SHARED_CACHE_PREFIX = "pdbAdmincom.cache.";
+  const CACHE_SCHEMA_VERSION = 1;
+  const CACHE_DEFAULT_TTL_MS = 7.5 * 60 * 60 * 1000;
+
+  // In-flight request dedup, keyed by caller-chosen string (typically
+  // `${fnName}.${id}`). Purely in-memory/per-page-load -- not itself shared
+  // across scripts or tabs; only collapses concurrent duplicate calls within
+  // one running script instance while a request is outstanding.
+  const dataCacheInFlight = new Map();
+
+  /**
+   * Returns localStorage when available for domain-scoped cache persistence.
+   * Purpose: Share cache entries across tabs and page reloads on the same origin.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
+   * @returns {Storage|null} localStorage instance, or null when unavailable.
+   */
+  function getDomainCacheStorage() {
+    try {
+      if (window.localStorage) return window.localStorage;
+    } catch (_error) {
+      // Ignore; persistence may be unavailable due to browser policy.
+    }
+    return null;
+  }
+
+  /**
+   * Builds localStorage key for cached API data (shared namespace).
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
+   * @param {string} type - Entity type (asn, org, net, ix, fac, carrier, user, ...).
+   * @param {string|number} id - Entity identifier.
+   * @returns {string} Namespaced cache key, or empty string when invalid.
+   */
+  function getSharedCacheStorageKey(type, id) {
+    const normalizedType = String(type || "").trim().toLowerCase();
+    const normalizedId = String(id || "").trim();
+    if (!normalizedType || !normalizedId || !/^[a-z_]+$/.test(normalizedType)) return "";
+    return `${SHARED_CACHE_PREFIX}${normalizedType}.${normalizedId}`;
+  }
+
+  /**
+   * Reads cached API data object from localStorage when valid.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
+   * @param {string} type - Entity type (asn, org, net, ix, fac, carrier, user, ...).
+   * @param {string|number} id - Entity identifier.
+   * @returns {object|null} Cached data object, or null when absent/expired/invalid.
+   */
+  function getCachedDataFromStorage(type, id) {
+    const storageKey = getSharedCacheStorageKey(type, id);
+    if (!storageKey) return null;
+
+    try {
+      const storage = getDomainCacheStorage();
+      const raw = storage?.getItem(storageKey);
+      if (!raw) return null;
+
+      const parsed = JSON.parse(raw);
+      const expiresAt = Number(parsed?.expiresAt || 0);
+      const schemaVersion = Number(parsed?.schema ?? -1);
+      const now = Date.now();
+      if (
+        !Number.isFinite(expiresAt) ||
+        expiresAt <= now ||
+        schemaVersion !== CACHE_SCHEMA_VERSION
+      ) {
+        storage?.removeItem(storageKey);
+        return null;
+      }
+
+      return parsed?.data || null;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  /**
+   * Stores API data object into localStorage cache with TTL/schema metadata.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
+   * @param {string} type - Entity type (asn, org, net, ix, fac, carrier, user, ...).
+   * @param {string|number} id - Entity identifier.
+   * @param {object} data - Data object to cache.
+   * @param {number} [ttlMs=CACHE_DEFAULT_TTL_MS] - Cache time-to-live (milliseconds).
+   */
+  function setCachedDataInStorage(type, id, data, ttlMs = CACHE_DEFAULT_TTL_MS) {
+    const storageKey = getSharedCacheStorageKey(type, id);
+    if (!storageKey || !data || typeof data !== "object") return;
+
+    try {
+      const storage = getDomainCacheStorage();
+      storage?.setItem(
+        storageKey,
+        JSON.stringify({
+          schema: CACHE_SCHEMA_VERSION,
+          data,
+          expiresAt: Date.now() + ttlMs,
+        }),
+      );
+    } catch (_error) {
+      // Ignore storage failures; in-memory cache still provides benefit.
+    }
+  }
+
+  /**
+   * Negative-cache a missing entity to avoid repeated failed lookups.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
+   * @param {string} type - Entity type (asn, org, net, ix, fac, carrier, user, ...).
+   * @param {string|number} id - Entity identifier.
+   * @param {number} [ttlMs=1.5 hours] - Cache time-to-live.
+   */
+  function cacheNegativeLookup(type, id, ttlMs = 1.5 * 3600 * 1000) {
+    setCachedDataInStorage(type, id, { error: "not_found", timestamp: Date.now() }, ttlMs);
+  }
+
+  /**
+   * Checks if a cache entry represents a negative lookup (not found).
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
+   * @param {object} cached - Cached data object.
+   * @returns {boolean} True if this is a cached "not found" result.
+   */
+  function isNegativeCacheEntry(cached) {
+    return cached && cached.error === "not_found";
   }
   // >>> END GENERATED BLOCK <<<
 
@@ -1020,27 +1156,9 @@
   }
 
   /**
-   * Returns storage for domain-scoped cache entries.
-   * Purpose: Share short-lived cache payloads across tabs on the same origin.
-   * Necessity: tab-scoped storage breaks cross-tab consistency; localStorage enables cross-tab reuse.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
-   * @returns {Storage|null} localStorage instance, or null when unavailable.
-   */
-  function getDomainCacheStorage() {
-    try {
-      if (window.localStorage) return window.localStorage;
-    } catch (_error) {
-      // Ignore; cache persistence will be unavailable.
-    }
-
-    return null;
-  }
-
-  /**
-  * Returns storage for tab-scoped transient state.
-  * Purpose: Provide optional per-tab persistence for ephemeral state when needed.
-  * Necessity: Some flows benefit from tab-local fallback storage that does not
-  * leak across tabs on the same origin.
+   * Returns storage for tab-scoped transient state.
+   * Purpose: Only used now to sweep away legacy org-name-tab-cache entries
+   * (see migrateLegacyOrgNameCacheKeys) left over from before cache unification.
    * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @returns {Storage|null} sessionStorage instance, or null when unavailable.
    */
@@ -1067,107 +1185,9 @@
   }
 
   /**
-   * Builds storage key used for persisted org-name cache entries.
-   * Purpose: Keep all org-name cache keys namespaced under module prefix.
-   * Necessity: Avoid collisions with other userscripts and local app storage keys.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
-   * @param {string|number} orgId - Organization ID to build the key for.
-   * @returns {string} Namespaced storage key, or empty string if orgId is invalid.
-   */
-  function getOrgNameCacheStorageKey(orgId) {
-    const normalizedOrgId = normalizeOrgIdForCache(orgId);
-    if (!normalizedOrgId) return "";
-    return `${ORG_NAME_CACHE_STORAGE_PREFIX}${normalizedOrgId}`;
-  }
-
-  /**
-   * Builds storage key used for tab-scoped org-name cache entries.
-   * Purpose: Keep org-name tab-cache keys namespaced under module prefix.
-   * Necessity: Avoid collisions with unrelated session storage keys.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
-   * @param {string|number} orgId - Organization ID to build the key for.
-   * @returns {string} Namespaced tab-cache key, or empty string if orgId is invalid.
-   */
-  function getOrgNameTabCacheStorageKey(orgId) {
-    const normalizedOrgId = normalizeOrgIdForCache(orgId);
-    if (!normalizedOrgId) return "";
-    return `${ORG_NAME_TAB_CACHE_STORAGE_PREFIX}${normalizedOrgId}`;
-  }
-
-  /**
-   * Reads a valid organization-name cache entry from tab session storage.
-   * Purpose: Reuse very recent org lookups without touching global storage.
-   * Necessity: Supports strict cache order: global -> tab session -> API.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
-   * @param {string|number} orgId - Organization ID to look up.
-   * @returns {string|null} Tab-cached organization name, or null on miss/expiry/malform.
-   */
-  function getSessionCachedOrganizationName(orgId) {
-    const normalizedOrgId = normalizeOrgIdForCache(orgId);
-    if (!normalizedOrgId) return null;
-
-    const storageKey = getOrgNameTabCacheStorageKey(normalizedOrgId);
-    if (!storageKey) return null;
-
-    try {
-      const storage = getTabSessionStorage();
-      const raw = storage?.getItem(storageKey);
-      if (!raw) return null;
-
-      const now = Date.now();
-      const parsed = JSON.parse(raw);
-      const cachedName = String(parsed?.name || "").trim();
-      const expiresAt = Number(parsed?.expiresAt || 0);
-      const schemaVersion = Number(parsed?.v ?? -1);
-      if (
-        !cachedName ||
-        !Number.isFinite(expiresAt) ||
-        expiresAt <= now ||
-        schemaVersion !== ORG_NAME_CACHE_SCHEMA_VERSION
-      ) {
-        storage?.removeItem(storageKey);
-        return null;
-      }
-
-      return cachedName;
-    } catch (_error) {
-      return null;
-    }
-  }
-
-  /**
-   * Stores organization-name cache entry in tab session storage.
-   * Purpose: Persist short-lived per-tab org-name lookups.
-   * Necessity: Completes ordered cache chain before API calls.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
-   * @param {string|number} orgId - Organization ID to cache the name for.
-   * @param {string} name - Resolved organization name to persist.
-   */
-  function setSessionCachedOrganizationName(orgId, name) {
-    const normalizedOrgId = normalizeOrgIdForCache(orgId);
-    const normalizedName = String(name || "").trim();
-    if (!normalizedOrgId || !normalizedName) return;
-
-    const storageKey = getOrgNameTabCacheStorageKey(normalizedOrgId);
-    if (!storageKey) return;
-
-    try {
-      const storage = getTabSessionStorage();
-      storage?.setItem(
-        storageKey,
-        JSON.stringify({
-          v: ORG_NAME_CACHE_SCHEMA_VERSION,
-          name: normalizedName,
-          expiresAt: Date.now() + ORG_NAME_TAB_CACHE_TTL_MS,
-        }),
-      );
-    } catch (_error) {
-      // Session storage may be unavailable.
-    }
-  }
-
-  /**
-   * Reads a valid organization-name cache entry from in-memory or domain storage.
+   * Reads a valid organization-name cache entry from in-memory or the shared
+   * cross-script cache (see lib/admincom-common.js -- CP and FP genuinely
+   * share this, both running on the peeringdb.com origin).
    * Purpose: Reuse recent org-name lookups to reduce repeated API requests.
    * Necessity: Update Name and Reset Information may request the same org repeatedly.
    * Returns null when cache is absent, malformed, or expired.
@@ -1190,37 +1210,16 @@
       orgNameMemoryCache.delete(normalizedOrgId);
     }
 
-    const storageKey = getOrgNameCacheStorageKey(normalizedOrgId);
-    if (!storageKey) return null;
+    const cached = getCachedDataFromStorage("org", normalizedOrgId);
+    const cachedName = String(cached?.name || "").trim();
+    if (!cachedName) return null;
 
-    try {
-      const storage = getDomainCacheStorage();
-      const raw = storage?.getItem(storageKey);
-      if (!raw) return null;
-
-      const parsed = JSON.parse(raw);
-      const cachedName = String(parsed?.name || "").trim();
-      const expiresAt = Number(parsed?.expiresAt || 0);
-      const schemaVersion = Number(parsed?.v ?? -1);
-      if (
-        !cachedName ||
-        !Number.isFinite(expiresAt) ||
-        expiresAt <= now ||
-        schemaVersion !== ORG_NAME_CACHE_SCHEMA_VERSION
-      ) {
-        storage?.removeItem(storageKey);
-        return null;
-      }
-
-      orgNameMemoryCache.set(normalizedOrgId, { name: cachedName, expiresAt });
-      return cachedName;
-    } catch (_error) {
-      return null;
-    }
+    orgNameMemoryCache.set(normalizedOrgId, { name: cachedName, expiresAt: now + ORG_NAME_CACHE_TTL_MS });
+    return cachedName;
   }
 
   /**
-   * Stores organization-name cache entry in memory and domain storage.
+   * Stores organization-name cache entry in memory and the shared cross-script cache.
    * Purpose: Persist successful org-name lookups for current tab lifecycle.
    * Necessity: Avoid duplicate network requests for frequently used org IDs.
    * @ai Preserve shared storage/cache key contracts and TTL behavior.
@@ -1235,24 +1234,12 @@
     const expiresAt = Date.now() + ORG_NAME_CACHE_TTL_MS;
     orgNameMemoryCache.set(normalizedOrgId, { name: normalizedName, expiresAt });
 
-    const storageKey = getOrgNameCacheStorageKey(normalizedOrgId);
-    if (!storageKey) return;
-
-    try {
-      const storage = getDomainCacheStorage();
-      storage?.setItem(
-        storageKey,
-        JSON.stringify({ v: ORG_NAME_CACHE_SCHEMA_VERSION, name: normalizedName, expiresAt }),
-      );
-    } catch (_error) {
-      // Storage may be unavailable; memory cache still provides benefit.
-    }
-
-    setSessionCachedOrganizationName(normalizedOrgId, normalizedName);
+    setCachedDataInStorage("org", normalizedOrgId, { id: normalizedOrgId, name: normalizedName }, ORG_NAME_CACHE_TTL_MS);
   }
 
   /**
-   * Clears all organization-name cache entries from memory and domain storage.
+   * Clears all organization-name cache entries from memory and the shared
+   * cross-script cache, plus sweeps any leftover pre-migration legacy keys.
    * Purpose: Provide explicit cache invalidation control for stale org-name lookups.
    * Necessity: Admin workflows occasionally require immediate refresh after org renames.
    * @ai Preserve shared storage/cache key contracts and TTL behavior.
@@ -1266,7 +1253,12 @@
         const keysToDelete = [];
         for (let index = 0; index < storage.length; index += 1) {
           const key = storage.key(index);
-          if (key && key.startsWith(ORG_NAME_CACHE_STORAGE_PREFIX)) {
+          if (
+            key &&
+            (key.startsWith(`${SHARED_CACHE_PREFIX}org.`) ||
+              key.startsWith(LEGACY_ORG_NAME_CACHE_STORAGE_PREFIX) ||
+              key.startsWith(LEGACY_ORG_NAME_TAB_CACHE_STORAGE_PREFIX))
+          ) {
             keysToDelete.push(key);
           }
         }
@@ -1286,7 +1278,7 @@
       const keysToDelete = [];
       for (let index = 0; index < storage.length; index += 1) {
         const key = storage.key(index);
-        if (key && key.startsWith(ORG_NAME_TAB_CACHE_STORAGE_PREFIX)) {
+        if (key && key.startsWith(LEGACY_ORG_NAME_TAB_CACHE_STORAGE_PREFIX)) {
           keysToDelete.push(key);
         }
       }
@@ -1294,6 +1286,48 @@
       keysToDelete.forEach((key) => {
         storage.removeItem(key);
       });
+    } catch (_error) {
+      // Ignore storage failures.
+    }
+  }
+
+  /**
+   * One-time sweep that removes org-name cache entries written under the old,
+   * pre-unification per-script key scheme (pdbCpConsolidated.orgNameCache.
+   * and orgNameTabCache. prefixes), now replaced by the shared cross-script
+   * cache. Safe to call on every init -- becomes a no-op once old entries
+   * are gone.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
+   */
+  function migrateLegacyOrgNameCacheKeys() {
+    try {
+      const storage = getDomainCacheStorage();
+      if (storage) {
+        const keysToDelete = [];
+        for (let index = 0; index < storage.length; index += 1) {
+          const key = storage.key(index);
+          if (key && key.startsWith(LEGACY_ORG_NAME_CACHE_STORAGE_PREFIX)) {
+            keysToDelete.push(key);
+          }
+        }
+        keysToDelete.forEach((key) => storage.removeItem(key));
+      }
+    } catch (_error) {
+      // Ignore storage failures; legacy keys will simply persist unused.
+    }
+
+    try {
+      const storage = getTabSessionStorage();
+      if (!storage) return;
+
+      const keysToDelete = [];
+      for (let index = 0; index < storage.length; index += 1) {
+        const key = storage.key(index);
+        if (key && key.startsWith(LEGACY_ORG_NAME_TAB_CACHE_STORAGE_PREFIX)) {
+          keysToDelete.push(key);
+        }
+      }
+      keysToDelete.forEach((key) => storage.removeItem(key));
     } catch (_error) {
       // Ignore storage failures.
     }
@@ -7329,18 +7363,6 @@
       };
     }
 
-    const tabCachedName = getSessionCachedOrganizationName(normalizedOrgId);
-    if (tabCachedName) {
-      const sanitized = sanitizeRdapOrgName(tabCachedName);
-      setCachedOrganizationName(normalizedOrgId, sanitized);
-      return {
-        name: sanitized,
-        wasMalformed: false,
-        knownAs: "",
-        fullName: "",
-      };
-    }
-
     try {
       const endpoint = getPeeringDbApiObjectUrl("org", normalizedOrgId);
       if (!endpoint) return { name: null, wasMalformed: false, knownAs: "", fullName: "" };
@@ -7381,13 +7403,6 @@
     if (globalCached) {
       // Still sanitize cached values in case they were stored before sanitization was added
       return sanitizeRdapOrgName(globalCached);
-    }
-
-    const tabCached = getSessionCachedOrganizationName(normalizedOrgId);
-    if (tabCached) {
-      const sanitizedTabCached = sanitizeRdapOrgName(tabCached);
-      setCachedOrganizationName(normalizedOrgId, sanitizedTabCached);
-      return sanitizedTabCached;
     }
 
     try {
@@ -10517,12 +10532,7 @@
               orgName = getCachedOrganizationName(orgId) || "";
             }
 
-            // Priority C: Check tab-session cache if global cache misses
-            if (!orgName) {
-              orgName = getSessionCachedOrganizationName(orgId) || "";
-            }
-
-            // Priority D: API fetch if cache miss and status is not deleted
+            // Priority C: API fetch if cache miss and status is not deleted
             if (!orgName) {
               const status = String(getSelectedStatus() || "").trim().toLowerCase();
               if (status !== "deleted") {
@@ -10541,7 +10551,7 @@
               }
             }
 
-            // Priority E: Build copy text (org name + URL or URI only)
+            // Priority D: Build copy text (org name + URL or URI only)
             const copyText = orgName ? `${orgName} | ${orgUrl}` : orgUrl;
             const copied = await copyToClipboard(copyText);
             if (copied) {
@@ -12392,6 +12402,7 @@
     dbg("init", `v${SCRIPT_VERSION}`, { entity: ctx.entity, entityId: ctx.entityId });
     logCurrentUserAgentDebug();
     cleanupLegacyPrimaryActionRow();
+    migrateLegacyOrgNameCacheKeys();
     dispatchModules(ctx);
     enforceToolbarButtonOrder(ctx);
     registerCpMenuCommands();
@@ -12405,7 +12416,17 @@
   // by Tampermonkey in production, so real page behavior is unchanged.
   // @ai Preserve execution ordering, locks, and route/module boundaries.
   if (typeof window !== "undefined" && window.__PDB_TEST__) {
-    window.__pdbCpTestHooks__ = { getRouteContext, modules };
+    window.__pdbCpTestHooks__ = {
+      getRouteContext,
+      modules,
+      getOrganizationName,
+      getCachedOrganizationName,
+      setCachedOrganizationName,
+      clearOrganizationNameCache,
+      migrateLegacyOrgNameCacheKeys,
+      getCachedDataFromStorage,
+      setCachedDataInStorage,
+    };
   } else if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", runConsolidatedInit, { once: true });
   } else {
