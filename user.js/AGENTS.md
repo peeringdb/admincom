@@ -2,9 +2,11 @@
 
 `peeringdb/admincom` (this repo) is a small collection of Tampermonkey/Greasemonkey userscripts that
 add admin tooling to PeeringDB's Control Panel (CP) and Frontend (FP), plus DeskPro support-ticket
-tooling (DP). There is no application server, package manager, or test suite — the entire codebase
-lives right here in `user.js/`, and scripts run client-side in the browser once installed via
-Tampermonkey.
+tooling (DP). There is no application server or package manager — the entire codebase lives right
+here in `user.js/`, and scripts run client-side in the browser once installed via Tampermonkey. A
+small `node:test` suite exists under `user.js/tests/` (see "Testing" below) but is not a
+traditional CI-gated test suite — manual browser smoke testing is still the primary verification
+method for most modules.
 
 ## Layout
 
@@ -46,22 +48,29 @@ Run these from the repo root (the script resolves `user.js/` as a relative path)
 ## Testing
 
 There is no CI workflow and no package.json (deliberately zero-dependency — see "Additional notes"
-below). There is a small behavioral test suite for CP/FP under `user.js/tests/`, using Node's
-built-in test runner (`node:test`/`node:assert`, no new dependency beyond Node itself, which is
-already required for `node --check`). It currently covers the `set-window-title` module's title
-format for every page kind in both scripts — the highest-regression-risk surface, since these
-strings are asserted verbatim. It does **not** cover other modules; those still rely on manual
-smoke testing.
+below). There is a small behavioral test suite for all three scripts under `user.js/tests/`, using
+Node's built-in test runner (`node:test`/`node:assert`, no new dependency beyond Node itself, which
+is already required for `node --check`). It currently covers: the `set-window-title` module's title
+format for every page kind in CP and FP, and DP's org-link-shortcut behavior (`ensureOrgShortcut` /
+`hydrateExistingPeeringDbAnchor` — every entity kind now gets the owning org's link inserted beside
+it, not just shown in the tooltip). These are the highest-regression-risk surfaces, since the
+strings/DOM output are asserted verbatim. It does **not** cover every module in every script; most
+still rely on manual smoke testing.
 
 - `node --test` (run from `user.js/`) — runs the full suite; auto-discovers `tests/**/*.test.js`.
 - `user.js/tests/helpers/browser-shim.js` — hand-rolled fake `window`/`document` (no jsdom): loads
-  a generated `.user.js` into a `node:vm` context and reads `.match()`/`.run()` off a module grabbed
-  by ID from `window.__pdbFpTestHooks__`/`window.__pdbCpTestHooks__`. Those hooks only exist when
-  `window.__PDB_TEST__` is set on the sandbox before eval (see the bottom of each `.src.js`) — this
-  skips the real browser bootstrap (MutationObserver/requestAnimationFrame/GM_* calls) that a
-  minimal test DOM can't support, and is never set by Tampermonkey, so production behavior is
-  unchanged. Tests run against the generated `.user.js` (the artifact users actually install), so
-  regenerate before running tests if you've edited a `.src.js`.
+  a generated `.user.js` into a `node:vm` context and reads exposed functions off
+  `window.__pdbFpTestHooks__` / `window.__pdbCpTestHooks__` / `window.__pdbDpTestHooks__`. Those
+  hooks only exist when `window.__PDB_TEST__` is set on the sandbox before eval (see the bottom of
+  each `.src.js`) — this skips the real browser bootstrap (MutationObserver/requestAnimationFrame/
+  GM_* calls/menu registration) that a minimal test DOM can't support, and is never set by
+  Tampermonkey, so production behavior is unchanged. The shim also provides a minimal
+  `document.createElement`-capable `FakeElement` (supports `insertAdjacentElement`/`append`/
+  attributes — enough to test code that creates and inserts DOM nodes, e.g. DP's org shortcut) and
+  an optional `fetchMap` (exact request URL → JSON body) that backs a fake `fetch()`, so
+  API-calling functions run for real against canned data with zero live network access. Tests run
+  against the generated `.user.js` (the artifact users actually install), so regenerate before
+  running tests if you've edited a `.src.js`.
 - `user.js/tests/live/` — opt-in, network-touching hardening tests (currently just FP entity-page
   titles) that fetch a handful of real records from the public PeeringDB API and check the title
   format against real field values/shapes, not just synthetic fixtures. **Not** part of the default

@@ -26,6 +26,85 @@ function el({ value, innerText, attrs = {} } = {}) {
 }
 
 /**
+ * A minimal but real element node -- enough of the DOM to test code that
+ * *creates and inserts* elements (document.createElement, insertAdjacentElement,
+ * append, nextElementSibling), which the selector-keyed `el()` above can't
+ * support since it isn't connected to anything. Deliberately narrow: only the
+ * operations DP's anchor-decoration code actually uses (afterend insertion,
+ * attribute get/set, simple text content).
+ */
+class FakeElement {
+  constructor(tagName) {
+    this.tagName = String(tagName || '').toUpperCase();
+    this.isConnected = true;
+    this.parentNode = null;
+    this.nextElementSibling = null;
+    this.previousElementSibling = null;
+    this.children = [];
+    this._attrs = new Map();
+    this._textContent = '';
+    this.style = {};
+    this.href = '';
+    this.target = '';
+    this.rel = '';
+    this.title = '';
+  }
+
+  setAttribute(name, value) {
+    this._attrs.set(name, String(value));
+  }
+
+  getAttribute(name) {
+    return this._attrs.has(name) ? this._attrs.get(name) : null;
+  }
+
+  removeAttribute(name) {
+    this._attrs.delete(name);
+  }
+
+  get textContent() {
+    return this._textContent;
+  }
+
+  set textContent(value) {
+    this._textContent = String(value ?? '');
+  }
+
+  append(...nodes) {
+    nodes.forEach((node) => this.appendChild(node));
+  }
+
+  appendChild(node) {
+    node.parentNode = this;
+    this.children.push(node);
+    return node;
+  }
+
+  insertAdjacentElement(position, node) {
+    if (position !== 'afterend') return; // only mode DP's code uses
+    node.parentNode = this.parentNode;
+    node.previousElementSibling = this;
+    node.nextElementSibling = this.nextElementSibling;
+    if (this.nextElementSibling) this.nextElementSibling.previousElementSibling = node;
+    this.nextElementSibling = node;
+  }
+
+  remove() {
+    if (this.previousElementSibling) this.previousElementSibling.nextElementSibling = this.nextElementSibling;
+    if (this.nextElementSibling) this.nextElementSibling.previousElementSibling = this.previousElementSibling;
+    this.parentNode = null;
+  }
+
+  closest() {
+    return null; // not exercised by any function called directly via test hooks
+  }
+
+  matches() {
+    return false;
+  }
+}
+
+/**
  * Loads a generated .user.js script into a fresh vm context with a minimal
  * fake window/document, using the window.__PDB_TEST__ escape hatch (see the
  * end of each .src.js) to skip the real browser bootstrap and instead expose
@@ -40,6 +119,10 @@ function el({ value, innerText, attrs = {} } = {}) {
  * @param {string} [opts.title] - initial document.title (simulates the server-rendered title).
  * @param {object} [opts.elements] - selector string -> fake element, for qs()/getInputValue()/getText().
  * @param {object} [opts.elementLists] - selector string -> array of fake elements, for qsa().
+ * @param {object} [opts.fetchMap] - exact request URL -> JSON body. Powers a fake `fetch()` so
+ *   API-calling functions (e.g. DP's fetchNetById/fetchOrgWithUsers) can be tested without any
+ *   real network access; a URL not present in the map resolves as a 404. Omit entirely for
+ *   scripts/tests that never call fetch().
  * @returns {{ window: object, document: object, hooks: { getRouteContext: Function, modules: Array } }}
  */
 function loadScript(scriptPath, opts) {
@@ -51,6 +134,7 @@ function loadScript(scriptPath, opts) {
     title = '',
     elements = {},
     elementLists = {},
+    fetchMap = {},
   } = opts;
 
   const source = fs.readFileSync(scriptPath, 'utf-8');
@@ -63,6 +147,9 @@ function loadScript(scriptPath, opts) {
     },
     querySelectorAll(selector) {
       return Object.prototype.hasOwnProperty.call(elementLists, selector) ? elementLists[selector] : [];
+    },
+    createElement(tagName) {
+      return new FakeElement(tagName);
     },
     addEventListener() {},
     removeEventListener() {},
@@ -83,7 +170,10 @@ function loadScript(scriptPath, opts) {
     console,
     setTimeout,
     clearTimeout,
+    URL,
     URLSearchParams,
+    AbortController,
+    fetch: makeFakeFetch(fetchMap),
     MutationObserver: class {
       observe() {}
       disconnect() {}
@@ -106,6 +196,33 @@ function loadScript(scriptPath, opts) {
   return { window: sandbox, document: fakeDocument, hooks };
 }
 
+/**
+ * Builds a fake global fetch() keyed by exact request URL (query params and
+ * all), returning a canned JSON body or a 404 when the URL isn't mapped.
+ * Purpose: Let API-calling functions run for real (no manual mocking of the
+ * function itself) while keeping tests fully offline/deterministic -- no
+ * accidental live traffic, no network flakiness.
+ */
+function makeFakeFetch(fetchMap) {
+  return async (url) => {
+    const key = String(url);
+    if (!Object.prototype.hasOwnProperty.call(fetchMap, key)) {
+      return {
+        ok: false,
+        status: 404,
+        headers: { forEach() {} },
+        json: async () => ({}),
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      headers: { forEach() {} },
+      json: async () => fetchMap[key],
+    };
+  };
+}
+
 function makeFakeStorage() {
   const store = new Map();
   return {
@@ -115,4 +232,4 @@ function makeFakeStorage() {
   };
 }
 
-module.exports = { loadScript, el };
+module.exports = { loadScript, el, FakeElement };
