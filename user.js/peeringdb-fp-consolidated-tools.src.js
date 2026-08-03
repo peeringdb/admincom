@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.1.33
+// @version      1.1.34
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
@@ -32,7 +32,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbFpConsolidated";
-  const SCRIPT_VERSION = "1.1.33";
+  const SCRIPT_VERSION = "1.1.34";
   // RDAP fallback client is intentionally CP-only; FP does not implement RDAP lookups.
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
@@ -79,11 +79,15 @@
   const UI_NEXT_ACTION_ROW_GAP_PX = 8;
   const UI_NEXT_ACTION_COLUMN_GAP_PX = 8;
   const UI_NEXT_ACTION_MARGIN_TOP_PX = 8;
-  const API_PAYLOAD_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.apiPayloadCache.`;
-  const API_PAYLOAD_TAB_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.apiPayloadTabCache.`;
+  // TTL policy for the "Compare UI vs API" admin-ops feature's entries in the
+  // shared cross-script cache (see lib/admincom-common.js
+  // getCachedDataFromStorage/setCachedDataInStorage) -- FP owns the policy
+  // value, the mechanism itself is shared with CP/DP.
   const API_PAYLOAD_CACHE_TTL_MS = 10 * 60 * 1000;
-  const API_PAYLOAD_TAB_CACHE_TTL_MS = 2 * 60 * 1000;
-  const API_PAYLOAD_CACHE_SCHEMA_VERSION = 1;
+  // Legacy per-script cache key prefixes -- no longer written to; kept only
+  // so migrateLegacyApiPayloadCacheKeys() can sweep and remove old entries once.
+  const LEGACY_API_PAYLOAD_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.apiPayloadCache.`;
+  const LEGACY_API_PAYLOAD_TAB_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.apiPayloadTabCache.`;
 
   /**
    * Hard-excluded entity IDs for Example Organization records.
@@ -298,132 +302,22 @@
   }
 
   /**
-   * Returns storage for domain-scoped persistent values.
-   * Purpose: Centralize guarded access to localStorage for shared helper logic.
-   * Necessity: Keeps FP storage access patterns aligned with CP helper structure.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
-   */
-  function getDomainCacheStorage() {
-    try {
-      if (window.localStorage) return window.localStorage;
-    } catch (_error) {
-      // Ignore; persistent storage may be unavailable.
-    }
-
-    return null;
-  }
-
-  /**
-   * Returns storage for tab-scoped transient values.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
-   */
-  function getTabSessionStorage() {
-    try {
-      if (window.sessionStorage) return window.sessionStorage;
-    } catch (_error) {
-      // Ignore; session storage may be unavailable.
-    }
-
-    return null;
-  }
-
-  /**
-   * Builds a stable cache identity for API payload URLs.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
-   * @param {string} url - Absolute or relative API URL.
-   * @returns {string} Stable cache identity token.
-   */
-  function buildApiPayloadCacheIdentity(url) {
-    return String(url || "").trim();
-  }
-
-  /**
-   * Reads a cached API payload entry from a storage object.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
-   * @param {Storage|null} storage - localStorage or sessionStorage.
-   * @param {string} storageKey - Namespaced cache key.
-   * @returns {object|null} Cached payload object or null.
-   */
-  function readCachedApiPayloadEntry(storage, storageKey) {
-    if (!storage || !storageKey) return null;
-
-    try {
-      const raw = storage.getItem(storageKey);
-      if (!raw) return null;
-
-      const parsed = JSON.parse(raw);
-      const expiresAt = Number(parsed?.expiresAt || 0);
-      const schemaVersion = Number(parsed?.v ?? -1);
-      const payload = parsed?.payload;
-      if (
-        !Number.isFinite(expiresAt) ||
-        expiresAt <= Date.now() ||
-        schemaVersion !== API_PAYLOAD_CACHE_SCHEMA_VERSION ||
-        !payload ||
-        typeof payload !== "object"
-      ) {
-        storage.removeItem(storageKey);
-        return null;
-      }
-
-      return payload;
-    } catch (_error) {
-      return null;
-    }
-  }
-
-  /**
-   * Stores API payload entry into a storage object.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
-   * @param {Storage|null} storage - localStorage or sessionStorage.
-   * @param {string} storageKey - Namespaced cache key.
-   * @param {object} payload - API payload to store.
-   * @param {number} ttlMs - Cache TTL in milliseconds.
-   */
-  function writeCachedApiPayloadEntry(storage, storageKey, payload, ttlMs) {
-    if (!storage || !storageKey || !payload || typeof payload !== "object") return;
-
-    try {
-      storage.setItem(
-        storageKey,
-        JSON.stringify({
-          v: API_PAYLOAD_CACHE_SCHEMA_VERSION,
-          expiresAt: Date.now() + ttlMs,
-          payload,
-        }),
-      );
-    } catch (_error) {
-      // Ignore cache write failures.
-    }
-  }
-
-  /**
-   * Resolves API JSON payload with strict cache-chain order.
-   * Order: global cache -> tab cache -> API call -> null fallback.
+   * Resolves an entity's API JSON payload via the shared cross-script cache
+   * (see lib/admincom-common.js -- CP and FP genuinely share this, both
+   * running on the peeringdb.com origin), falling back to a live fetch.
    * @ai Preserve request retries/timeouts/error classification and payload assumptions.
-   * @param {string} apiUrl - Same-origin API endpoint URL.
+   * @param {object} ctx - Route context, as returned by getRouteContext().
    * @returns {Promise<object|null>} Resolved payload object or null.
    */
-  async function resolveApiPayloadWithCacheChain(apiUrl) {
-    const cacheIdentity = buildApiPayloadCacheIdentity(apiUrl);
-    if (!cacheIdentity) return null;
+  async function resolveEntityPayloadWithSharedCache(ctx) {
+    const { type, id } = getCurrentEntityTypeAndId(ctx);
+    if (!type || !id) return null;
 
-    const globalStorageKey = `${API_PAYLOAD_CACHE_STORAGE_PREFIX}${cacheIdentity}`;
-    const tabStorageKey = `${API_PAYLOAD_TAB_CACHE_STORAGE_PREFIX}${cacheIdentity}`;
+    const cachedPayload = getCachedDataFromStorage(type, id);
+    if (cachedPayload) return cachedPayload;
 
-    const globalCachedPayload = readCachedApiPayloadEntry(getDomainCacheStorage(), globalStorageKey);
-    if (globalCachedPayload) return globalCachedPayload;
-
-    const tabCachedPayload = readCachedApiPayloadEntry(getTabSessionStorage(), tabStorageKey);
-    if (tabCachedPayload) {
-      writeCachedApiPayloadEntry(
-        getDomainCacheStorage(),
-        globalStorageKey,
-        tabCachedPayload,
-        API_PAYLOAD_CACHE_TTL_MS,
-      );
-      return tabCachedPayload;
-    }
+    const apiUrl = getCurrentEntityApiUrl(ctx);
+    if (!apiUrl) return null;
 
     try {
       const response = await fetch(apiUrl, { credentials: "same-origin" });
@@ -432,22 +326,52 @@
       const payload = raw?.data?.[0] || raw || null;
       if (!payload || typeof payload !== "object") return null;
 
-      writeCachedApiPayloadEntry(
-        getDomainCacheStorage(),
-        globalStorageKey,
-        payload,
-        API_PAYLOAD_CACHE_TTL_MS,
-      );
-      writeCachedApiPayloadEntry(
-        getTabSessionStorage(),
-        tabStorageKey,
-        payload,
-        API_PAYLOAD_TAB_CACHE_TTL_MS,
-      );
-
+      setCachedDataInStorage(type, id, payload, API_PAYLOAD_CACHE_TTL_MS);
       return payload;
     } catch (_error) {
       return null;
+    }
+  }
+
+  /**
+   * One-time sweep that removes API-payload cache entries written under the
+   * old, pre-unification per-script key scheme (pdbFpConsolidated.
+   * apiPayloadCache./apiPayloadTabCache. prefixes), now replaced by the
+   * shared cross-script cache. Safe to call on every init -- becomes a no-op
+   * once old entries are gone.
+   * @ai Preserve shared storage/cache key contracts and TTL behavior.
+   */
+  function migrateLegacyApiPayloadCacheKeys() {
+    try {
+      const storage = getDomainCacheStorage();
+      if (storage) {
+        const keysToDelete = [];
+        for (let index = 0; index < storage.length; index += 1) {
+          const key = storage.key(index);
+          if (key && key.startsWith(LEGACY_API_PAYLOAD_CACHE_STORAGE_PREFIX)) {
+            keysToDelete.push(key);
+          }
+        }
+        keysToDelete.forEach((key) => storage.removeItem(key));
+      }
+    } catch (_error) {
+      // Ignore storage failures; legacy keys will simply persist unused.
+    }
+
+    try {
+      const storage = window.sessionStorage;
+      if (!storage) return;
+
+      const keysToDelete = [];
+      for (let index = 0; index < storage.length; index += 1) {
+        const key = storage.key(index);
+        if (key && key.startsWith(LEGACY_API_PAYLOAD_TAB_CACHE_STORAGE_PREFIX)) {
+          keysToDelete.push(key);
+        }
+      }
+      keysToDelete.forEach((key) => storage.removeItem(key));
+    } catch (_error) {
+      // Ignore storage failures.
     }
   }
 
@@ -2508,7 +2432,7 @@
             return;
           }
 
-          const payload = await resolveApiPayloadWithCacheChain(currentApiUrl);
+          const payload = await resolveEntityPayloadWithSharedCache(ctx);
           if (!payload) {
             notifyUser({ title: "PeeringDB FP", text: "Failed to fetch API payload." });
             return;
@@ -3668,6 +3592,7 @@
     try {
       dbg("init", `v${SCRIPT_VERSION}`, { type: ctx.type, id: ctx.id, path: ctx.path });
       runSelfCheck(ctx);
+      migrateLegacyApiPayloadCacheKeys();
       dispatchModules(ctx);
       scheduleDomUpdate("fp-toolbar-order", () => {
         enforceTopRightButtonOrder();
@@ -3766,7 +3691,14 @@
   // Tampermonkey in production, so real page behavior is unchanged.
   // @ai Preserve execution ordering, locks, and route/module boundaries.
   if (typeof window !== "undefined" && window.__PDB_TEST__) {
-    window.__pdbFpTestHooks__ = { getRouteContext, modules };
+    window.__pdbFpTestHooks__ = {
+      getRouteContext,
+      modules,
+      resolveEntityPayloadWithSharedCache,
+      migrateLegacyApiPayloadCacheKeys,
+      getCachedDataFromStorage,
+      setCachedDataInStorage,
+    };
     return;
   }
 
