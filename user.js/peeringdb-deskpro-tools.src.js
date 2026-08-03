@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name            PeeringDB DP - Consolidated Tools
 // @namespace       https://www.peeringdb.com/
-// @version         1.7.5
+// @version         1.7.6
 // @description     Consolidated DeskPro tools: linkifies/enriches PeeringDB links (ASN/IP/IX/NET/FAC/Carrier), adds an owning-org shortcut link beside each, copies mailto addresses, normalizes PeeringDB CP double-slash links, generates pihole whitelist commands for IX/NET/FAC/Carrier approval tickets
 // @author          <chriztoffer@peeringdb.com>
 // @match           https://peeringdb.deskpro.com/app*
@@ -44,7 +44,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbDp";
-  const SCRIPT_VERSION = "1.7.5";
+  const SCRIPT_VERSION = "1.7.6";
   // RDAP fallback client is intentionally CP-only; DP does not implement RDAP lookups.
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
@@ -110,9 +110,10 @@
   const PDB_CP_SINGLE_SLASH_PREFIX = "https://www.peeringdb.com/cp/peeringdb_server";
   const DEFAULT_REQUEST_USER_AGENT = "PeeringDB-Admincom-DP-Consolidated";
 
-  // Shared cache namespace (used by DP, FP, CP) for API data deduplication
-  const SHARED_CACHE_PREFIX = "pdbAdmincom.cache.";
-  const CACHE_SCHEMA_VERSION = 1;
+  // SHARED_CACHE_PREFIX/CACHE_SCHEMA_VERSION/dataCacheInFlight and the generic
+  // getCachedDataFromStorage/setCachedDataInStorage/etc. cache primitives now
+  // come from lib/admincom-common.js (see the @include marker below) --
+  // shared verbatim with CP/FP rather than duplicated per script.
   const PDB_API_TIMEOUT_MS = 12000;
   const PDB_API_RETRIES = 2;
   const CACHE_TTL_MS = 7.5 * 60 * 60 * 1000;
@@ -175,23 +176,7 @@
 
   const asnNameCache = new Map();
   const asnNameInFlight = new Map();
-  const dataCacheInFlight = new Map(); // In-flight dedup for all API requests
   const rateLimitState = { limit: null, remaining: null, resetTime: null }; // Track rate-limit quotas
-
-  /**
-   * Returns localStorage when available for domain-scoped cache persistence.
-   * Purpose: Share ASN name cache entries across tabs and page reloads.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
-   * @returns {Storage|null} localStorage instance, or null when unavailable.
-   */
-  function getDomainCacheStorage() {
-    try {
-      if (window.localStorage) return window.localStorage;
-    } catch (_error) {
-      // Ignore; persistence may be unavailable due to browser policy.
-    }
-    return null;
-  }
 
   /**
    * Returns storage for tab-scoped transient values.
@@ -429,20 +414,6 @@
   }
 
   /**
-   * Builds localStorage key for cached API data (shared namespace).
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
-   * @param {string} type - Entity type (asn, org, user, facility).
-   * @param {string|number} id - Entity identifier.
-   * @returns {string} Namespaced cache key, or empty string when invalid.
-   */
-  function getSharedCacheStorageKey(type, id) {
-    const normalizedType = String(type || "").trim().toLowerCase();
-    const normalizedId = String(id || "").trim();
-    if (!normalizedType || !normalizedId || !/^[a-z_]+$/.test(normalizedType)) return "";
-    return `${SHARED_CACHE_PREFIX}${normalizedType}.${normalizedId}`;
-  }
-
-  /**
    * Builds localStorage key for ASN-name cache entries (backward compat wrapper).
    * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string|number} asn - ASN value.
@@ -455,41 +426,6 @@
   }
 
   /**
-   * Reads cached API data object from localStorage when valid.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
-   * @param {string} type - Entity type (asn, org, user, facility).
-   * @param {string|number} id - Entity identifier.
-   * @returns {object|null} Cached data object, or null when absent/expired/invalid.
-   */
-  function getCachedDataFromStorage(type, id) {
-    const storageKey = getSharedCacheStorageKey(type, id);
-    if (!storageKey) return null;
-
-    try {
-      const storage = getDomainCacheStorage();
-      const raw = storage?.getItem(storageKey);
-      if (!raw) return null;
-
-      const parsed = JSON.parse(raw);
-      const expiresAt = Number(parsed?.expiresAt || 0);
-      const schemaVersion = Number(parsed?.schema ?? -1);
-      const now = Date.now();
-      if (
-        !Number.isFinite(expiresAt) ||
-        expiresAt <= now ||
-        schemaVersion !== CACHE_SCHEMA_VERSION
-      ) {
-        storage?.removeItem(storageKey);
-        return null;
-      }
-
-      return parsed?.data || null;
-    } catch (_error) {
-      return null;
-    }
-  }
-
-  /**
    * Reads ASN name from localStorage cache when valid (backward compat).
    * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string|number} asn - ASN value.
@@ -498,33 +434,6 @@
   function getCachedAsnNameFromStorage(asn) {
     const data = getCachedDataFromStorage("asn", asn);
     return data ? String(data.name || "").trim() || null : null;
-  }
-
-  /**
-   * Stores API data object into localStorage cache with TTL/schema metadata.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
-   * @param {string} type - Entity type (asn, org, user, facility).
-   * @param {string|number} id - Entity identifier.
-   * @param {object} data - Data object to cache.
-   * @param {number} [ttlMs=ASN_NAME_CACHE_TTL_MS] - Cache time-to-live (milliseconds).
-   */
-  function setCachedDataInStorage(type, id, data, ttlMs = ASN_NAME_CACHE_TTL_MS) {
-    const storageKey = getSharedCacheStorageKey(type, id);
-    if (!storageKey || !data || typeof data !== "object") return;
-
-    try {
-      const storage = getDomainCacheStorage();
-      storage?.setItem(
-        storageKey,
-        JSON.stringify({
-          schema: CACHE_SCHEMA_VERSION,
-          data,
-          expiresAt: Date.now() + ttlMs,
-        }),
-      );
-    } catch (_error) {
-      // Ignore storage failures; in-memory cache still provides benefit.
-    }
   }
 
   /**
@@ -1346,27 +1255,6 @@
       retryable: false,
       label: `Unknown error (HTTP ${status})`,
     };
-  }
-
-  /**
-   * Negative-cache a missing entity to avoid repeated failed lookups.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
-   * @param {string} type - Entity type (asn, org, user, facility).
-   * @param {string|number} id - Entity identifier.
-   * @param {number} [ttlMs=1.5 hours] - Cache time-to-live.
-   */
-  function cacheNegativeLookup(type, id, ttlMs = 1.5 * 3600 * 1000) {
-    setCachedDataInStorage(type, id, { error: "not_found", timestamp: Date.now() }, ttlMs);
-  }
-
-  /**
-   * Checks if a cache entry represents a negative lookup (not found).
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
-   * @param {object} cached - Cached data object.
-   * @returns {boolean} True if this is a cached "not found" result.
-   */
-  function isNegativeCacheEntry(cached) {
-    return cached && cached.error === "not_found";
   }
 
   /**

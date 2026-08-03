@@ -29,6 +29,20 @@
 // (classifyRetry) instead of one GM_xmlhttpRequest-only wrapper, because
 // these scripts mix same-origin fetch (PeeringDB API) with cross-origin
 // GM_xmlhttpRequest (RDAP registries, cdnjs).
+//
+// Cache primitives (getCachedDataFromStorage/setCachedDataInStorage/etc.):
+// moved here from DP, where this exact mechanism originated -- previously
+// DP, CP, and FP each had their own independent, differently-keyed,
+// non-interoperable localStorage cache for API entity data (DP:
+// pdbAdmincom.cache.{type}.{id} full objects; CP: pdbCpConsolidated.
+// orgNameCache.{id} name strings only; FP: pdbFpConsolidated.apiPayloadCache.
+// {url} keyed by exact request URL). This is now the one canonical
+// mechanism all three use. localStorage is origin-scoped: CP+FP genuinely
+// share a cache (both run on peeringdb.com), but DP (peeringdb.deskpro.com)
+// physically cannot -- that's a browser same-origin-policy boundary, not a
+// limitation of this code. Each script still owns its own TTL policy
+// constants and calls these with an explicit ttlMs; CACHE_DEFAULT_TTL_MS
+// below is only a fallback for callers that omit it.
 
 const DIAGNOSTICS_STORAGE_KEY = "pdbAdmincom.debug";
 // Abort a stalled request instead of letting it hang the UI indefinitely.
@@ -236,4 +250,128 @@ async function fetchWithRetry(url, opts = {}, attempt = 1) {
     }
     throw err;
   }
+}
+
+// Shared cache namespace (used by DP, FP, CP) for API data deduplication.
+// See the header comment above for the origin-isolation caveat.
+const SHARED_CACHE_PREFIX = "pdbAdmincom.cache.";
+const CACHE_SCHEMA_VERSION = 1;
+const CACHE_DEFAULT_TTL_MS = 7.5 * 60 * 60 * 1000;
+
+// In-flight request dedup, keyed by caller-chosen string (typically
+// `${fnName}.${id}`). Purely in-memory/per-page-load -- not itself shared
+// across scripts or tabs; only collapses concurrent duplicate calls within
+// one running script instance while a request is outstanding.
+const dataCacheInFlight = new Map();
+
+/**
+ * Returns localStorage when available for domain-scoped cache persistence.
+ * Purpose: Share cache entries across tabs and page reloads on the same origin.
+ * @ai Preserve shared storage/cache key contracts and TTL behavior.
+ * @returns {Storage|null} localStorage instance, or null when unavailable.
+ */
+function getDomainCacheStorage() {
+  try {
+    if (window.localStorage) return window.localStorage;
+  } catch (_error) {
+    // Ignore; persistence may be unavailable due to browser policy.
+  }
+  return null;
+}
+
+/**
+ * Builds localStorage key for cached API data (shared namespace).
+ * @ai Preserve shared storage/cache key contracts and TTL behavior.
+ * @param {string} type - Entity type (asn, org, net, ix, fac, carrier, user, ...).
+ * @param {string|number} id - Entity identifier.
+ * @returns {string} Namespaced cache key, or empty string when invalid.
+ */
+function getSharedCacheStorageKey(type, id) {
+  const normalizedType = String(type || "").trim().toLowerCase();
+  const normalizedId = String(id || "").trim();
+  if (!normalizedType || !normalizedId || !/^[a-z_]+$/.test(normalizedType)) return "";
+  return `${SHARED_CACHE_PREFIX}${normalizedType}.${normalizedId}`;
+}
+
+/**
+ * Reads cached API data object from localStorage when valid.
+ * @ai Preserve shared storage/cache key contracts and TTL behavior.
+ * @param {string} type - Entity type (asn, org, net, ix, fac, carrier, user, ...).
+ * @param {string|number} id - Entity identifier.
+ * @returns {object|null} Cached data object, or null when absent/expired/invalid.
+ */
+function getCachedDataFromStorage(type, id) {
+  const storageKey = getSharedCacheStorageKey(type, id);
+  if (!storageKey) return null;
+
+  try {
+    const storage = getDomainCacheStorage();
+    const raw = storage?.getItem(storageKey);
+    if (!raw) return null;
+
+    const parsed = JSON.parse(raw);
+    const expiresAt = Number(parsed?.expiresAt || 0);
+    const schemaVersion = Number(parsed?.schema ?? -1);
+    const now = Date.now();
+    if (
+      !Number.isFinite(expiresAt) ||
+      expiresAt <= now ||
+      schemaVersion !== CACHE_SCHEMA_VERSION
+    ) {
+      storage?.removeItem(storageKey);
+      return null;
+    }
+
+    return parsed?.data || null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+/**
+ * Stores API data object into localStorage cache with TTL/schema metadata.
+ * @ai Preserve shared storage/cache key contracts and TTL behavior.
+ * @param {string} type - Entity type (asn, org, net, ix, fac, carrier, user, ...).
+ * @param {string|number} id - Entity identifier.
+ * @param {object} data - Data object to cache.
+ * @param {number} [ttlMs=CACHE_DEFAULT_TTL_MS] - Cache time-to-live (milliseconds).
+ */
+function setCachedDataInStorage(type, id, data, ttlMs = CACHE_DEFAULT_TTL_MS) {
+  const storageKey = getSharedCacheStorageKey(type, id);
+  if (!storageKey || !data || typeof data !== "object") return;
+
+  try {
+    const storage = getDomainCacheStorage();
+    storage?.setItem(
+      storageKey,
+      JSON.stringify({
+        schema: CACHE_SCHEMA_VERSION,
+        data,
+        expiresAt: Date.now() + ttlMs,
+      }),
+    );
+  } catch (_error) {
+    // Ignore storage failures; in-memory cache still provides benefit.
+  }
+}
+
+/**
+ * Negative-cache a missing entity to avoid repeated failed lookups.
+ * @ai Preserve shared storage/cache key contracts and TTL behavior.
+ * @param {string} type - Entity type (asn, org, net, ix, fac, carrier, user, ...).
+ * @param {string|number} id - Entity identifier.
+ * @param {number} [ttlMs=1.5 hours] - Cache time-to-live.
+ */
+function cacheNegativeLookup(type, id, ttlMs = 1.5 * 3600 * 1000) {
+  setCachedDataInStorage(type, id, { error: "not_found", timestamp: Date.now() }, ttlMs);
+}
+
+/**
+ * Checks if a cache entry represents a negative lookup (not found).
+ * @ai Preserve shared storage/cache key contracts and TTL behavior.
+ * @param {object} cached - Cached data object.
+ * @returns {boolean} True if this is a cached "not found" result.
+ */
+function isNegativeCacheEntry(cached) {
+  return cached && cached.error === "not_found";
 }
