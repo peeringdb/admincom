@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name            PeeringDB DP - Consolidated Tools
 // @namespace       https://www.peeringdb.com/
-// @version         1.7.4
-// @description     Consolidated DeskPro tools: linkifies/enriches PeeringDB links (ASN/IP/IX/NET), copies mailto addresses, normalizes PeeringDB CP double-slash links, generates pihole whitelist commands for IX/NET/FAC/Carrier approval tickets
+// @version         1.7.5
+// @description     Consolidated DeskPro tools: linkifies/enriches PeeringDB links (ASN/IP/IX/NET/FAC/Carrier), adds an owning-org shortcut link beside each, copies mailto addresses, normalizes PeeringDB CP double-slash links, generates pihole whitelist commands for IX/NET/FAC/Carrier approval tickets
 // @author          <chriztoffer@peeringdb.com>
 // @match           https://peeringdb.deskpro.com/app*
 // @icon            https://icons.duckduckgo.com/ip2/deskpro.com.ico
@@ -44,7 +44,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbDp";
-  const SCRIPT_VERSION = "1.7.4";
+  const SCRIPT_VERSION = "1.7.5";
   // RDAP fallback client is intentionally CP-only; DP does not implement RDAP lookups.
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
@@ -92,9 +92,11 @@
   const FP_LINK_ICON_SIZE_PX = 12;
   const ACTION_EMOJI_COPY = "📋";
   const ACTION_EMOJI_IX = "🏢";
+  const ACTION_EMOJI_ORG = "🏛";
   const ACTION_LINK_ICON_ATTR = "data-pdb-action-link-icon";
   const ACTION_LINK_TEXT_ATTR = "data-pdb-action-link-text";
   const IX_SHORTCUT_ATTR = "data-pdb-ix-shortcut";
+  const ORG_SHORTCUT_ATTR = "data-pdb-org-shortcut";
   const EXISTING_PDB_LINK_DECORATED_ATTR = "data-pdb-existing-link-decorated";
   const EXISTING_PDB_LINK_ICON_ATTR = "data-pdb-existing-link-icon";
   const EXISTING_PDB_LINK_TEXT_ATTR = "data-pdb-existing-link-text";
@@ -1226,40 +1228,21 @@
    * @returns {Promise<void>}
    */
   async function hydrateAsnLinkLabel(anchor, labelNode, asn, originalDisplayText) {
-    const resolvedName = await fetchAsnNetworkName(asn);
+    const net = await fetchNetByAsn(asn);
+    const resolvedName = resolveEntityLegalName(net);
     if (!resolvedName || !anchor?.isConnected || !labelNode?.isConnected) return;
 
     labelNode.textContent = `${originalDisplayText} (${resolvedName})`;
-    let titleText = `Open ASN${asn} (${resolvedName}) in PeeringDB`;
 
-    // Optionally fetch org/POC info for enriched tooltip (non-blocking)
-    (async () => {
-      try {
-        const params = new URLSearchParams({
-          asn: asn,
-          depth: "1",
-          limit: "1",
-        });
-        const url = `https://www.peeringdb.com/api/net?${params.toString()}`;
-        const payload = await pdbFetch(url);
-        const net = getBestApiNetDataItem(payload, asn);
+    const tooltipParts = [`ASN${asn}`, resolvedName];
+    anchor.title = tooltipParts.join(" | ");
 
-        if (!net || !net.org_id) return;
+    const orgId = String(net?.org_id || "").trim();
+    await appendOrgInfoAndShortcut(anchor, orgId, tooltipParts);
 
-        const org = await fetchOrgWithUsers(net.org_id);
-        if (!org) return;
-
-        const pocList = formatPocList(org.user_set);
-        if (pocList && anchor?.isConnected) {
-          titleText = `${resolvedName}\nOrg: ${org.name}\nPOCs: ${pocList}`;
-          anchor.title = titleText;
-        }
-      } catch (_error) {
-        // Silently ignore POC resolution errors; base info still available
-      }
-    })();
-
-    anchor.title = titleText;
+    if (anchor?.isConnected) {
+      anchor.title = tooltipParts.join(" | ");
+    }
   }
 
   /**
@@ -1505,6 +1488,104 @@
   }
 
   /**
+   * Fetches facility object by facility id.
+   * Purpose: Richly hydrate existing /fac/{id} anchors found in rendered DeskPro HTML.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+   * @param {string|number} facId - Facility id.
+   * @returns {Promise<object|null>} Facility object.
+   */
+  async function fetchFacById(facId) {
+    const normalizedFacId = String(facId || "").trim();
+    if (!/^\d+$/.test(normalizedFacId)) return null;
+
+    const cacheKey = `fetchFacById.${normalizedFacId}`;
+    if (dataCacheInFlight.has(cacheKey)) {
+      return dataCacheInFlight.get(cacheKey);
+    }
+
+    const requestPromise = (async () => {
+      const cached = getCachedDataFromStorage("fac", normalizedFacId);
+      if (cached) {
+        if (isNegativeCacheEntry(cached)) return null;
+        return cached;
+      }
+
+      const params = new URLSearchParams({
+        id: normalizedFacId,
+        status: "ok",
+        depth: "0",
+        limit: "1",
+      });
+      const url = `https://www.peeringdb.com/api/fac?${params.toString()}`;
+      const payload = await pdbFetch(url);
+      const fac = Array.isArray(payload?.data) ? payload.data[0] || null : null;
+      if (!fac) {
+        cacheNegativeLookup("fac", normalizedFacId, ASN_NAME_CACHE_MISS_TTL_MS);
+        return null;
+      }
+
+      setCachedDataInStorage("fac", normalizedFacId, fac, FACILITY_CACHE_TTL_MS);
+      return fac;
+    })();
+
+    dataCacheInFlight.set(cacheKey, requestPromise);
+    try {
+      return await requestPromise;
+    } finally {
+      dataCacheInFlight.delete(cacheKey);
+    }
+  }
+
+  /**
+   * Fetches carrier object by carrier id.
+   * Purpose: Richly hydrate existing /carrier/{id} anchors found in rendered DeskPro HTML.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+   * @param {string|number} carrierId - Carrier id.
+   * @returns {Promise<object|null>} Carrier object.
+   */
+  async function fetchCarrierById(carrierId) {
+    const normalizedCarrierId = String(carrierId || "").trim();
+    if (!/^\d+$/.test(normalizedCarrierId)) return null;
+
+    const cacheKey = `fetchCarrierById.${normalizedCarrierId}`;
+    if (dataCacheInFlight.has(cacheKey)) {
+      return dataCacheInFlight.get(cacheKey);
+    }
+
+    const requestPromise = (async () => {
+      const cached = getCachedDataFromStorage("carrier", normalizedCarrierId);
+      if (cached) {
+        if (isNegativeCacheEntry(cached)) return null;
+        return cached;
+      }
+
+      const params = new URLSearchParams({
+        id: normalizedCarrierId,
+        status: "ok",
+        depth: "0",
+        limit: "1",
+      });
+      const url = `https://www.peeringdb.com/api/carrier?${params.toString()}`;
+      const payload = await pdbFetch(url);
+      const carrier = Array.isArray(payload?.data) ? payload.data[0] || null : null;
+      if (!carrier) {
+        cacheNegativeLookup("carrier", normalizedCarrierId, ASN_NAME_CACHE_MISS_TTL_MS);
+        return null;
+      }
+
+      setCachedDataInStorage("carrier", normalizedCarrierId, carrier, FACILITY_CACHE_TTL_MS);
+      return carrier;
+    })();
+
+    dataCacheInFlight.set(cacheKey, requestPromise);
+    try {
+      return await requestPromise;
+    } finally {
+      dataCacheInFlight.delete(cacheKey);
+    }
+  }
+
+  /**
    * Returns the best netixlan record from an API result set.
    * Prefers records that include an ix.name for label enrichment.
    * @ai Keep behavior stable and prefer minimal, localized edits.
@@ -1565,6 +1646,35 @@
     ixLink.setAttribute("aria-label", ixLink.title);
 
     anchor.insertAdjacentElement("afterend", ixLink);
+  }
+
+  /**
+   * Adds a compact organization shortcut link next to an entity anchor.
+   * Purpose: Surface the owning organization as a directly clickable link
+   * beside any network/facility/IX/carrier/ASN link, not just in the
+   * anchor's hover tooltip. Never applied to org links themselves.
+   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
+   * @param {HTMLAnchorElement} anchor - Entity anchor the org link follows.
+   * @param {string|number} orgId - Organization id.
+   * @param {string} [orgName=""] - Optional organization name for tooltip.
+   */
+  function ensureOrgShortcut(anchor, orgId, orgName = "") {
+    if (!anchor?.isConnected) return;
+    if (!/^\d+$/.test(String(orgId || "").trim())) return;
+    if (anchor.nextElementSibling?.getAttribute?.(ORG_SHORTCUT_ATTR) === "true") return;
+
+    const orgLink = document.createElement("a");
+    orgLink.href = `https://www.peeringdb.com/org/${orgId}`;
+    orgLink.target = "_blank";
+    orgLink.rel = "noopener noreferrer";
+    orgLink.setAttribute(ORG_SHORTCUT_ATTR, "true");
+    orgLink.style.marginLeft = "3px";
+    orgLink.style.textDecoration = "none";
+    orgLink.title = orgName ? `Open org "${orgName}" in PeeringDB` : `Open org ${orgId} in PeeringDB`;
+    orgLink.textContent = ACTION_EMOJI_ORG;
+    orgLink.setAttribute("aria-label", orgLink.title);
+
+    anchor.insertAdjacentElement("afterend", orgLink);
   }
 
   /**
@@ -1695,7 +1805,7 @@
       const host = String(url.hostname || "").toLowerCase();
       if (!(host === "peeringdb.com" || host === "www.peeringdb.com")) return null;
 
-      const entityMatch = url.pathname.match(/^\/(asn|net|ix|fac|org|user)\/(\d+)(?:\/|$)/i);
+      const entityMatch = url.pathname.match(/^\/(asn|net|ix|fac|carrier|org|user)\/(\d+)(?:\/|$)/i);
       if (entityMatch) {
         return {
           kind: String(entityMatch[1] || "").toLowerCase(),
@@ -1886,6 +1996,30 @@
   }
 
   /**
+   * Resolves the owning organization for an entity, appends it to the
+   * anchor's tooltip, and inserts a clickable org shortcut link beside it.
+   * Purpose: Shared by every entity-kind branch below (asn/net/ix/fac/
+   * carrier) so the org-lookup + tooltip + shortcut sequence isn't
+   * duplicated five times.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   * @param {HTMLAnchorElement} anchor - Entity anchor being hydrated.
+   * @param {string} orgId - Organization id from the entity record; no-op when falsy.
+   * @param {string[]} tooltipParts - Tooltip segments array, appended to in place.
+   * @returns {Promise<void>}
+   */
+  async function appendOrgInfoAndShortcut(anchor, orgId, tooltipParts) {
+    if (!orgId) return;
+    const org = await fetchOrgWithUsers(orgId);
+    if (!anchor?.isConnected || !org) return;
+
+    const orgName = String(org.name || "").trim();
+    const pocList = formatPocList(org.user_set);
+    if (orgName) tooltipParts.push(`Org ${orgName}`);
+    if (pocList) tooltipParts.push(`POCs ${pocList}`);
+    ensureOrgShortcut(anchor, orgId, orgName);
+  }
+
+  /**
    * Hydrates existing PeeringDB anchors with contextual titles and compact labels.
    * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLAnchorElement} anchor - Anchor to enrich.
@@ -1907,21 +2041,44 @@
       }
 
       if (info.kind === "asn" && info.id) {
-        const name = await fetchAsnNetworkName(info.id);
+        const net = await fetchNetByAsn(info.id);
         if (!anchor?.isConnected) return;
-        const label = name ? `AS${info.id} (${name})` : `AS${info.id}`;
+
+        const netName = resolveEntityLegalName(net);
+        const orgId = String(net?.org_id || "").trim();
+
+        const tooltipParts = [`AS${info.id}`];
+        if (netName) tooltipParts.push(netName);
+
+        const label = netName ? `AS${info.id} (${netName})` : `AS${info.id}`;
         setExistingPdbAnchorLabel(anchor, label);
-        anchor.title = name ? `AS${info.id} | ${name}` : `AS${info.id}`;
+
+        await appendOrgInfoAndShortcut(anchor, orgId, tooltipParts);
+
+        if (anchor?.isConnected) {
+          anchor.title = tooltipParts.join(" | ");
+        }
         return;
       }
 
       if (info.kind === "ix" && info.id) {
         const ix = await fetchIxById(info.id);
         if (!anchor?.isConnected) return;
+
         const ixName = String(ix?.name || "").trim();
+        const orgId = String(ix?.org_id || "").trim();
+
+        const tooltipParts = [`ix/${info.id}`];
+        if (ixName) tooltipParts.push(ixName);
+
         const label = ixName ? `ix/${info.id} (${ixName})` : `ix/${info.id}`;
         setExistingPdbAnchorLabel(anchor, label);
-        anchor.title = ixName ? `ix/${info.id} | ${ixName}` : `ix/${info.id}`;
+
+        await appendOrgInfoAndShortcut(anchor, orgId, tooltipParts);
+
+        if (anchor?.isConnected) {
+          anchor.title = tooltipParts.join(" | ");
+        }
         return;
       }
 
@@ -1933,23 +2090,56 @@
         const asn = String(net?.asn || "").trim();
         const orgId = String(net?.org_id || "").trim();
 
-        const tooltipParts = [];
-        tooltipParts.push(`net/${info.id}`);
+        const tooltipParts = [`net/${info.id}`];
         if (netName) tooltipParts.push(netName);
         if (asn) tooltipParts.push(`AS${asn}`);
 
         const label = netName ? `net/${info.id} (${netName})` : `net/${info.id}`;
         setExistingPdbAnchorLabel(anchor, label);
 
-        if (orgId) {
-          const org = await fetchOrgWithUsers(orgId);
-          if (anchor?.isConnected && org) {
-            const orgName = String(org.name || "").trim();
-            const pocList = formatPocList(org.user_set);
-            if (orgName) tooltipParts.push(`Org ${orgName}`);
-            if (pocList) tooltipParts.push(`POCs ${pocList}`);
-          }
+        await appendOrgInfoAndShortcut(anchor, orgId, tooltipParts);
+
+        if (anchor?.isConnected) {
+          anchor.title = tooltipParts.join(" | ");
         }
+        return;
+      }
+
+      if (info.kind === "fac" && info.id) {
+        const fac = await fetchFacById(info.id);
+        if (!anchor?.isConnected) return;
+
+        const facName = resolveEntityLegalName(fac);
+        const orgId = String(fac?.org_id || "").trim();
+
+        const tooltipParts = [`fac/${info.id}`];
+        if (facName) tooltipParts.push(facName);
+
+        const label = facName ? `fac/${info.id} (${facName})` : `fac/${info.id}`;
+        setExistingPdbAnchorLabel(anchor, label);
+
+        await appendOrgInfoAndShortcut(anchor, orgId, tooltipParts);
+
+        if (anchor?.isConnected) {
+          anchor.title = tooltipParts.join(" | ");
+        }
+        return;
+      }
+
+      if (info.kind === "carrier" && info.id) {
+        const carrier = await fetchCarrierById(info.id);
+        if (!anchor?.isConnected) return;
+
+        const carrierName = resolveEntityLegalName(carrier);
+        const orgId = String(carrier?.org_id || "").trim();
+
+        const tooltipParts = [`carrier/${info.id}`];
+        if (carrierName) tooltipParts.push(carrierName);
+
+        const label = carrierName ? `carrier/${info.id} (${carrierName})` : `carrier/${info.id}`;
+        setExistingPdbAnchorLabel(anchor, label);
+
+        await appendOrgInfoAndShortcut(anchor, orgId, tooltipParts);
 
         if (anchor?.isConnected) {
           anchor.title = tooltipParts.join(" | ");
@@ -2011,6 +2201,7 @@
       if (shouldRelabel && info.kind === "net" && info.id) initialLabel = `net/${info.id}`;
       if (shouldRelabel && info.kind === "ix" && info.id) initialLabel = `ix/${info.id}`;
       if (shouldRelabel && info.kind === "fac" && info.id) initialLabel = `fac/${info.id}`;
+      if (shouldRelabel && info.kind === "carrier" && info.id) initialLabel = `carrier/${info.id}`;
       if (shouldRelabel && info.kind === "org" && info.id) initialLabel = `org/${info.id}`;
       if (shouldRelabel && info.kind === "user" && info.id) initialLabel = `user/${info.id}`;
       if (shouldRelabel && info.kind === "cp" && info.id) {
@@ -3598,7 +3789,29 @@
     observer.observe(document.body, { childList: true, subtree: true });
   }
 
-  if (document.readyState === "loading") {
+  // Test-only escape hatch: Node's test runner sets window.__PDB_TEST__ on a
+  // fake window/document before evaluating this script, so it can exercise
+  // function logic (e.g. org-link hydration) directly without running the
+  // real browser bootstrap (MutationObserver/menu commands/click listeners),
+  // which a minimal test DOM doesn't implement. Never set by Tampermonkey in
+  // production, so real page behavior is unchanged. Mirrors the same hook
+  // pattern used by the CP/FP consolidated scripts.
+  // @ai Preserve execution ordering, locks, and route/module boundaries.
+  if (typeof window !== "undefined" && window.__PDB_TEST__) {
+    window.__pdbDpTestHooks__ = {
+      parsePeeringDbEntityFromHref,
+      hydrateExistingPeeringDbAnchor,
+      ensureOrgShortcut,
+      fetchNetByAsn,
+      fetchNetById,
+      fetchIxById,
+      fetchFacById,
+      fetchCarrierById,
+      fetchOrgWithUsers,
+      makeAsnLink,
+      hydrateAsnLinkLabel,
+    };
+  } else if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);
   } else {
     init();
