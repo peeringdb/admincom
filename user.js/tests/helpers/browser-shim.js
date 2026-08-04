@@ -105,6 +105,29 @@ class FakeElement {
 }
 
 /**
+ * A minimal text node -- just enough for code that builds a fragment of
+ * mixed text/element children (e.g. DP's linkifyText) and for tests that
+ * read the result back via .textContent. nodeType 3 matches the real DOM's
+ * Node.TEXT_NODE, in case code branches on it.
+ */
+class FakeTextNode {
+  constructor(text) {
+    this.nodeType = 3;
+    this.textContent = String(text ?? '');
+  }
+}
+
+/**
+ * A minimal DocumentFragment -- reuses FakeElement's append/appendChild
+ * (already supports mixed text/element children) under a non-tag name.
+ */
+class FakeDocumentFragment extends FakeElement {
+  constructor() {
+    super('#document-fragment');
+  }
+}
+
+/**
  * Loads a generated .user.js script into a fresh vm context with a minimal
  * fake window/document, using the window.__PDB_TEST__ escape hatch (see the
  * end of each .src.js) to skip the real browser bootstrap and instead expose
@@ -155,6 +178,12 @@ function loadScript(scriptPath, opts) {
     },
     createElement(tagName) {
       return new FakeElement(tagName);
+    },
+    createTextNode(text) {
+      return new FakeTextNode(text);
+    },
+    createDocumentFragment() {
+      return new FakeDocumentFragment();
     },
     addEventListener() {},
     removeEventListener() {},
@@ -249,4 +278,4 @@ function makeFakeStorage() {
   };
 }
 
-module.exports = { loadScript, el, FakeElement, makeFakeStorage };
+module.exports = { loadScript, el, FakeElement, FakeTextNode, FakeDocumentFragment, makeFakeStorage };
