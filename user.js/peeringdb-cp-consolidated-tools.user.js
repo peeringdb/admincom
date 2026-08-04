@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.224
+// @version      2.0.225
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/*
@@ -12438,6 +12438,11 @@
       findIxfMergeCandidates,
       buildMergePlan,
       verifyConflictGates,
+      classifyNetworkNamePattern,
+      buildNetworkNamePatternSummary,
+      buildSuspiciousNetworkNameTsv,
+      mergeAuditSources,
+      formatRecentChangeLines,
     };
   } else if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", runConsolidatedInit, { once: true });
