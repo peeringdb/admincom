@@ -124,7 +124,17 @@ no new dependency beyond Node itself, which is already required for `node --chec
   when peeringdb.com's frontend stopped routing an "AS<digits>" quick-search to `/asn/<digits>` on a
   miss (it now stays on `/search?q=AS<digits>` with a zero-count results page instead), which had
   silently broken `asn-404-cp-search-redirect`'s detection for that path; `asn-404-cp-search-redirect`
-  itself is untouched and still guards a direct `/asn/<digits>` link, which still 404s server-side);
+  itself is untouched and still guards a direct `/asn/<digits>` link, which still 404s server-side).
+  `extractAsnFromSearchQuery` also matches `ASN<digits>` and bare digits with no prefix at all (e.g.
+  `"141743"`), since admins commonly type just the number — a bare-number search with zero results is
+  now treated as an ASN lookup too;
+- FP's single-search-result auto-navigation (`fp-search-single-result-auto-nav.test.js` —
+  `getFrontendSearchResultCount`/`getSingleFrontendSearchResultUrl` plus the
+  `search-single-result-auto-nav` module's `match()`/`run()` end-to-end, via the same
+  `window.location.replace` stub technique. Applies to any `/search` query, not just ASN lookups: when
+  the frontend results page reports exactly one match across every category, the module skips the
+  results page and navigates straight to it. Mutually exclusive with the ASN zero-result redirect above
+  since one requires a zero count and the other requires exactly one);
 - the shared cache namespace's remaining helpers (`dp-shared-cache-helpers.test.js` —
   `getSharedCacheStorageKey`'s type/id validation and normalization branch, and the negative-cache
   pair `cacheNegativeLookup`/`isNegativeCacheEntry` that DP's entity fetchers use to avoid repeated

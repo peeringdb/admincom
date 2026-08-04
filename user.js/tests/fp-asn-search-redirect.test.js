@@ -21,6 +21,11 @@
 // since the shim's fake location object has no such method by default. All
 // expected values below were captured empirically from the real functions
 // before being hardcoded.
+//
+// extractAsnFromSearchQuery also matches "ASN<digits>" and bare digits with
+// no "AS"/"ASN" prefix at all (e.g. "141743"), since admins commonly type
+// just the number. This means a bare-number search that returns zero results
+// is now treated as an ASN lookup and redirected to CP's network search too.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -53,8 +58,14 @@ test('extractAsnFromSearchQuery', async (t) => {
     assert.equal(hooks.extractAsnFromSearchQuery('AS 64500'), '64500');
   });
 
-  await t.test('rejects plain digits with no "AS" prefix', () => {
-    assert.equal(hooks.extractAsnFromSearchQuery('141743'), '');
+  await t.test('matches the "ASN" prefix, with or without a space', () => {
+    assert.equal(hooks.extractAsnFromSearchQuery('ASN141743'), '141743');
+    assert.equal(hooks.extractAsnFromSearchQuery('asn 15169'), '15169');
+    assert.equal(hooks.extractAsnFromSearchQuery('ASN 64500'), '64500');
+  });
+
+  await t.test('matches plain digits with no "AS"/"ASN" prefix', () => {
+    assert.equal(hooks.extractAsnFromSearchQuery('141743'), '141743');
   });
 
   await t.test('rejects a non-ASN query (facility/org name)', () => {

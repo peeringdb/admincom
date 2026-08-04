@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.1.36
+// @version      1.1.37
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
@@ -1359,12 +1359,26 @@
 
   /**
    * Extracts a bare ASN number from a frontend quick-search query string,
-   * when the query looks like an ASN lookup (e.g. "AS15169", "as 15169").
+   * when the query looks like an ASN lookup: "AS15169", "ASN15169",
+   * "as 15169", "ASN 15169", or a bare number ("15169") with no prefix at
+   * all, since admins commonly type just the digits.
    * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function extractAsnFromSearchQuery(query) {
-    const match = String(query || "").trim().match(/^AS\s*(\d+)$/i);
+    const match = String(query || "").trim().match(/^(?:ASN?\s*)?(\d+)$/i);
     return match ? match[1] : "";
+  }
+
+  /**
+   * Returns the total match count reported at the top of a frontend
+   * /search results page (parsed from "About N results"), or NaN if the
+   * summary element is missing or unparseable.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   */
+  function getFrontendSearchResultCount() {
+    const summary = getText("#search-list-view .mb-3");
+    const match = summary.match(/about\s+(\d+)\s+results?/i);
+    return match ? Number(match[1]) : NaN;
   }
 
   /**
@@ -1373,9 +1387,29 @@
    * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function isFrontendZeroResultSearchPage() {
-    const summary = getText("#search-list-view .mb-3");
-    const match = summary.match(/about\s+(\d+)\s+results?/i);
-    return !!match && Number(match[1]) === 0;
+    return getFrontendSearchResultCount() === 0;
+  }
+
+  /**
+   * When a frontend /search results page has exactly one match, returns
+   * the absolute URL of that single result's entity link; otherwise
+   * returns "".
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   */
+  function getSingleFrontendSearchResultUrl() {
+    if (getFrontendSearchResultCount() !== 1) return "";
+
+    const links = qsa("#search-list-view .mb-4 h4 a");
+    if (links.length !== 1) return "";
+
+    const href = links[0].getAttribute("href");
+    if (!href) return "";
+
+    try {
+      return new URL(href, window.location.origin).href;
+    } catch (_error) {
+      return "";
+    }
   }
 
   /**
@@ -2629,6 +2663,21 @@
         });
 
         window.location.replace(cpSearchUrl);
+      },
+    },
+    {
+      id: "search-single-result-auto-nav",
+      match: (ctx) => ctx.type === "search",
+      run: () => {
+        const targetUrl = getSingleFrontendSearchResultUrl();
+        if (!targetUrl) return;
+
+        dbg("search-auto-nav", "frontend search returned exactly one result; navigating directly to it", {
+          from: window.location.href,
+          to: targetUrl,
+        });
+
+        window.location.replace(targetUrl);
       },
     },
     {
@@ -4129,6 +4178,8 @@
       formatAdminTriageSummary,
       extractAsnFromSearchQuery,
       isFrontendZeroResultSearchPage,
+      getFrontendSearchResultCount,
+      getSingleFrontendSearchResultUrl,
     };
     return;
   }
