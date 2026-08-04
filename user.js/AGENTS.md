@@ -93,15 +93,28 @@ no new dependency beyond Node itself, which is already required for `node --chec
   regex scoring function deciding which network names look auto-generated/handle-like;
   `buildNetworkNamePatternSummary`/`buildSuspiciousNetworkNameTsv` for the scan's notification and
   TSV-export formatting; `mergeAuditSources`/`formatRecentChangeLines` for reconciling API rows with
-  local audit-log entries into the operator-facing diff lines).
+  local audit-log entries into the operator-facing diff lines);
+- DP's text-linkification engine (`dp-linkify-text.test.js` — `linkifyText`'s `REPLACEMENT_RULES`
+  (4 overlapping ASN/org-name regex patterns run in one combined, position-sorted pass) and
+  `findProbableStandaloneAsnHits`, a heuristic detector for bare 3-10 digit ASN lines gated on
+  surrounding context to avoid false-positiving on arbitrary numbers — the richest untested
+  regex/business logic in either script);
+- DP's IXLAN Peer Renumber launcher and Whitelist CMD Generator command builder
+  (`dp-renumber-launcher.test.js` — `collectRenumberCandidates`/`extractIxlanIdFromTicket` (ticket-
+  text parsing distinct from CP's renumber classification), `buildRenumberCpUrl` (the DP→CP hash-
+  payload contract), and `buildWhitelistCommand`);
+- DP's CP-fallback-on-404 flow, mailto decoration, and shared error classifier
+  (`dp-cp-fallback-and-mailto.test.js` — `getCpModelForFrontendKind`/`buildCpChangeUrl`/
+  `getFrontendExistenceProbeUrl`/`isFrontendEntityMissing` (the last exercised via the fetchMap
+  mock, both the "exists" and "404" paths), `extractMailtoAddress`/`buildCpEmailSearchUrl`, and
+  `classifyError`, the retry/abort decision classifier used across DP's API calls).
 
 These are the highest-regression-risk surfaces, since the strings/DOM output are asserted verbatim.
 It does **not** cover every module in every script (CP alone has ~207 top-level helper functions);
-most still rely on manual smoke testing. Remaining high-value pure-logic targets (DP's linkify
-engine, FP's admin-ops URL builders, and a handful of shared cache-helper edge cases) are tracked in
-`docs/CONCERNS.md`'s Top Risks row for test coverage — extend the relevant
-`window.__pdbXxTestHooks__` object and follow the pattern of the test files above rather than
-waiting on a `lib/*.js` extraction first.
+most still rely on manual smoke testing. Remaining high-value pure-logic targets (FP's admin-ops
+URL builders and a handful of shared cache-helper edge cases) are tracked in `docs/CONCERNS.md`'s
+Top Risks row for test coverage — extend the relevant `window.__pdbXxTestHooks__` object and follow
+the pattern of the test files above rather than waiting on a `lib/*.js` extraction first.
 
 - `node --test` (run from `user.js/`) — runs the full suite; auto-discovers `tests/**/*.test.js`.
 - `user.js/tests/helpers/browser-shim.js` — hand-rolled fake `window`/`document` (no jsdom): loads
@@ -112,7 +125,10 @@ waiting on a `lib/*.js` extraction first.
   GM_* calls/menu registration) that a minimal test DOM can't support, and is never set by
   Tampermonkey, so production behavior is unchanged. The shim also provides a minimal
   `document.createElement`-capable `FakeElement` (supports `insertAdjacentElement`/`append`/
-  attributes — enough to test code that creates and inserts DOM nodes, e.g. DP's org shortcut), an
+  attributes — enough to test code that creates and inserts DOM nodes, e.g. DP's org shortcut),
+  `document.createTextNode`/`document.createDocumentFragment` (`FakeTextNode`/
+  `FakeDocumentFragment`, the latter just `FakeElement` under a non-tag name — enough to test code
+  that builds a fragment of mixed text/element children, e.g. DP's `linkifyText`), an
   optional `fetchMap` (exact request URL → JSON body) that backs a fake `fetch()` so API-calling
   functions run for real against canned data with zero live network access, and an optional
   `localStorage` override (`makeFakeStorage()`, exported) so two separate `loadScript()` calls can be
