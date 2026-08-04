@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.223
+// @version      2.0.224
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/*
@@ -11111,6 +11111,18 @@
       migrateLegacyOrgNameCacheKeys,
       getCachedDataFromStorage,
       setCachedDataInStorage,
+      parseIp,
+      formatIp,
+      parseCidr,
+      replaceHostInPrefix,
+      parseRenumberHash,
+      classifyRenumberRows,
+      buildNetixlanPutPayload,
+      extractRenumberApiErrorDetail,
+      extractIxfAsnIpPairs,
+      findIxfMergeCandidates,
+      buildMergePlan,
+      verifyConflictGates,
     };
   } else if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", runConsolidatedInit, { once: true });
