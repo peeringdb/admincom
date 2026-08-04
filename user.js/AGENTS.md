@@ -75,11 +75,27 @@ no new dependency beyond Node itself, which is already required for `node --chec
 - DP's Whitelist CMD Generator URL/hostname parsing (`dp-whitelist-generator.test.js` —
   `parseWhitelistChangeHref`/`extractWhitelistHostname`; `deriveWhitelistCandidates`'
   PSL-based eTLD+1 resolution is *not* covered, since the PSL library is loaded via `@require` and
-  isn't available in this offline test environment).
+  isn't available in this offline test environment);
+- CP's IP/CIDR host-bit arithmetic (`cp-ip-cidr.test.js` — `parseIp`/`formatIp`/`parseCidr`/
+  `replaceHostInPrefix`, the BigInt math behind the IXLAN Renumber modal; a silent regression here
+  misconfigures live peering sessions, making it the single highest-consequence untested surface
+  identified in the repo);
+- CP's renumber classification (`cp-renumber-classification.test.js` — `parseRenumberHash` (the
+  hash-payload contract with the DP launcher), `classifyRenumberRows` (per-row eligible/conflict/
+  skip/no-change classification), `buildNetixlanPutPayload`, and `extractRenumberApiErrorDetail`);
+- CP's IX-F Member Audit and Conflict Resolver safety logic (`cp-ixf-merge-gates.test.js` —
+  `extractIxfAsnIpPairs`/`findIxfMergeCandidates` for both the "split" and "stale-dual" merge
+  shapes, and `buildMergePlan`/`verifyConflictGates`, the 8-gate check that must all pass before an
+  operator DELETEs a live netixlan row; several cases lock in the exact operator-discovered
+  edge cases referenced in the source comments, e.g. ixlan #3990/AS211750).
 
 These are the highest-regression-risk surfaces, since the strings/DOM output are asserted verbatim.
 It does **not** cover every module in every script (CP alone has ~207 top-level helper functions);
-most still rely on manual smoke testing.
+most still rely on manual smoke testing. Remaining high-value pure-logic targets (further CP
+name-pattern-diagnostics/audit-merge helpers, DP's linkify engine, FP's admin-ops URL builders, and
+a handful of shared cache-helper edge cases) are tracked in `docs/CONCERNS.md`'s Top Risks row for
+test coverage — extend the relevant `window.__pdbXxTestHooks__` object and follow the pattern of
+the test files above rather than waiting on a `lib/*.js` extraction first.
 
 - `node --test` (run from `user.js/`) — runs the full suite; auto-discovers `tests/**/*.test.js`.
 - `user.js/tests/helpers/browser-shim.js` — hand-rolled fake `window`/`document` (no jsdom): loads
