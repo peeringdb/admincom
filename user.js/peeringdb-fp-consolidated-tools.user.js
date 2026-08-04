@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.1.35
+// @version      1.1.36
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
@@ -1358,6 +1358,27 @@
   }
 
   /**
+   * Extracts a bare ASN number from a frontend quick-search query string,
+   * when the query looks like an ASN lookup (e.g. "AS15169", "as 15169").
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   */
+  function extractAsnFromSearchQuery(query) {
+    const match = String(query || "").trim().match(/^AS\s*(\d+)$/i);
+    return match ? match[1] : "";
+  }
+
+  /**
+   * Returns true when the frontend /search results page reports zero
+   * matches across every category ("About 0 results").
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   */
+  function isFrontendZeroResultSearchPage() {
+    const summary = getText("#search-list-view .mb-3");
+    const match = summary.match(/about\s+(\d+)\s+results?/i);
+    return !!match && Number(match[1]) === 0;
+  }
+
+  /**
    * Builds a CP account email-address search URL.
    * @ai Keep behavior stable and prefer minimal, localized edits.
    */
@@ -2580,6 +2601,28 @@
         if (!cpSearchUrl) return;
 
         dbg("asn-redirect", "frontend ASN 404 detected; redirecting to CP search", {
+          from: window.location.href,
+          to: cpSearchUrl,
+          asn,
+        });
+
+        window.location.replace(cpSearchUrl);
+      },
+    },
+    {
+      id: "asn-search-zero-result-cp-redirect",
+      match: (ctx) => ctx.type === "search",
+      run: () => {
+        const params = new URLSearchParams(window.location.search);
+        const asn = extractAsnFromSearchQuery(params.get("q") || params.get("term") || "");
+        if (!asn) return;
+
+        if (!isFrontendZeroResultSearchPage()) return;
+
+        const cpSearchUrl = buildCpNetworkSearchUrlByAsn(asn);
+        if (!cpSearchUrl) return;
+
+        dbg("asn-redirect", "frontend ASN search returned zero results; redirecting to CP search", {
           from: window.location.href,
           to: cpSearchUrl,
           asn,
@@ -4084,6 +4127,8 @@
       buildCpAccountSearchUrl,
       formatEntityIdsBundle,
       formatAdminTriageSummary,
+      extractAsnFromSearchQuery,
+      isFrontendZeroResultSearchPage,
     };
     return;
   }

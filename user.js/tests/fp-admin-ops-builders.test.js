@@ -9,12 +9,17 @@
 // hardcoded.
 //
 // fix-double-slashes' redirect-trigger regex and asn-404-cp-search-redirect's
-// URL-builder core are deliberately NOT covered here: both are inline
-// closures inside modules[].run() (not standalone exposed functions), and
-// exercising them would require mocking window.location.href reassignment
-// and window.location.replace() rather than asserting a pure return value --
-// a different, heavier kind of test than the rest of this file. The
+// run() are deliberately NOT covered here: both are inline closures inside
+// modules[].run() (not standalone exposed functions), and exercising them
+// would require mocking window.location.href reassignment and
+// window.location.replace() rather than asserting a pure return value -- a
+// different, heavier kind of test than the rest of this file. The
 // URL-builder half (buildCpNetworkSearchUrlByAsn) is already covered above.
+// Its sibling module, asn-search-zero-result-cp-redirect (added when
+// peeringdb.com's frontend stopped routing "AS<digits>" searches to
+// /asn/<digits>, breaking asn-404-cp-search-redirect's detection), IS
+// covered end-to-end, including run(), in fp-asn-search-redirect.test.js --
+// by stubbing window.location.replace directly rather than avoiding it.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');

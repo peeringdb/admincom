@@ -117,6 +117,14 @@ no new dependency beyond Node itself, which is already required for `node --chec
   `elementLists` fixtures. `fix-double-slashes`'/`asn-404-cp-search-redirect`'s inline
   `window.location` mutation closures are deliberately **not** covered — see the test file's header
   for why);
+- FP's ASN-search-zero-result CP redirect (`fp-asn-search-redirect.test.js` —
+  `extractAsnFromSearchQuery`/`isFrontendZeroResultSearchPage` plus the
+  `asn-search-zero-result-cp-redirect` module's `match()`/`run()` end-to-end, including the actual
+  redirect call, by stubbing `window.location.replace` directly on the shim's sandbox window. Added
+  when peeringdb.com's frontend stopped routing an "AS<digits>" quick-search to `/asn/<digits>` on a
+  miss (it now stays on `/search?q=AS<digits>` with a zero-count results page instead), which had
+  silently broken `asn-404-cp-search-redirect`'s detection for that path; `asn-404-cp-search-redirect`
+  itself is untouched and still guards a direct `/asn/<digits>` link, which still 404s server-side);
 - the shared cache namespace's remaining helpers (`dp-shared-cache-helpers.test.js` —
   `getSharedCacheStorageKey`'s type/id validation and normalization branch, and the negative-cache
   pair `cacheNegativeLookup`/`isNegativeCacheEntry` that DP's entity fetchers use to avoid repeated
