@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.1.34
+// @version      1.1.35
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
@@ -4077,6 +4077,13 @@
       migrateLegacyApiPayloadCacheKeys,
       getCachedDataFromStorage,
       setCachedDataInStorage,
+      buildCpNetworkSearchUrlByAsn,
+      buildCpOrgChangeUrl,
+      buildCpUserManagerUrl,
+      buildCpEntitySearchUrl,
+      buildCpAccountSearchUrl,
+      formatEntityIdsBundle,
+      formatAdminTriageSummary,
     };
     return;
   }
