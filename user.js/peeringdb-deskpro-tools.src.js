@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name            PeeringDB DP - Consolidated Tools
 // @namespace       https://www.peeringdb.com/
-// @version         1.7.8
+// @version         1.7.9
 // @description     Consolidated DeskPro tools: linkifies/enriches PeeringDB links (ASN/IP/IX/NET/FAC/Carrier), adds an owning-org shortcut link beside each, copies mailto addresses, normalizes PeeringDB CP double-slash links, generates pihole whitelist commands for IX/NET/FAC/Carrier approval tickets
 // @author          <chriztoffer@peeringdb.com>
 // @match           https://peeringdb.deskpro.com/app*
@@ -3713,6 +3713,10 @@
       extractMailtoAddress,
       buildCpEmailSearchUrl,
       classifyError,
+      getSharedCacheStorageKey,
+      cacheNegativeLookup,
+      isNegativeCacheEntry,
+      getCachedDataFromStorage,
     };
   } else if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);
