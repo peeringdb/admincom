@@ -116,14 +116,23 @@ no new dependency beyond Node itself, which is already required for `node --chec
   data-edit-attribute → getText → input-value fallback chains via the shim's `elements`/
   `elementLists` fixtures. `fix-double-slashes`'/`asn-404-cp-search-redirect`'s inline
   `window.location` mutation closures are deliberately **not** covered — see the test file's header
-  for why).
+  for why);
+- the shared cache namespace's remaining helpers (`dp-shared-cache-helpers.test.js` —
+  `getSharedCacheStorageKey`'s type/id validation and normalization branch, and the negative-cache
+  pair `cacheNegativeLookup`/`isNegativeCacheEntry` that DP's entity fetchers use to avoid repeated
+  failed lookups, including a round-trip write → read → classify case. Loaded through DP since it's
+  the current sole direct caller of these three, though the underlying `lib/admincom-common.js`
+  fragment is identical across all three scripts. One case documents a real discrepancy between
+  `isNegativeCacheEntry`'s declared `boolean` return type and its actual behavior — it returns the
+  falsy input itself (`null`/`undefined`), not coerced to `false` — locked in rather than fixed).
 
 These are the highest-regression-risk surfaces, since the strings/DOM output are asserted verbatim.
 It does **not** cover every module in every script (CP alone has ~207 top-level helper functions);
-most still rely on manual smoke testing. Remaining high-value pure-logic targets (a handful of
-shared cache-helper edge cases) are tracked in `docs/CONCERNS.md`'s
-Top Risks row for test coverage — extend the relevant `window.__pdbXxTestHooks__` object and follow
-the pattern of the test files above rather than waiting on a `lib/*.js` extraction first.
+most still rely on manual smoke testing, which remains the primary verification method for
+DOM-heavy modules. Every pure-logic target identified in the initial coverage-expansion pass is now
+covered; see `docs/CONCERNS.md`'s Top Risks row for the current state and how to keep extending it —
+add functions to the relevant `window.__pdbXxTestHooks__` object and follow the pattern of the test
+files above rather than waiting on a `lib/*.js` extraction first.
 
 - `node --test` (run from `user.js/`) — runs the full suite; auto-discovers `tests/**/*.test.js`.
 - `user.js/tests/helpers/browser-shim.js` — hand-rolled fake `window`/`document` (no jsdom): loads
