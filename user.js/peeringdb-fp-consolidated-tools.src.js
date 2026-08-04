@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.1.37
+// @version      1.1.38
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
@@ -12,6 +12,8 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_unregisterMenuCommand
 // @grant        GM_notification
+// @grant        GM_xmlhttpRequest
+// @connect      *
 // @run-at       document-end
 // @updateURL    https://raw.githubusercontent.com/peeringdb/admincom/master/user.js/peeringdb-fp-consolidated-tools.meta.js
 // @downloadURL  https://raw.githubusercontent.com/peeringdb/admincom/master/user.js/peeringdb-fp-consolidated-tools.user.js
@@ -84,6 +86,12 @@
   // getCachedDataFromStorage/setCachedDataInStorage) -- FP owns the policy
   // value, the mechanism itself is shared with CP/DP.
   const API_PAYLOAD_CACHE_TTL_MS = 10 * 60 * 1000;
+  // IX-F member-export documents are large third-party fetches (cross-origin,
+  // via GM_xmlhttpRequest) that don't change on the timescale of a single
+  // triage session; cache the parsed body under the same shared-cache
+  // mechanism so re-verifying a row, or verifying a second row at the same
+  // exchange, doesn't re-fetch it.
+  const IXF_EXPORT_CACHE_TTL_MS = 15 * 60 * 1000;
   // Legacy per-script cache key prefixes -- no longer written to; kept only
   // so migrateLegacyApiPayloadCacheKeys() can sweep and remove old entries once.
   const LEGACY_API_PAYLOAD_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.apiPayloadCache.`;
@@ -1031,6 +1039,261 @@
     } catch (_error) {
       return "";
     }
+  }
+
+  /**
+   * Reads the CSRF token for authenticated same-origin API writes.
+   * Purpose: The netixlan IX-F resolve PUT needs X-CSRFToken; FP has never
+   * needed to write before, so unlike CP there's no existing helper for
+   * this yet.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   * @returns {string} CSRF token, or "" if unavailable.
+   */
+  function getCsrfTokenFp() {
+    const cookieMatch = String(document.cookie || "").match(/(?:^|;\s*)csrftoken=([^;]+)/);
+    if (cookieMatch) return decodeURIComponent(cookieMatch[1]);
+
+    const inputToken = qs("input[name='csrfmiddlewaretoken']")?.value;
+    return String(inputToken || "").trim();
+  }
+
+  /**
+   * Cross-origin GET of an IX-F member-export JSON document, via the shared
+   * gmRequestWithRetry wrapper (retries 429/5xx with backoff), cached under
+   * the shared storage cache keyed by the export URL.
+   * Purpose: Retrieve the exchange's IX-F feed for the per-netixlan verify
+   * check; fetch() is blocked by CORS for arbitrary IX portals, so this
+   * needs the userscript-grant code path (mirrors CP's
+   * fetchIxfMemberExport, which predates the shared retry wrapper and
+   * calls GM_xmlhttpRequest directly).
+   * Necessity: re-verifying a row, or verifying a second row at the same
+   * exchange, would otherwise re-fetch the same (often large) third-party
+   * document every click; only successful fetches are cached, so a failed
+   * lookup is always retried fresh on the next click.
+   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+   * @param {string} ixfUrl - The IX-F export URL.
+   * @returns {Promise<{ data: object|null, status: number, error: string }>}
+   */
+  function fetchIxfMemberExportFp(ixfUrl) {
+    const cached = getCachedDataFromStorage("ixf_export", ixfUrl);
+    if (cached) return Promise.resolve({ data: cached, status: 200, error: "" });
+
+    return new Promise((resolve) => {
+      let urlString = "";
+      try {
+        urlString = new URL(ixfUrl).toString();
+      } catch (_error) {
+        resolve({ data: null, status: 0, error: "bad-url" });
+        return;
+      }
+
+      try {
+        gmRequestWithRetry({
+          method: "GET",
+          url: urlString,
+          headers: { Accept: "application/json" },
+          anonymous: true,
+          onload: (response) => {
+            const status = Number(response?.status || 0);
+            const raw = String(response?.responseText || "");
+            let data = null;
+            try {
+              data = JSON.parse(raw);
+            } catch (_err) {
+              resolve({ data: null, status, error: "parse-failed" });
+              return;
+            }
+            if (status >= 200 && status < 300) {
+              setCachedDataInStorage("ixf_export", ixfUrl, data, IXF_EXPORT_CACHE_TTL_MS);
+              resolve({ data, status, error: "" });
+            } else {
+              resolve({ data, status, error: `http-${status}` });
+            }
+          },
+          onerror: () => resolve({ data: null, status: 0, error: "network-error" }),
+          ontimeout: () => resolve({ data: null, status: 0, error: "timeout" }),
+        });
+      } catch (_error) {
+        resolve({ data: null, status: 0, error: "request-failed" });
+      }
+    });
+  }
+
+  /**
+   * Comparison-only IPv6 normalizer: lowercase, "::" expanded to 8 groups,
+   * each group zero-padded to 4 hex digits.
+   * Purpose: Let e.g. "2001:DB8::1" and "2001:db8:0:0:0:0:0:1" compare
+   * equal without pulling in CP's full BigInt parseIp/formatIp -- that's
+   * renumbering-grade machinery this feature doesn't need, just enough to
+   * make IX-F's and PDB's spelling of the same address match.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   * @param {string} ip - IPv6 address string (or empty).
+   * @returns {string} Canonical comparison key, or "" for empty input.
+   */
+  function normalizeIpv6ForCompareFp(ip) {
+    const text = String(ip || "").trim().toLowerCase();
+    if (!text || !text.includes(":")) return text;
+
+    let groups;
+    if (text.includes("::")) {
+      const [head, tail] = text.split("::");
+      const headGroups = head ? head.split(":") : [];
+      const tailGroups = tail ? tail.split(":") : [];
+      const missing = 8 - headGroups.length - tailGroups.length;
+      if (missing < 0) return text;
+      groups = [...headGroups, ...Array(missing).fill("0"), ...tailGroups];
+    } else {
+      groups = text.split(":");
+    }
+
+    if (groups.length !== 8) return text;
+    return groups.map((group) => group.padStart(4, "0")).join(":");
+  }
+
+  /**
+   * Finds the IX-F member-export entry (if any) for a netixlan's ASN/IP.
+   * Purpose: Locate the vlan/connection entry an IX-F feed asserts for one
+   * network's netixlan row, so it can be diffed against the live PDB
+   * record. Same member_list -> connection_list -> vlan_list traversal
+   * shape as CP's extractIxfAsnIpPairs.
+   * Necessity: A netixlan row with both ipaddr4 and ipaddr6 set could,
+   * in principle, have IX-F assert them across two different split vlan
+   * entries rather than one shared entry -- this returns the first vlan
+   * entry that matches either family and diffs both against it, the same
+   * simplification the rest of this feature makes; reconciling that kind
+   * of split is what CP's separate IX-F Member Audit tool exists for.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   * @param {object} ixfData - Parsed IX-F member-export JSON.
+   * @param {{ asn: string|number, ipaddr4: string, ipaddr6: string }} target
+   * @returns {{ matched: "ip"|"asn-only"|"none", connection: object|null, vlan: object|null, asnEntries: Array<{v4: string, v6: string}> }}
+   */
+  function extractIxfMatchForAsnIp(ixfData, { asn, ipaddr4, ipaddr6 } = {}) {
+    const targetAsn = String(asn ?? "").trim();
+    const targetV4 = String(ipaddr4 || "").trim();
+    const targetV6Norm = normalizeIpv6ForCompareFp(ipaddr6 || "");
+    const memberList = Array.isArray(ixfData?.member_list) ? ixfData.member_list : [];
+    const asnEntries = [];
+
+    if (!targetAsn) return { matched: "none", connection: null, vlan: null, asnEntries };
+
+    for (const member of memberList) {
+      const memberAsn = String(member?.asnum ?? member?.asn ?? "").trim();
+      if (memberAsn !== targetAsn) continue;
+
+      const connections = Array.isArray(member?.connection_list) ? member.connection_list : [];
+      for (const connection of connections) {
+        const vlanList = Array.isArray(connection?.vlan_list) ? connection.vlan_list : [];
+        for (const vlan of vlanList) {
+          const v4 = String(vlan?.ipv4?.address || "").trim();
+          const v6 = String(vlan?.ipv6?.address || "").trim();
+          if (!v4 && !v6) continue;
+          asnEntries.push({ v4, v6 });
+
+          const v4Matches = !!targetV4 && v4 === targetV4;
+          const v6Matches = !!targetV6Norm && !!v6 && normalizeIpv6ForCompareFp(v6) === targetV6Norm;
+          if (v4Matches || v6Matches) {
+            return { matched: "ip", connection, vlan, asnEntries };
+          }
+        }
+      }
+    }
+
+    return { matched: asnEntries.length ? "asn-only" : "none", connection: null, vlan: null, asnEntries };
+  }
+
+  /**
+   * Builds a field-by-field diff between a live netixlan row and its
+   * matched IX-F member-export entry.
+   * Purpose: Surface, without acting on, every disagreement so an admin
+   * can review before resolving.
+   * Necessity: speed/is_rs_peer/operational are safe to auto-correct
+   * (Resolve); ipaddr4/ipaddr6 are informational only -- an IP mismatch is
+   * a renumber-class change with its own safety-gated CP tool, not
+   * something a single click here should silently rewrite.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   * @param {object} netixlanRow - Live PDB netixlan record (from /api/netixlan/<id>).
+   * @param {{ matched: string, connection: object|null, vlan: object|null }} ixfMatchResult
+   * @returns {Array<{ field: string, label: string, pdbValue: *, ixfValue: *, differs: boolean, autoFixable: boolean }>}
+   */
+  function buildIxfDiff(netixlanRow, ixfMatchResult) {
+    const { matched, connection, vlan } = ixfMatchResult || {};
+    if (matched !== "ip") return [];
+
+    const ifList = Array.isArray(connection?.if_list) ? connection.if_list : [];
+    const ixfSpeed = ifList.reduce((sum, iface) => sum + (Number(iface?.if_speed) || 0), 0);
+    const ixfIsRsPeer = Boolean(vlan?.ipv4?.routeserver) || Boolean(vlan?.ipv6?.routeserver);
+    const ixfState = String(connection?.state || "").trim().toLowerCase();
+    const ixfOperational = ixfState === "active" ? true : (ixfState === "inactive" ? false : null);
+    const ixfV4 = String(vlan?.ipv4?.address || "").trim();
+    const ixfV6 = String(vlan?.ipv6?.address || "").trim();
+
+    const pdbSpeed = Number(netixlanRow?.speed) || 0;
+    const pdbIsRsPeer = Boolean(netixlanRow?.is_rs_peer);
+    const pdbOperational = Boolean(netixlanRow?.operational);
+    const pdbV4 = String(netixlanRow?.ipaddr4 || "").trim();
+    const pdbV6 = String(netixlanRow?.ipaddr6 || "").trim();
+
+    const entries = [
+      {
+        field: "speed", label: "Speed (Mbps)", pdbValue: pdbSpeed, ixfValue: ixfSpeed,
+        differs: pdbSpeed !== ixfSpeed, autoFixable: true,
+      },
+      {
+        field: "is_rs_peer", label: "Route server peer", pdbValue: pdbIsRsPeer, ixfValue: ixfIsRsPeer,
+        differs: pdbIsRsPeer !== ixfIsRsPeer, autoFixable: true,
+      },
+    ];
+
+    if (ixfOperational !== null) {
+      entries.push({
+        field: "operational", label: "Operational", pdbValue: pdbOperational, ixfValue: ixfOperational,
+        differs: pdbOperational !== ixfOperational, autoFixable: true,
+      });
+    }
+
+    entries.push(
+      {
+        field: "ipaddr4", label: "IPv4", pdbValue: pdbV4, ixfValue: ixfV4,
+        differs: !!ixfV4 && pdbV4 !== ixfV4, autoFixable: false,
+      },
+      {
+        field: "ipaddr6", label: "IPv6", pdbValue: pdbV6, ixfValue: ixfV6,
+        differs: !!ixfV6 && normalizeIpv6ForCompareFp(pdbV6) !== normalizeIpv6ForCompareFp(ixfV6), autoFixable: false,
+      },
+    );
+
+    return entries;
+  }
+
+  /**
+   * Builds the PUT payload for /api/netixlan/<id> that resolves only the
+   * auto-fixable IX-F discrepancies (speed/is_rs_peer/operational).
+   * Purpose: Round-trip the full row (the API requires a full PUT, not a
+   * partial PATCH -- same constraint CP's buildNetixlanPutPayload
+   * documents) while only overwriting fields the admin has been shown
+   * differ.
+   * Necessity: ipaddr4/ipaddr6 are never touched here even if they
+   * differ -- see buildIxfDiff's autoFixable:false for why.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   * @param {object} netixlanRow - Live PDB netixlan record.
+   * @param {Array<{ field: string, ixfValue: *, differs: boolean, autoFixable: boolean }>} diffEntries
+   * @returns {object} Sanitized payload safe for PUT.
+   */
+  function buildNetixlanResolvePayload(netixlanRow, diffEntries) {
+    const payload = { ...netixlanRow };
+    for (const key of ["id", "created", "updated", "_grainy_status", "status_dashboard_url"]) {
+      delete payload[key];
+    }
+    if (payload.ipaddr4 === null || payload.ipaddr4 === undefined) payload.ipaddr4 = "";
+    if (payload.ipaddr6 === null || payload.ipaddr6 === undefined) payload.ipaddr6 = "";
+
+    for (const entry of diffEntries || []) {
+      if (entry?.autoFixable && entry?.differs) {
+        payload[entry.field] = entry.ixfValue;
+      }
+    }
+
+    return payload;
   }
 
   /**
@@ -2196,6 +2459,268 @@
     document.title = `PDB${TITLE_SEP}${current}`;
   }
 
+  // ── IX-F per-netixlan verify/resolve (helpers) ─────────────────────────────
+  // Not unit tested below this point -- GM_xmlhttpRequest-backed fetches and
+  // DOM/click wiring, same category as fix-double-slashes/
+  // asn-404-cp-search-redirect's inline closures (see
+  // fp-admin-ops-builders.test.js's header). The pure pieces these call
+  // (extractIxfMatchForAsnIp, buildIxfDiff, buildNetixlanResolvePayload,
+  // normalizeIpv6ForCompareFp) are tested directly in
+  // fp-netixlan-ixf-verify.test.js.
+
+  /**
+   * Sends the resolve PUT for an IX-F discrepancy and updates the panel.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   */
+  async function resolveIxfDiscrepancy(panel, netixlanId, netixlanRow, diffEntries, resolveBtn) {
+    resolveBtn.disabled = true;
+    resolveBtn.textContent = "Resolving…";
+
+    const payload = buildNetixlanResolvePayload(netixlanRow, diffEntries);
+    try {
+      const csrfToken = getCsrfTokenFp();
+      const response = await fetchWithRetry(`${window.location.origin}/api/netixlan/${netixlanId}`, {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "X-CSRFToken": csrfToken },
+        body: JSON.stringify(payload),
+      });
+
+      if (response.ok) {
+        const status = document.createElement("div");
+        status.textContent = "✓ Resolved.";
+        status.style.fontWeight = "bold";
+        panel.appendChild(status);
+        dbg("ixf-verify", "resolved netixlan discrepancy", { netixlanId, payload });
+        notifyUser({ title: "PeeringDB FP", text: `Netixlan #${netixlanId} updated from IX-F.` });
+        return;
+      }
+
+      const errorBody = await response.json().catch(() => null);
+      const detail = errorBody && typeof errorBody === "object"
+        ? Object.entries(errorBody)
+          .filter(([key]) => key !== "meta")
+          .map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join("; ") : value}`)
+          .join(" | ")
+        : "";
+      const status = document.createElement("div");
+      status.textContent = `Resolve failed (HTTP ${response.status})${detail ? `: ${detail}` : ""}`;
+      panel.appendChild(status);
+      resolveBtn.disabled = false;
+      resolveBtn.textContent = "Resolve discrepancy";
+    } catch (error) {
+      const status = document.createElement("div");
+      status.textContent = `Resolve failed: ${String(error?.message || error)}`;
+      panel.appendChild(status);
+      resolveBtn.disabled = false;
+      resolveBtn.textContent = "Resolve discrepancy";
+    }
+  }
+
+  /**
+   * Sends the DELETE for a netixlan row that IX-F doesn't list at all for
+   * this ASN at this exchange, after a native confirm().
+   * Necessity: unlike the field-level resolve above (speed/is_rs_peer/
+   * operational, gated behind the existing "show diff, then click Resolve"
+   * two-step), this is a destructive, non-reversible delete of a PDB
+   * record -- a meaningfully bigger action that deliberately gets the
+   * browser's own unambiguous confirmation dialog rather than only a
+   * second custom-UI button click.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   */
+  async function removeNetixlanEntry(panel, netixlanId, netixlanRow, removeBtn) {
+    const label = `AS${netixlanRow.asn} ${netixlanRow.ipaddr4 || netixlanRow.ipaddr6 || ""}`.trim();
+    const confirmed = window.confirm(
+      `Remove netixlan #${netixlanId} (${label})?\n\n` +
+      "IX-F does not list this ASN at this exchange at all. This permanently deletes the record from PeeringDB and cannot be undone.",
+    );
+    if (!confirmed) return;
+
+    removeBtn.disabled = true;
+    removeBtn.textContent = "Removing…";
+
+    try {
+      const csrfToken = getCsrfTokenFp();
+      const response = await fetchWithRetry(`${window.location.origin}/api/netixlan/${netixlanId}`, {
+        method: "DELETE",
+        credentials: "same-origin",
+        headers: { "X-CSRFToken": csrfToken },
+      });
+
+      if (response.ok) {
+        const status = document.createElement("div");
+        status.textContent = "✓ Removed.";
+        status.style.fontWeight = "bold";
+        panel.appendChild(status);
+        dbg("ixf-verify", "removed netixlan absent from IX-F", { netixlanId });
+        notifyUser({ title: "PeeringDB FP", text: `Netixlan #${netixlanId} removed.` });
+        return;
+      }
+
+      const errorBody = await response.json().catch(() => null);
+      const detail = errorBody && typeof errorBody === "object"
+        ? Object.entries(errorBody)
+          .filter(([key]) => key !== "meta")
+          .map(([key, value]) => `${key}: ${Array.isArray(value) ? value.join("; ") : value}`)
+          .join(" | ")
+        : "";
+      const status = document.createElement("div");
+      status.textContent = `Remove failed (HTTP ${response.status})${detail ? `: ${detail}` : ""}`;
+      panel.appendChild(status);
+      removeBtn.disabled = false;
+      removeBtn.textContent = "Remove netixlan entry";
+    } catch (error) {
+      const status = document.createElement("div");
+      status.textContent = `Remove failed: ${String(error?.message || error)}`;
+      panel.appendChild(status);
+      removeBtn.disabled = false;
+      removeBtn.textContent = "Remove netixlan entry";
+    }
+  }
+
+  /**
+   * Renders the "IX-F has no entry for this ASN at all" result, with a
+   * "Remove netixlan entry" option (see removeNetixlanEntry for why this
+   * is a native confirm() rather than a second custom button).
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   */
+  function renderNoIxfEntryResult(panel, netixlanId, netixlanRow) {
+    panel.textContent = "";
+
+    const line = document.createElement("div");
+    line.textContent = `IX-F export has no entry for AS${netixlanRow.asn} at this exchange at all.`;
+    panel.appendChild(line);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.textContent = "Remove netixlan entry";
+    removeBtn.className = "btn btn-danger btn-sm";
+    removeBtn.style.marginTop = "6px";
+    removeBtn.addEventListener("click", () => removeNetixlanEntry(panel, netixlanId, netixlanRow, removeBtn));
+    panel.appendChild(removeBtn);
+  }
+
+  /**
+   * Renders the IX-F diff result into the panel, with a "Resolve
+   * discrepancy" button when at least one auto-fixable field differs.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   */
+  function renderIxfDiffResult(panel, netixlanId, netixlanRow, diffEntries) {
+    panel.textContent = "";
+    const anyDiffers = diffEntries.some((entry) => entry.differs);
+    const autoFixableDiffers = diffEntries.filter((entry) => entry.autoFixable && entry.differs);
+
+    const heading = document.createElement("div");
+    heading.textContent = anyDiffers ? "IX-F check: differences found" : "IX-F check: matches";
+    heading.style.fontWeight = "bold";
+    panel.appendChild(heading);
+
+    diffEntries.forEach((entry) => {
+      const line = document.createElement("div");
+      const mark = entry.differs ? "✗" : "✓";
+      const note = entry.differs && !entry.autoFixable ? " (use CP renumber tool)" : "";
+      line.textContent = `${mark} ${entry.label}: PDB=${entry.pdbValue} IX-F=${entry.ixfValue}${note}`;
+      panel.appendChild(line);
+    });
+
+    if (autoFixableDiffers.length > 0) {
+      const resolveBtn = document.createElement("button");
+      resolveBtn.type = "button";
+      resolveBtn.textContent = `Resolve discrepancy (${autoFixableDiffers.length})`;
+      resolveBtn.className = "btn btn-warning btn-sm";
+      resolveBtn.style.marginTop = "6px";
+      resolveBtn.addEventListener("click", () => resolveIxfDiscrepancy(panel, netixlanId, netixlanRow, diffEntries, resolveBtn));
+      panel.appendChild(resolveBtn);
+    }
+  }
+
+  /**
+   * Runs the full IX-F verify check for one netixlan row: fetch the live
+   * netixlan + its ixlan's IX-F feed URL, fetch and parse the IX-F export,
+   * match this ASN/IP, and render the diff.
+   * @ai Keep behavior stable and prefer minimal, localized edits.
+   */
+  async function runIxfVerifyCheck(netixlanId, row, button) {
+    const PANEL_ATTR = "data-pdb-fp-ixf-verify-panel";
+    if (row.nextElementSibling?.hasAttribute?.(PANEL_ATTR)) row.nextElementSibling.remove();
+
+    button.disabled = true;
+    const originalLabel = button.textContent;
+    button.textContent = "Checking…";
+
+    const panel = document.createElement("div");
+    panel.setAttribute(PANEL_ATTR, netixlanId);
+    panel.style.cssText = "margin: 4px 0 8px; padding: 8px 12px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.85rem;";
+    row.insertAdjacentElement("afterend", panel);
+
+    const setStatus = (text) => { panel.textContent = text; };
+    setStatus("Checking IX-F feed…");
+
+    try {
+      const netixlanRes = await fetchWithRetry(`${window.location.origin}/api/netixlan/${netixlanId}`, { credentials: "same-origin" });
+      if (!netixlanRes.ok) {
+        setStatus(`Could not load netixlan #${netixlanId} (HTTP ${netixlanRes.status}).`);
+        return;
+      }
+      const netixlanRaw = await netixlanRes.json();
+      const netixlanRow = netixlanRaw?.data?.[0];
+      if (!netixlanRow) {
+        setStatus(`Netixlan #${netixlanId} not found.`);
+        return;
+      }
+
+      const ixlanRes = await fetchWithRetry(`${window.location.origin}/api/ixlan/${netixlanRow.ixlan_id}`, { credentials: "same-origin" });
+      if (!ixlanRes.ok) {
+        setStatus(`Could not load ixlan #${netixlanRow.ixlan_id} (HTTP ${ixlanRes.status}).`);
+        return;
+      }
+      const ixlanRaw = await ixlanRes.json();
+      const ixlan = ixlanRaw?.data?.[0];
+      const ixfUrl = String(ixlan?.ixf_ixp_member_list_url || "").trim();
+      if (!ixfUrl) {
+        setStatus("This exchange does not publish an IX-F member export.");
+        return;
+      }
+
+      setStatus(`Fetching IX-F export from ${ixfUrl}…`);
+      const ixfResult = await fetchIxfMemberExportFp(ixfUrl);
+      if (ixfResult.error) {
+        setStatus(`IX-F fetch failed (${ixfResult.error}).`);
+        return;
+      }
+
+      const matchResult = extractIxfMatchForAsnIp(ixfResult.data, {
+        asn: netixlanRow.asn,
+        ipaddr4: netixlanRow.ipaddr4,
+        ipaddr6: netixlanRow.ipaddr6,
+      });
+
+      if (matchResult.matched === "none") {
+        renderNoIxfEntryResult(panel, netixlanId, netixlanRow);
+        return;
+      }
+      if (matchResult.matched === "asn-only") {
+        const otherIps = matchResult.asnEntries
+          .map((entry) => [entry.v4, entry.v6].filter(Boolean).join(" / "))
+          .join(", ");
+        setStatus(
+          `IX-F lists AS${netixlanRow.asn} but not this IP (${netixlanRow.ipaddr4 || netixlanRow.ipaddr6}). ` +
+          `IX-F has: ${otherIps || "n/a"}.`,
+        );
+        return;
+      }
+
+      const diffEntries = buildIxfDiff(netixlanRow, matchResult);
+      renderIxfDiffResult(panel, netixlanId, netixlanRow, diffEntries);
+    } catch (error) {
+      setStatus(`IX-F check failed: ${String(error?.message || error)}`);
+      dbg("ixf-verify", "check failed", { netixlanId, error });
+    } finally {
+      button.disabled = false;
+      button.textContent = originalLabel;
+    }
+  }
+
   const modules = [
     {
       id: "fix-double-slashes",
@@ -2299,6 +2824,45 @@
         });
 
         window.location.replace(targetUrl);
+      },
+    },
+    {
+      id: "netixlan-ixf-verify",
+      match: (ctx) => ctx.type === "net" && ctx.isEntityPage,
+      run: () => {
+        const ATTR = "data-pdb-fp-ixf-verify";
+
+        if (!isAdminOpsModeEnabled()) {
+          qsa(`[${ATTR}]`).forEach((button) => {
+            const row = button.closest("[data-edit-id]");
+            const panel = row?.nextElementSibling;
+            if (panel?.hasAttribute?.("data-pdb-fp-ixf-verify-panel")) panel.remove();
+            button.closest(".col-md-2")?.remove();
+          });
+          return;
+        }
+
+        qsa("#api-listing-netixlan .item[data-edit-id], #api-listing-netixlan .row.item[data-edit-id]").forEach((row) => {
+          const netixlanId = String(row.getAttribute("data-edit-id") || "").trim();
+          if (!/^\d+$/.test(netixlanId)) return;
+          if (row.querySelector(`[${ATTR}]`)) return;
+
+          const button = document.createElement("button");
+          button.type = "button";
+          button.setAttribute(ATTR, netixlanId);
+          button.textContent = "Verify IX-F";
+          button.title = "Check this session against the exchange's IX-F member export";
+          button.className = "btn btn-secondary btn-sm";
+          button.style.marginLeft = "6px";
+          button.addEventListener("click", () => runIxfVerifyCheck(netixlanId, row, button));
+
+          const col = document.createElement("div");
+          col.className = "col-md-2";
+          col.style.textAlign = "right";
+          col.style.paddingRight = "8px";
+          col.appendChild(button);
+          row.appendChild(col);
+        });
       },
     },
     {
@@ -3801,6 +4365,10 @@
       isFrontendZeroResultSearchPage,
       getFrontendSearchResultCount,
       getSingleFrontendSearchResultUrl,
+      normalizeIpv6ForCompareFp,
+      extractIxfMatchForAsnIp,
+      buildIxfDiff,
+      buildNetixlanResolvePayload,
     };
     return;
   }

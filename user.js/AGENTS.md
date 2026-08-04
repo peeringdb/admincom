@@ -135,6 +135,22 @@ no new dependency beyond Node itself, which is already required for `node --chec
   the frontend results page reports exactly one match across every category, the module skips the
   results page and navigates straight to it. Mutually exclusive with the ASN zero-result redirect above
   since one requires a zero count and the other requires exactly one);
+- FP's per-netixlan IX-F verify/resolve (`fp-netixlan-ixf-verify.test.js` —
+  `normalizeIpv6ForCompareFp`, `extractIxfMatchForAsnIp`, `buildIxfDiff`, `buildNetixlanResolvePayload`,
+  plus the `netixlan-ixf-verify` module's `match()`. Adds a "Verify IX-F" button per netixlan row on a
+  network's own page (gated behind Admin Ops Mode) that fetches that row's exchange's IX-F member-export
+  feed — cross-origin via the shared `gmRequestWithRetry` wrapper, response cached under the shared
+  storage cache keyed by export URL so re-verifying a row or checking a second row at the same exchange
+  doesn't re-fetch it — and diffs it against the live PDB record. A "Resolve discrepancy" second click
+  PUTs corrected `speed`/`is_rs_peer`/`operational` only; `ipaddr4`/`ipaddr6` mismatches are informational
+  only (use CP's renumber tool instead — a distinct, already safety-gated flow this shouldn't quietly
+  duplicate). When IX-F has no entry for the ASN at all, a "Remove netixlan entry" option DELETEs the row
+  after a native `confirm()` (deliberately not just a second custom-UI click, given a delete is
+  non-reversible). This is FP's first write capability and first cross-origin fetch, so
+  `peeringdb-fp-consolidated-tools.meta.js`/`.src.js` gained `GM_xmlhttpRequest` + `@connect *`. Like
+  `asn-404-cp-search-redirect`, the fetch/DOM/click-wiring orchestration itself is **not** unit tested —
+  only the pure matching/diff/payload functions above are; see the module's header comment in the
+  `.src.js`);
 - the shared cache namespace's remaining helpers (`dp-shared-cache-helpers.test.js` —
   `getSharedCacheStorageKey`'s type/id validation and normalization branch, and the negative-cache
   pair `cacheNegativeLookup`/`isNegativeCacheEntry` that DP's entity fetchers use to avoid repeated
