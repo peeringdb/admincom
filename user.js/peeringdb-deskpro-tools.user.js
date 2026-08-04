@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name            PeeringDB DP - Consolidated Tools
 // @namespace       https://www.peeringdb.com/
-// @version         1.7.6
+// @version         1.7.7
 // @description     Consolidated DeskPro tools: linkifies/enriches PeeringDB links (ASN/IP/IX/NET/FAC/Carrier), adds an owning-org shortcut link beside each, copies mailto addresses, normalizes PeeringDB CP double-slash links, generates pihole whitelist commands for IX/NET/FAC/Carrier approval tickets
 // @author          <chriztoffer@peeringdb.com>
 // @match           https://peeringdb.deskpro.com/app*
@@ -44,7 +44,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbDp";
-  const SCRIPT_VERSION = "1.7.6";
+  const SCRIPT_VERSION = "1.7.7";
   // RDAP fallback client is intentionally CP-only; DP does not implement RDAP lookups.
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
@@ -4077,6 +4077,8 @@
       fetchOrgWithUsers,
       makeAsnLink,
       hydrateAsnLinkLabel,
+      parseWhitelistChangeHref,
+      extractWhitelistHostname,
     };
   } else if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);
