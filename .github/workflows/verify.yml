@@ -1,0 +1,34 @@
+name: Verify
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Confirm generated .user.js files are up to date with .src.js + lib
+        run: python user.js/scripts/build_userscripts.py --check
+
+      - name: Syntax-check generated userscripts
+        run: |
+          for f in user.js/*.user.js; do
+            echo "node --check $f"
+            node --check "$f"
+          done
+
+      - name: Run node:test suite
+        working-directory: user.js
+        run: node --test
