@@ -87,15 +87,21 @@ no new dependency beyond Node itself, which is already required for `node --chec
   `extractIxfAsnIpPairs`/`findIxfMergeCandidates` for both the "split" and "stale-dual" merge
   shapes, and `buildMergePlan`/`verifyConflictGates`, the 8-gate check that must all pass before an
   operator DELETEs a live netixlan row; several cases lock in the exact operator-discovered
-  edge cases referenced in the source comments, e.g. ixlan #3990/AS211750).
+  edge cases referenced in the source comments, e.g. ixlan #3990/AS211750);
+- CP's Network Name Pattern Diagnostics and Recent IP Changes audit reconciliation
+  (`cp-name-pattern-diagnostics.test.js` — `classifyNetworkNamePattern`, the dense multi-signal
+  regex scoring function deciding which network names look auto-generated/handle-like;
+  `buildNetworkNamePatternSummary`/`buildSuspiciousNetworkNameTsv` for the scan's notification and
+  TSV-export formatting; `mergeAuditSources`/`formatRecentChangeLines` for reconciling API rows with
+  local audit-log entries into the operator-facing diff lines).
 
 These are the highest-regression-risk surfaces, since the strings/DOM output are asserted verbatim.
 It does **not** cover every module in every script (CP alone has ~207 top-level helper functions);
-most still rely on manual smoke testing. Remaining high-value pure-logic targets (further CP
-name-pattern-diagnostics/audit-merge helpers, DP's linkify engine, FP's admin-ops URL builders, and
-a handful of shared cache-helper edge cases) are tracked in `docs/CONCERNS.md`'s Top Risks row for
-test coverage — extend the relevant `window.__pdbXxTestHooks__` object and follow the pattern of
-the test files above rather than waiting on a `lib/*.js` extraction first.
+most still rely on manual smoke testing. Remaining high-value pure-logic targets (DP's linkify
+engine, FP's admin-ops URL builders, and a handful of shared cache-helper edge cases) are tracked in
+`docs/CONCERNS.md`'s Top Risks row for test coverage — extend the relevant
+`window.__pdbXxTestHooks__` object and follow the pattern of the test files above rather than
+waiting on a `lib/*.js` extraction first.
 
 - `node --test` (run from `user.js/`) — runs the full suite; auto-discovers `tests/**/*.test.js`.
 - `user.js/tests/helpers/browser-shim.js` — hand-rolled fake `window`/`document` (no jsdom): loads
