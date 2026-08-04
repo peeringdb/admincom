@@ -107,12 +107,21 @@ no new dependency beyond Node itself, which is already required for `node --chec
   (`dp-cp-fallback-and-mailto.test.js` — `getCpModelForFrontendKind`/`buildCpChangeUrl`/
   `getFrontendExistenceProbeUrl`/`isFrontendEntityMissing` (the last exercised via the fetchMap
   mock, both the "exists" and "404" paths), `extractMailtoAddress`/`buildCpEmailSearchUrl`, and
-  `classifyError`, the retry/abort decision classifier used across DP's API calls).
+  `classifyError`, the retry/abort decision classifier used across DP's API calls);
+- FP's admin-ops CP URL builders and report-string builders (`fp-admin-ops-builders.test.js` —
+  `buildCpNetworkSearchUrlByAsn`/`buildCpOrgChangeUrl`/`buildCpUserManagerUrl`/
+  `buildCpEntitySearchUrl`/`buildCpAccountSearchUrl`, load-bearing for every admin-ops action behind
+  the `admin-console-link`/`admin-workflow-buttons` modules; `formatEntityIdsBundle`/
+  `formatAdminTriageSummary`, the copy/paste report-string builders, exercised through their full
+  data-edit-attribute → getText → input-value fallback chains via the shim's `elements`/
+  `elementLists` fixtures. `fix-double-slashes`'/`asn-404-cp-search-redirect`'s inline
+  `window.location` mutation closures are deliberately **not** covered — see the test file's header
+  for why).
 
 These are the highest-regression-risk surfaces, since the strings/DOM output are asserted verbatim.
 It does **not** cover every module in every script (CP alone has ~207 top-level helper functions);
-most still rely on manual smoke testing. Remaining high-value pure-logic targets (FP's admin-ops
-URL builders and a handful of shared cache-helper edge cases) are tracked in `docs/CONCERNS.md`'s
+most still rely on manual smoke testing. Remaining high-value pure-logic targets (a handful of
+shared cache-helper edge cases) are tracked in `docs/CONCERNS.md`'s
 Top Risks row for test coverage — extend the relevant `window.__pdbXxTestHooks__` object and follow
 the pattern of the test files above rather than waiting on a `lib/*.js` extraction first.
 
