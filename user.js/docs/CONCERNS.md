@@ -4,7 +4,7 @@
 
 | Severity | Concern | Impact | Suggested action |
 |----------|---------|--------|-------------------|
-| High | No automated verification at all — no tests, no CI; `node --check`/`build_userscripts.py --check` are manual steps only (see [AGENTS.md](../AGENTS.md) Testing) | A regression in a ~479KB CP file could ship unnoticed until an admin hits it live on production PeeringDB | Wire `node --check` + `build_userscripts.py --check` into a GitHub Actions workflow, even without a real test suite |
+| Medium | CI now runs `build_userscripts.py --check` + `node --check` + `node --test` on every push/PR (`.github/workflows/verify.yml`), but the `node:test` suite itself covers a meaningful minority of the codebase (title-setting, DP org-link-shortcut, the shared cache, CP's name-normalization lib, retry/backoff, DP's whitelist-URL parsing — see [AGENTS.md](../AGENTS.md) Testing) | A regression in an untested module (most of CP's ~207 helper functions, most of FP/DP's DOM-touching modules) can still ship unnoticed until an admin hits it live | Keep expanding coverage opportunistically, prioritizing pure/regex-heavy logic (highest silent-regression risk, lowest test-authoring cost) over DOM-heavy modules already exercised by manual smoke testing |
 | Medium | CP script is a single ~479KB / ~11,600-line file with no internal module boundaries beyond the `modules[]` registry — a phased extraction into `lib/` fragments is underway, see below | High cognitive cost for any change; harder for both humans and AI agents to safely scope an edit | In progress: extract self-contained function clusters into `lib/cp-*.js` fragments, verified by diffing generated `.user.js` output before/after each extraction |
 | Low | DeskPro doesn't share CP/FP's module-registry pattern (see [ARCHITECTURE.md](ARCHITECTURE.md)) | Anyone adding a route-guarded DeskPro feature can't reuse the `disabledModules` convention CP/FP users already know | May be intentional given DeskPro's single-page nature rather than debt — worth a deliberate call before converging it onto `modules[]` |
 | Low | DeskPro's `@require` of `cdnjs.cloudflare.com/.../psl.min.js` has no Subresource Integrity (SRI) hash — see Security Concerns below | A CDN compromise could silently serve modified JS into DeskPro's DOM context | Vendor the pinned PSL version instead of loading it from a CDN at runtime (Tampermonkey's `@require` doesn't support SRI directly) |
@@ -14,7 +14,7 @@
 | Debt item | Where | Risk if ignored | Suggested fix |
 |-----------|-------|------------------|----------------|
 | `.meta.js` commit-scope inconsistency (`dp` vs `deskpro`) | `git log --oneline` shows both `feat(dp): ...` and `fix(deskpro): ...` | Minor — cosmetic, makes `git log` scope-filtering slightly noisier | Prefer `dp` going forward (already documented in [AGENTS.md](../AGENTS.md)); no urgent fix needed |
-| No CI-enforced build-freshness check | `scripts/build_userscripts.py`, no `.github/workflows/` in the repo | A hand-edit to a `.user.js` `GENERATED BLOCK` could silently ship and then get clobbered by the next regeneration, losing the edit | Add a CI job running `build_userscripts.py --check` |
+| ~~No CI-enforced build-freshness check~~ Resolved | `.github/workflows/verify.yml` runs `build_userscripts.py --check` on every push/PR | N/A | N/A |
 
 ## Security Concerns
 

@@ -4,9 +4,10 @@
 add admin tooling to PeeringDB's Control Panel (CP) and Frontend (FP), plus DeskPro support-ticket
 tooling (DP). There is no application server or package manager — the entire codebase lives right
 here in `user.js/`, and scripts run client-side in the browser once installed via Tampermonkey. A
-small `node:test` suite exists under `user.js/tests/` (see "Testing" below) but is not a
-traditional CI-gated test suite — manual browser smoke testing is still the primary verification
-method for most modules.
+`node:test` suite exists under `user.js/tests/` and a GitHub Actions workflow runs it (plus the
+build/syntax checks) on every push and PR (see "Testing" below) — but it covers a meaningful
+minority of the codebase; manual browser smoke testing is still the primary verification method for
+most modules.
 
 ## Layout
 
@@ -23,8 +24,10 @@ method for most modules.
   system flow, layer boundaries), [CONCERNS.md](docs/CONCERNS.md) (known risks/debt/security gaps),
   [INTEGRATIONS.md](docs/INTEGRATIONS.md) (external systems, retry/reliability behavior),
   [CONVENTIONS.md](docs/CONVENTIONS.md) (naming, logging, error handling).
-- `.github/ISSUE_TEMPLATE/` (repo root) — issue templates for admin add/remove requests. No CI
-  workflows exist in this repo.
+- `.github/ISSUE_TEMPLATE/` (repo root) — issue templates for admin add/remove requests.
+- `.github/workflows/verify.yml` (repo root) — CI: `build_userscripts.py --check`, `node --check` on
+  every generated `.user.js`, and `node --test`, on every push/PR. Does not run the opt-in live suite
+  (`user.js/tests/live/`) — see Testing below.
 
 ## Setup
 
@@ -47,21 +50,36 @@ Run these from the repo root (the script resolves `user.js/` as a relative path)
 
 ## Testing
 
-There is no CI workflow and no package.json (deliberately zero-dependency — see "Additional notes"
-below). There is a small behavioral test suite for all three scripts under `user.js/tests/`, using
-Node's built-in test runner (`node:test`/`node:assert`, no new dependency beyond Node itself, which
-is already required for `node --check`). It currently covers: the `set-window-title` module's title
-format for every page kind in CP and FP; DP's org-link-shortcut behavior (`ensureOrgShortcut` /
-`hydrateExistingPeeringDbAnchor` — every entity kind now gets the owning org's link inserted beside
-it, not just shown in the tooltip); and the unified cross-script API-entity cache (`user.js/tests/
-shared-cache.test.js` — CP and FP genuinely share cached org/entity data via
-`getCachedDataFromStorage`/`setCachedDataInStorage` in `lib/admincom-common.js`, both same-origin on
-`peeringdb.com`; simulated by pointing two separate `loadScript()` calls at the same fake
-`localStorage` instance via `browser-shim.js`'s `makeFakeStorage()`/`localStorage` option — DP is
-deliberately excluded from that test since it runs on a different origin and can never share with
-CP/FP regardless of code). These are the highest-regression-risk surfaces, since the strings/DOM
-output are asserted verbatim. It does **not** cover every module in every script; most still rely on
-manual smoke testing.
+There is no package.json (deliberately zero-dependency — see "Additional notes" below), but there is
+CI: `.github/workflows/verify.yml` runs the build-check, syntax-check, and full `node --test` suite
+on every push/PR (not the opt-in live suite — see below). There is a behavioral test suite for all
+three scripts under `user.js/tests/`, using Node's built-in test runner (`node:test`/`node:assert`,
+no new dependency beyond Node itself, which is already required for `node --check`). It currently covers:
+- the `set-window-title` module's title format for every page kind in CP and FP;
+- DP's org-link-shortcut behavior (`ensureOrgShortcut`/`hydrateExistingPeeringDbAnchor` — every
+  entity kind gets the owning org's link inserted beside it, not just shown in the tooltip);
+- the unified cross-script API-entity cache (`shared-cache.test.js` — CP and FP genuinely share
+  cached org/entity data via `getCachedDataFromStorage`/`setCachedDataInStorage` in
+  `lib/admincom-common.js`, both same-origin on `peeringdb.com`; simulated by pointing two separate
+  `loadScript()` calls at the same fake `localStorage` instance — DP is deliberately excluded since
+  it runs on a different origin and can never share with CP/FP regardless of code);
+- CP's org/RDAP name-normalization helpers (`cp-name-normalization.test.js` — the highest
+  regex-complexity, highest silent-regression-risk surface in the repo: 150+ legal-suffix patterns
+  across dozens of jurisdictions in `lib/cp-name-normalization.js`). Two tests in there are marked
+  "known discrepancy" — they lock in current (not necessarily correct) behavior for cases where the
+  code doesn't do what its own docstring claims; see the test file for specifics before "fixing"
+  either without reading why;
+- the shared retry/backoff decision logic (`admincom-common-retry.test.js` —
+  `parseRetryAfterMs`/`classifyRetry`, used by every GM_xmlhttpRequest/fetch call in all three
+  scripts);
+- DP's Whitelist CMD Generator URL/hostname parsing (`dp-whitelist-generator.test.js` —
+  `parseWhitelistChangeHref`/`extractWhitelistHostname`; `deriveWhitelistCandidates`'
+  PSL-based eTLD+1 resolution is *not* covered, since the PSL library is loaded via `@require` and
+  isn't available in this offline test environment).
+
+These are the highest-regression-risk surfaces, since the strings/DOM output are asserted verbatim.
+It does **not** cover every module in every script (CP alone has ~207 top-level helper functions);
+most still rely on manual smoke testing.
 
 - `node --test` (run from `user.js/`) — runs the full suite; auto-discovers `tests/**/*.test.js`.
 - `user.js/tests/helpers/browser-shim.js` — hand-rolled fake `window`/`document` (no jsdom): loads
@@ -79,6 +97,12 @@ manual smoke testing.
   pointed at the *same* fake storage instance to simulate two same-origin scripts sharing real
   browser storage (used to test CP/FP cache sharing). Tests run against the generated `.user.js` (the
   artifact users actually install), so regenerate before running tests if you've edited a `.src.js`.
+- `user.js/tests/helpers/pure-lib-loader.js` — for `lib/*.js` fragments with zero window/document/
+  fetch/GM_* references (e.g. `lib/cp-name-normalization.js`, or the retry/backoff half of
+  `lib/admincom-common.js`): no vm sandbox needed, just `new Function(source + return {...names})` to
+  get real references to the requested top-level functions/consts. Simpler and faster than
+  `browser-shim.js` for pure string/regex-transform code; don't reach for it if the fragment touches
+  the DOM or browser globals.
 - `user.js/tests/live/` — opt-in, network-touching hardening tests (currently just FP entity-page
   titles) that fetch a handful of real records from the public PeeringDB API and check the title
   format against real field values/shapes, not just synthetic fixtures. **Not** part of the default
@@ -128,10 +152,12 @@ effectively deploys — Tampermonkey auto-updates by polling the `.meta.js` on t
   `feat`, `fix`, `chore`; observed scopes are `cp`, `fp`, `dp` and `deskpro` (used interchangeably for
   the DeskPro script — prefer `dp` for new commits to converge), `git`, `root`. Check
   `git log --oneline` for recent examples before picking a scope.
-- No enforced CI checks exist today. Before opening a PR: run the regenerate + `--check` commands
-  above, confirm `node --check` passes on any changed `.user.js`, run `node --test` from `user.js/`
-  (add/update cases under `user.js/tests/` if you touched `set-window-title` or want similar
-  coverage for another module), and bump `@version` per the metadata convention.
+- CI (`.github/workflows/verify.yml`) enforces the build-check, syntax-check, and `node --test` on
+  every push/PR — but run them locally first rather than relying on CI to catch it. Before opening a
+  PR: run the regenerate + `--check` commands above, confirm `node --check` passes on any changed
+  `.user.js`, run `node --test` from `user.js/` (add/update cases under `user.js/tests/` if you
+  touched code covered there, or want similar coverage for something newly-touched), and bump
+  `@version` per the metadata convention.
 
 ## Additional notes
 
