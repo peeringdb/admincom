@@ -4,15 +4,16 @@
 
 | System | Type | Purpose | Auth model | Criticality |
 |--------|------|---------|------------|-------------|
-| PeeringDB REST API (`peeringdb.com`, `beta.peeringdb.com`) | Same-origin REST API | CP: org/network/facility record reads & writes. DP: cross-origin lookups backing DeskPro ticket enrichment | Browser session cookie (same-origin fetch) | High |
+| PeeringDB REST API (`peeringdb.com`, `beta.peeringdb.com`) | Same-origin REST API | CP: org/network/facility record reads & writes (renumber, merge, conflict-resolve). FP: entity-page reads, and (as of the `netixlan-ixf-verify` module) writes — PUT to correct `speed`/`is_rs_peer`/`operational` on a netixlan row, or DELETE a netixlan row IX-F doesn't list. DP: cross-origin lookups backing DeskPro ticket enrichment | Browser session cookie (same-origin fetch); FP writes additionally carry an `X-CSRFToken` header read from the page's own hidden `csrfmiddlewaretoken` input/cookie | High |
 | RDAP registries (`rdap.arin.net`, `rdap.db.ripe.net`, `rdap.apnic.net`, `rdap.lacnic.net`, `rdap.afrinic.net`, `data.iana.org`) | Public read-only APIs | CP-only ASN → organization-name fallback lookups | None (public) | Medium |
-| IX-F member-export URLs (arbitrary operator-defined hosts) | Public JSON export | CP-only: IX-F Member Audit module cross-checks `ixf_ixp_member_list_url` | None; `anonymous: true` GM request | Medium |
+| IX-F member-export URLs (arbitrary operator-defined hosts) | Public JSON export | CP: IX-F Member Audit module cross-checks `ixf_ixp_member_list_url` for bulk split-row merge detection on one ixlan. FP: `netixlan-ixf-verify` module fetches the same kind of feed for a single netixlan row's own exchange, for a per-row verify/diff/resolve flow | None; `anonymous: true` GM request | Medium |
 | DeskPro (`peeringdb.deskpro.com`) | Host application (the script runs *inside* it) | Ticket-page UI enrichment | N/A — runs as a userscript on the page, not an API caller of DeskPro | High (DP's only host) |
 | `cdnjs.cloudflare.com` (PSL library, `psl.min.js` v1.12.0) | Static script CDN | Hostname/domain parsing for the DeskPro Whitelist CMD Generator | None | Low |
 
 RDAP ownership is CP-only — FP/DP do not assume parity (`peeringdb-cp-consolidated-tools.src.js:36`).
-CP and FP have zero other `@require` directives; DeskPro's PSL `@require` has no SRI hash (see
-[CONCERNS.md](CONCERNS.md)).
+**Both CP and FP** now carry the `GM_xmlhttpRequest` grant and an `@connect *` wildcard (FP gained
+this when the `netixlan-ixf-verify` feature was added). CP and FP have zero `@require` directives;
+DeskPro's PSL `@require` has no SRI hash (see [CONCERNS.md](CONCERNS.md)).
 
 ## Data Stores
 
@@ -28,7 +29,8 @@ No server-side database — there is no server component to this repo at all.
 
 No API tokens, passwords, or secrets are read, stored, or transmitted by any script — confirmed via
 repo-wide grep for `GM_getValue`/`GM_setValue` (zero matches; these grants aren't even requested in
-any `.meta.js`). The `@connect *` grant on CP is a *network destination* allowlist relaxation, not a
+any `.meta.js`). The `@connect *` grant on CP and FP is a *network destination* allowlist relaxation
+(required because IX-F export hosts are operator-defined and can't be enumerated in advance), not a
 credential. Nothing to rotate.
 
 ## Reliability and Failure Behavior
@@ -46,7 +48,8 @@ credential. Nothing to rotate.
 ## Observability
 
 - Logging around external calls is gated — `dbg('http', ...)` logs each retry attempt
-  (`lib/admincom-common.js`); RDAP lookups in CP log via `dbg('rdap', ...)`/`dbgWarn('rdap', ...)`.
+  (`lib/admincom-common.js`); RDAP lookups in CP log via `dbg('rdap', ...)`/`dbgWarn('rdap', ...)`;
+  FP's IX-F verify flow logs via `dbg('ixf-verify', ...)`.
 - No metrics/tracing — no APM, no metrics endpoint, no distributed tracing (there's no backend to
   report to).
 - No persistent record of retry/failure rates beyond what's visible in a live browser console during

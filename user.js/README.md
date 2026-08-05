@@ -155,50 +155,67 @@ Note: User-Agent (whether auto-computed or overridden) applies to script-origina
 
 ## Module ID catalog
 
-Use these module IDs with the CP/FP `disabledModules` keys.
+Use these module IDs with the CP/FP `disabledModules` keys. This catalog is generated from each
+script's `modules[]` registry (`peeringdb-cp-consolidated-tools.src.js:8907`,
+`peeringdb-fp-consolidated-tools.src.js:2724`) — when adding/removing a module, update this list in
+the same commit.
 
-### CP module IDs (`peeringdb-cp-consolidated-tools.user.js`)
+### CP module IDs (`peeringdb-cp-consolidated-tools.user.js`) — 27 modules
 
+- `network-name-pattern-diagnostics`
+- `copy-overview-change-links`
 - `copy-frontend-urls`
+- `copy-rendered-field-values`
+- `inline-delete-row-highlights`
+- `network-save-inline-deletion-guard`
+- `user-mfa-device-quick-links`
 - `facility-google-maps`
+- `facility-advanced-search-link`
 - `entity-website-new-tab`
-- `highlight-dummy-org-child`
+- `entity-website-header-links`
+- `entity-state-visuals`
 - `frontend-links`
 - `search-user-email-by-username`
-- `set-network-name-equal-org-name`
+- `network-delete-confirmation-auto-submit`
+- `network-update-name-retry-on-duplicate`
+- `set-entity-name-equal-org-name`
 - `reset-network-information`
+- `carrierfac-approve-reject`
+- `request-ixf-import`
+- `ixf-import-status-badge`
+- `network-rir-status-badge`
 - `set-window-title`
+- `history-24h-timestamps`
+- `ixlan-renumber-peers`
+- `ix-f-member-audit`
+- `recent-ip-changes`
 
-#### CP one-line disable examples
+#### CP one-line disable example
 
 ```js
-localStorage.setItem("pdbCpConsolidated.disabledModules", '["copy-frontend-urls"]');
-localStorage.setItem("pdbCpConsolidated.disabledModules", '["facility-google-maps"]');
-localStorage.setItem("pdbCpConsolidated.disabledModules", '["entity-website-new-tab"]');
-localStorage.setItem("pdbCpConsolidated.disabledModules", '["highlight-dummy-org-child"]');
-localStorage.setItem("pdbCpConsolidated.disabledModules", '["frontend-links"]');
-localStorage.setItem("pdbCpConsolidated.disabledModules", '["search-user-email-by-username"]');
-localStorage.setItem("pdbCpConsolidated.disabledModules", '["set-network-name-equal-org-name"]');
 localStorage.setItem("pdbCpConsolidated.disabledModules", '["reset-network-information"]');
-localStorage.setItem("pdbCpConsolidated.disabledModules", '["set-window-title"]');
 ```
 
-### FP module IDs (`peeringdb-fp-consolidated-tools.user.js`)
+### FP module IDs (`peeringdb-fp-consolidated-tools.user.js`) — 13 modules
 
 - `fix-double-slashes`
+- `navbar-cp-link`
+- `asn-404-cp-search-redirect`
+- `asn-search-zero-result-cp-redirect`
+- `search-single-result-auto-nav`
+- `netixlan-ixf-verify`
 - `set-window-title`
 - `admin-console-link`
 - `copy-record-data`
+- `admin-workflow-buttons`
 - `copy-user-roles`
+- `org-related-listing-cp-edit-links`
+- `org-oauth-cp-edit-links`
 
-#### FP one-line disable examples
+#### FP one-line disable example
 
 ```js
-localStorage.setItem("pdbFpConsolidated.disabledModules", '["fix-double-slashes"]');
-localStorage.setItem("pdbFpConsolidated.disabledModules", '["set-window-title"]');
 localStorage.setItem("pdbFpConsolidated.disabledModules", '["admin-console-link"]');
-localStorage.setItem("pdbFpConsolidated.disabledModules", '["copy-record-data"]');
-localStorage.setItem("pdbFpConsolidated.disabledModules", '["copy-user-roles"]');
 ```
 
 ### Whitelist troubleshooting examples (enable only selected modules)
@@ -208,19 +225,19 @@ These one-liners disable every other known module, leaving only the listed modul
 Enable only `reset-network-information` in CP:
 
 ```js
-localStorage.setItem("pdbCpConsolidated.disabledModules", JSON.stringify(["copy-frontend-urls","facility-google-maps","entity-website-new-tab","highlight-dummy-org-child","frontend-links","search-user-email-by-username","set-network-name-equal-org-name","set-window-title"]));
+localStorage.setItem("pdbCpConsolidated.disabledModules", JSON.stringify(["network-name-pattern-diagnostics","copy-overview-change-links","copy-frontend-urls","copy-rendered-field-values","inline-delete-row-highlights","network-save-inline-deletion-guard","user-mfa-device-quick-links","facility-google-maps","facility-advanced-search-link","entity-website-new-tab","entity-website-header-links","entity-state-visuals","frontend-links","search-user-email-by-username","network-delete-confirmation-auto-submit","network-update-name-retry-on-duplicate","set-entity-name-equal-org-name","carrierfac-approve-reject","request-ixf-import","ixf-import-status-badge","network-rir-status-badge","set-window-title","history-24h-timestamps","ixlan-renumber-peers","ix-f-member-audit","recent-ip-changes"]));
 ```
 
 Enable only `admin-console-link` in FP:
 
 ```js
-localStorage.setItem("pdbFpConsolidated.disabledModules", JSON.stringify(["fix-double-slashes","set-window-title","copy-record-data","copy-user-roles"]));
+localStorage.setItem("pdbFpConsolidated.disabledModules", JSON.stringify(["fix-double-slashes","navbar-cp-link","asn-404-cp-search-redirect","asn-search-zero-result-cp-redirect","search-single-result-auto-nav","netixlan-ixf-verify","set-window-title","copy-record-data","admin-workflow-buttons","copy-user-roles","org-related-listing-cp-edit-links","org-oauth-cp-edit-links"]));
 ```
 
 Enable only `admin-console-link` and `copy-record-data` in FP:
 
 ```js
-localStorage.setItem("pdbFpConsolidated.disabledModules", JSON.stringify(["fix-double-slashes","set-window-title","copy-user-roles"]));
+localStorage.setItem("pdbFpConsolidated.disabledModules", JSON.stringify(["fix-double-slashes","navbar-cp-link","asn-404-cp-search-redirect","asn-search-zero-result-cp-redirect","search-single-result-auto-nav","netixlan-ixf-verify","set-window-title","admin-workflow-buttons","copy-user-roles","org-related-listing-cp-edit-links","org-oauth-cp-edit-links"]));
 ```
 
 ### Generic whitelist helper one-liners
@@ -230,13 +247,13 @@ Set `enabled` to the module IDs you want active; each helper computes and stores
 CP generic helper:
 
 ```js
-(() => { const all = ["copy-frontend-urls","facility-google-maps","entity-website-new-tab","highlight-dummy-org-child","frontend-links","search-user-email-by-username","set-network-name-equal-org-name","reset-network-information","set-window-title"]; const enabled = ["reset-network-information"]; localStorage.setItem("pdbCpConsolidated.disabledModules", JSON.stringify(all.filter((id) => !enabled.includes(id)))); })();
+(() => { const all = ["network-name-pattern-diagnostics","copy-overview-change-links","copy-frontend-urls","copy-rendered-field-values","inline-delete-row-highlights","network-save-inline-deletion-guard","user-mfa-device-quick-links","facility-google-maps","facility-advanced-search-link","entity-website-new-tab","entity-website-header-links","entity-state-visuals","frontend-links","search-user-email-by-username","network-delete-confirmation-auto-submit","network-update-name-retry-on-duplicate","set-entity-name-equal-org-name","reset-network-information","carrierfac-approve-reject","request-ixf-import","ixf-import-status-badge","network-rir-status-badge","set-window-title","history-24h-timestamps","ixlan-renumber-peers","ix-f-member-audit","recent-ip-changes"]; const enabled = ["reset-network-information"]; localStorage.setItem("pdbCpConsolidated.disabledModules", JSON.stringify(all.filter((id) => !enabled.includes(id)))); })();
 ```
 
 FP generic helper:
 
 ```js
-(() => { const all = ["fix-double-slashes","set-window-title","admin-console-link","copy-record-data","copy-user-roles"]; const enabled = ["admin-console-link"]; localStorage.setItem("pdbFpConsolidated.disabledModules", JSON.stringify(all.filter((id) => !enabled.includes(id)))); })();
+(() => { const all = ["fix-double-slashes","navbar-cp-link","asn-404-cp-search-redirect","asn-search-zero-result-cp-redirect","search-single-result-auto-nav","netixlan-ixf-verify","set-window-title","admin-console-link","copy-record-data","admin-workflow-buttons","copy-user-roles","org-related-listing-cp-edit-links","org-oauth-cp-edit-links"]; const enabled = ["admin-console-link"]; localStorage.setItem("pdbFpConsolidated.disabledModules", JSON.stringify(all.filter((id) => !enabled.includes(id)))); })();
 ```
 
 

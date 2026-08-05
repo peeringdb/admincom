@@ -20,7 +20,7 @@
 
 | Risk | OWASP category | Evidence | Current mitigation | Gap |
 |------|-----------------|----------|---------------------|-----|
-| `@connect *` wildcard cross-origin grant on CP | A05 (Security Misconfiguration) | `peeringdb-cp-consolidated-tools.meta.js` `@connect *` | Justified in-file: IX-F member-export hosts are operator-defined and can't be enumerated in advance; the request is `anonymous: true` GET-only | No allowlist restriction possible while supporting arbitrary IX portals — accepted tradeoff, not an oversight |
+| `@connect *` wildcard cross-origin grant on CP and FP | A05 (Security Misconfiguration) | `peeringdb-cp-consolidated-tools.meta.js` `@connect *`; `peeringdb-fp-consolidated-tools.meta.js` `@connect *` (added with the `netixlan-ixf-verify` module) | Justified in-file: IX-F member-export hosts are operator-defined and can't be enumerated in advance; CP's request is `anonymous: true` GET-only, FP's fetch is read-only too (the resulting PUT/DELETE writes are same-origin, not cross-origin) | No allowlist restriction possible while supporting arbitrary IX portals — accepted tradeoff, not an oversight |
 | Unpinned-by-integrity third-party CDN script (`@require` psl.min.js) — full risk framing in Top Risks above | A08 (Software and Data Integrity Failures) | `peeringdb-deskpro-tools.src.js:14` | Version is pinned in the URL (`1.12.0`) | No SRI/hash verification |
 | No secrets/tokens stored anywhere | N/A | Repo-wide grep: zero `GM_getValue`/`GM_setValue` usage | Same-origin session-cookie auth only | None identified |
 
