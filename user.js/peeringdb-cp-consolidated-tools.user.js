@@ -515,6 +515,13 @@
   // Transient statuses worth retrying with backoff (rate limit / gateway).
   const RETRYABLE_STATUS = [429, 502, 503, 504];
   const MAX_RETRIES = 3;
+  // Methods a failed request may be repeated for without the repeat itself being
+  // a side effect. A 502/503/504 means the response was lost, NOT that the
+  // request was: a DELETE that committed server-side and then timed out at the
+  // gateway is indistinguishable here from one that never arrived. Replaying it
+  // re-issues a write whose outcome is unknown, so writes are excluded and must
+  // opt in per call via retryWrites: true.
+  const SAFE_TO_RETRY_METHODS = ['GET', 'HEAD'];
 
   /**
    * Returns true when diagnostics/debug mode is enabled via localStorage.
@@ -604,13 +611,23 @@
    * long. Shared by both request wrappers below so the retry policy
    * (retryable-status list, Retry-After handling, backoff curve) is defined
    * exactly once.
+   * The method is part of the decision, not just the status. Retrying a write
+   * that may already have been applied is a correctness problem, not a
+   * performance one, so only SAFE_TO_RETRY_METHODS are retried unless the caller
+   * explicitly opts in with retryWrites.
    * @param {object} params
    * @param {?number} params.status - HTTP status, or null/undefined for a network-level failure.
    * @param {number} params.attempt - 1-based current attempt number.
    * @param {?string} [params.retryAfterHeader] - Raw Retry-After header value, if any.
+   * @param {string} [params.method] - HTTP method of the request. Defaults to GET
+   *   so an omitted method is treated as the safe case it almost always is.
+   * @param {boolean} [params.retryWrites] - Opt in to retrying a non-safe method.
+   *   Only set this where re-applying the write is known to be harmless.
    * @returns {{retryable: boolean, backoffMs: number}}
    */
-  function classifyRetry({ status, attempt, retryAfterHeader }) {
+  function classifyRetry({ status, attempt, retryAfterHeader, method = 'GET', retryWrites = false }) {
+    const safeMethod = SAFE_TO_RETRY_METHODS.includes(String(method || 'GET').toUpperCase());
+    if (!safeMethod && !retryWrites) return { retryable: false, backoffMs: 0 };
     const retryable = status == null || RETRYABLE_STATUS.includes(status);
     if (!retryable) return { retryable: false, backoffMs: 0 };
     const fromHeader = parseRetryAfterMs(retryAfterHeader);
@@ -623,24 +640,28 @@
    * default timeout and retries transient failures with exponential backoff,
    * honoring a Retry-After response header when the server sends one.
    *
-   * 429/5xx responses are retried for any method. A transport-level failure
-   * (network error/timeout, as opposed to an HTTP error response) is only
-   * retried for idempotent GETs by default -- pass retryTransportErrors: true
-   * to opt in for a non-GET call known to be safe to replay. Pass retry:
-   * false to disable retries entirely for a call.
+   * Only SAFE_TO_RETRY_METHODS (GET/HEAD) are retried, for both 429/5xx
+   * responses and transport-level failures. This previously retried 429/5xx for
+   * any method, which meant a write that had already been applied server-side
+   * could be re-issued when only the response was lost. Pass retryWrites: true
+   * to opt a non-safe method back in where re-applying it is known to be
+   * harmless, retryTransportErrors: true to opt a non-safe method into
+   * transport-failure retries specifically, or retry: false to disable retries
+   * entirely for a call.
    * @param {object} opts - GM_xmlhttpRequest options, plus onload/onerror/
-   *   ontimeout callbacks, an optional `retry: false` full opt-out, and an
-   *   optional `retryTransportErrors: true`.
+   *   ontimeout callbacks, an optional `retry: false` full opt-out, an optional
+   *   `retryWrites: true`, and an optional `retryTransportErrors: true`.
    * @param {number} [attempt] - 1-based current attempt number (internal,
    *   used for backoff calculation on recursive retries).
    */
   function gmRequestWithRetry(opts, attempt = 1) {
-    const { onload, onerror, ontimeout, retry, retryTransportErrors = false, ...rest } = opts;
-    const transportRetryable = (rest.method || 'GET').toUpperCase() === 'GET' || retryTransportErrors;
+    const { onload, onerror, ontimeout, retry, retryWrites = false, retryTransportErrors = false, ...rest } = opts;
+    const method = (rest.method || 'GET').toUpperCase();
+    const transportRetryable = SAFE_TO_RETRY_METHODS.includes(method) || retryWrites || retryTransportErrors;
 
     const scheduleRetry = (status, retryAfterHeader) => {
       if (retry === false || attempt >= MAX_RETRIES) return false;
-      const decision = classifyRetry({ status, attempt, retryAfterHeader });
+      const decision = classifyRetry({ status, attempt, retryAfterHeader, method, retryWrites });
       if (!decision.retryable) return false;
       dbg('http', `Retry ${attempt + 1}/${MAX_RETRIES} in ${decision.backoffMs}ms for`, rest.url);
       setTimeout(() => gmRequestWithRetry(opts, attempt + 1), decision.backoffMs);
@@ -675,9 +696,10 @@
    * AbortController on timeout.
    * @param {string} url
    * @param {object} [opts] - fetch() init, plus an optional `retry: false`
-   *   full opt-out, an optional `retryTransportErrors: true` (see
-   *   gmRequestWithRetry for semantics), and an optional `timeout` override
-   *   (default REQUEST_TIMEOUT_MS).
+   *   full opt-out, an optional `retryWrites: true` and `retryTransportErrors:
+   *   true` (see gmRequestWithRetry for semantics), and an optional `timeout`
+   *   override (default REQUEST_TIMEOUT_MS). Only GET/HEAD are retried by
+   *   default; see SAFE_TO_RETRY_METHODS for why.
    * @param {number} [attempt] - 1-based current attempt number (internal,
    *   used for backoff calculation on recursive retries).
    * @returns {Promise<Response>} Resolves with the Response, including a
@@ -685,12 +707,13 @@
    *   timeout once retries are exhausted.
    */
   async function fetchWithRetry(url, opts = {}, attempt = 1) {
-    const { retry, retryTransportErrors = false, timeout = REQUEST_TIMEOUT_MS, ...rest } = opts;
-    const transportRetryable = (rest.method || 'GET').toUpperCase() === 'GET' || retryTransportErrors;
+    const { retry, retryWrites = false, retryTransportErrors = false, timeout = REQUEST_TIMEOUT_MS, ...rest } = opts;
+    const method = (rest.method || 'GET').toUpperCase();
+    const transportRetryable = SAFE_TO_RETRY_METHODS.includes(method) || retryWrites || retryTransportErrors;
 
     const attemptRetry = async (status, retryAfterHeader) => {
       if (retry === false || attempt >= MAX_RETRIES) return null;
-      const decision = classifyRetry({ status, attempt, retryAfterHeader });
+      const decision = classifyRetry({ status, attempt, retryAfterHeader, method, retryWrites });
       if (!decision.retryable) return null;
       dbg('http', `Retry ${attempt + 1}/${MAX_RETRIES} in ${decision.backoffMs}ms for`, url);
       await new Promise((resolve) => setTimeout(resolve, decision.backoffMs));
