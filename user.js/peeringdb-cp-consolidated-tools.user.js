@@ -4009,10 +4009,27 @@
     backdrop.appendChild(modal);
     document.body.appendChild(backdrop);
 
+    // Resolves when the modal is dismissed. The opener awaits this, so the
+    // caller's action lock spans the modal's lifetime rather than only its
+    // first render -- otherwise a second click stacks a second modal, with its
+    // own cancelSignal, over rows the first one is still writing.
+    let resolveClosed;
+    const closed = new Promise((resolve) => { resolveClosed = resolve; });
+
     /**
-     * Removes the modal from the DOM.
+     * Removes the modal from the DOM and cancels any apply loop in flight.
+     * @ai Preserve the cancelSignal write and the resolveClosed() call.
      */
-    function close() { backdrop.remove(); }
+    function close() {
+      // Dismissing the UI must stop the work, not just hide it. This was
+      // `backdrop.remove()` alone, so a backdrop click mid-apply tore down the
+      // progress display while the loop kept issuing PUT/DELETE with no
+      // remaining way to abort. The explicit Cancel button already set this
+      // flag; close() did not.
+      cancelSignal.cancelled = true;
+      backdrop.remove();
+      resolveClosed();
+    }
     closeBtn.addEventListener("click", close);
     backdrop.addEventListener("click", (ev) => { if (ev.target === backdrop) close(); });
 
@@ -4149,11 +4166,17 @@
       const conflictItems = collectConflictItemsFromEntries(entries);
       if (conflictItems.length === 0) return;
       if (!selectedIxlanId) { status.textContent = "Select an ixlan first."; return; }
+      // Fire-and-forget: nothing awaits this, so it needs its own handler --
+      // see "Fire-and-forget async work must carry its own try/catch" in
+      // docs/CONVENTIONS.md. It now settles on dismissal, not on first render.
       openConflictResolverModal({
         ixlanId: String(selectedIxlanId),
         ticketId: payload.ticketId || "",
         payload,
         conflictItems,
+      }).catch((error) => {
+        console.error(`[${MODULE_PREFIX}] Conflict resolver modal failed`, error);
+        status.textContent = "Conflict resolver failed. See console for details.";
       });
     });
     conflictsBannerBtn.addEventListener("click", () => resolveConflictsBtn.click());
@@ -4161,7 +4184,10 @@
     recentChangesBtn.addEventListener("click", () => {
       if (!isFeatureEnabled("recentIpChanges")) { status.textContent = "Recent IP changes feature is disabled."; return; }
       if (!selectedIxlanId) { status.textContent = "Select an ixlan first."; return; }
-      openRecentIpChangesModal(String(selectedIxlanId));
+      // Fire-and-forget, so it carries its own handler (docs/CONVENTIONS.md).
+      openRecentIpChangesModal(String(selectedIxlanId)).catch((error) => {
+        console.error(`[${MODULE_PREFIX}] Recent IP changes modal failed`, error);
+      });
     });
 
     dryBtn.addEventListener("click", () => { refresh(); });
@@ -4214,6 +4240,10 @@
     });
 
     await refresh();
+    // Resolve only once the admin dismisses the modal. The toolbar handler
+    // holds its action lock across this await, so a second click reports
+    // "already running" instead of stacking a second modal over the same rows.
+    await closed;
   }
 
   // ── IX-F Member Audit (helpers) ────────────────────────────────────────────
@@ -4708,7 +4738,10 @@
     setIconButtonLabel(recentChangesBtn, "\u23f2", `Recent IP changes (\u2264${RECENT_IP_CHANGES_WINDOW_MIN}m)`);
     recentChangesBtn.addEventListener("click", () => {
       if (!isFeatureEnabled("recentIpChanges")) return;
-      openRecentIpChangesModal(String(ixlanId));
+      // Fire-and-forget, so it carries its own handler (docs/CONVENTIONS.md).
+      openRecentIpChangesModal(String(ixlanId)).catch((error) => {
+        console.error(`[${MODULE_PREFIX}] Recent IP changes modal failed`, error);
+      });
     });
     // Right-aligned fixed-offset strip: buttons stay side-by-side.
     buttons.append(closeBtn, refreshBtn, recentChangesBtn, cancelApplyBtn, applyBtn);
@@ -4716,8 +4749,27 @@
     backdrop.appendChild(modal);
     document.body.appendChild(backdrop);
 
-    /** Removes the modal. */
-    function close() { backdrop.remove(); }
+    // Resolves when the modal is dismissed. The opener awaits this, so the
+    // caller's action lock spans the modal's lifetime rather than only its
+    // first render -- otherwise a second click stacks a second modal, with its
+    // own cancelSignal, over rows the first one is still writing.
+    let resolveClosed;
+    const closed = new Promise((resolve) => { resolveClosed = resolve; });
+
+    /**
+     * Removes the modal and cancels any merge loop in flight.
+     * @ai Preserve the cancelSignal write and the resolveClosed() call.
+     */
+    function close() {
+      // Dismissing the UI must stop the work, not just hide it. This was
+      // `backdrop.remove()` alone, so a backdrop click mid-apply tore down the
+      // progress display while the loop kept issuing PUT/DELETE with no
+      // remaining way to abort. The explicit Cancel button already set this
+      // flag; close() did not.
+      cancelSignal.cancelled = true;
+      backdrop.remove();
+      resolveClosed();
+    }
     closeBtn.addEventListener("click", close);
     backdrop.addEventListener("click", (ev) => { if (ev.target === backdrop) close(); });
 
@@ -4817,6 +4869,10 @@
     });
 
     await refresh();
+    // Resolve only once the admin dismisses the modal. The toolbar handler
+    // holds its action lock across this await, so a second click reports
+    // "already running" instead of stacking a second modal over the same rows.
+    await closed;
   }
 
   // ── IXLAN Conflict Resolver (helpers) ──────────────────────────────────────
@@ -5426,11 +5482,14 @@
     confirmLabel.textContent = `Type ixlan id "${ixlanId}" to enable Apply: `;
     const confirmInput = document.createElement("input");
     confirmInput.type = "text";
-    confirmInput.placeholder = normalizedExpectedIxlanId || ixlanId;
-    // Pre-fill to prevent false lockout where the operator sees "3990"
-    // but Apply remains disabled due placeholder/value confusion.
-    // Final window.confirm remains in place as destructive safeguard.
-    confirmInput.value = normalizedExpectedIxlanId;
+    // Deliberately NOT the expected id: a placeholder showing "3990" made an
+    // empty field look filled, which is the "false lockout" the previous
+    // pre-fill was added to work around. That pre-fill satisfied the gate from
+    // first render, so the banner's "type the ixlan id to enable Apply" was
+    // never actually enforced. Fix the confusing placeholder instead and leave
+    // the field empty, so the admin's keystrokes are what enable Apply.
+    // @ai Do NOT set confirmInput.value here.
+    confirmInput.placeholder = "ixlan id";
     Object.assign(confirmInput.style, { padding: "4px 6px", marginLeft: "6px", width: "100px" });
     confirmLabel.appendChild(confirmInput);
     confirmRow.appendChild(confirmLabel);
@@ -5512,7 +5571,25 @@
     backdrop.appendChild(modal);
     document.body.appendChild(backdrop);
 
-    closeBtn.addEventListener("click", () => backdrop.remove());
+    // See the same pattern in openIxlanRenumberModal: resolves on dismissal so
+    // the enclosing action lock covers the modal's whole lifetime.
+    let resolveClosed;
+    const closed = new Promise((resolve) => { resolveClosed = resolve; });
+
+    /**
+     * Removes the modal and cancels any delete loop in flight.
+     * @ai Preserve the cancelSignal write and the resolveClosed() call.
+     */
+    function close() {
+      // Dismissing the UI must stop the work, not just hide it -- this modal
+      // issues DELETEs, and the teardown used to leave the loop running with
+      // no progress display and no way to abort.
+      cancelSignal.cancelled = true;
+      backdrop.remove();
+      resolveClosed();
+    }
+    closeBtn.addEventListener("click", close);
+    backdrop.addEventListener("click", (ev) => { if (ev.target === backdrop) close(); });
 
     // State.
     let items = initialItems.map((it) => ({
@@ -5741,6 +5818,10 @@
     });
 
     await refresh();
+    // Resolve only once the admin dismisses the modal. The toolbar handler
+    // holds its action lock across this await, so a second click reports
+    // "already running" instead of stacking a second modal over the same rows.
+    await closed;
   }
 
   // ── Recent IP Changes Audit Report (helpers) ───────────────────────────────
@@ -6178,7 +6259,19 @@
     backdrop.appendChild(modal);
     document.body.appendChild(backdrop);
 
-    closeBtn.addEventListener("click", () => backdrop.remove());
+    // Read-only report, so there is no cancelSignal to trip -- but the opener
+    // still awaits dismissal, which is what makes the caller's "report is
+    // already open" lock message true rather than aspirational.
+    let resolveClosed;
+    const closed = new Promise((resolve) => { resolveClosed = resolve; });
+
+    /** Removes the modal. */
+    function close() {
+      backdrop.remove();
+      resolveClosed();
+    }
+    closeBtn.addEventListener("click", close);
+    backdrop.addEventListener("click", (ev) => { if (ev.target === backdrop) close(); });
 
     async function refresh() {
       refreshBtn.disabled = true; copyBtn.disabled = true;
@@ -6206,6 +6299,10 @@
     });
 
     await refresh();
+    // Resolve only once the admin dismisses the modal. The toolbar handler
+    // holds its action lock across this await, so a second click reports
+    // "already running" instead of stacking a second modal over the same rows.
+    await closed;
   }
 
   /**
