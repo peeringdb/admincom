@@ -35,6 +35,29 @@ function hasBalancedParens(value) {
   return depth === 0;
 }
 
+// Upper bound on names this module will attempt to normalize. See the note in
+// stripCompanyTypeSuffix: the legal-form patterns backtrack quadratically, and
+// RDAP supplies these strings.
+const MAX_NORMALIZABLE_NAME_LENGTH = 200;
+
+// Names preserved verbatim because a legal-form pattern would otherwise eat
+// part of the brand.
+const KNOWN_INTACT_NAMES = new Set(["trade me"]);
+
+/**
+ * Reports whether a name must be preserved verbatim rather than suffix-stripped.
+ * Purpose: Share one false-positive list between the pre-check and the strip
+ * loop, so a guarded name stays guarded at every intermediate step.
+ * Necessity: The loop rewrites `candidate` in place; a guard that only inspects
+ * the original input silently stops applying after the first strip.
+ * @ai Keep behavior stable and prefer minimal, localized edits.
+ * @param {string} value - Candidate name at any point during stripping.
+ * @returns {boolean} True when the name is a known false positive.
+ */
+function isKnownIntactName(value) {
+  return KNOWN_INTACT_NAMES.has(String(value || "").trim().toLowerCase());
+}
+
 /**
  * Strips leading and trailing legal company-type prefixes and suffixes from a name.
  * Purpose: Keep network short Name concise while preserving full legal form
@@ -49,8 +72,20 @@ function stripCompanyTypeSuffix(name) {
   const original = String(name || "").trim().replace(/\s+/g, " ");
   if (!original) return "";
 
-  // Known false positive: keep brand name intact (do not strip trailing "ME").
-  if (original === "Trade Me") return original;
+  // Several patterns below pair a lazy `(.*?)` with a separator character class,
+  // which backtracks quadratically when the rest of the pattern cannot match.
+  // Measured on a separator-dense string: 800 chars ~ 210ms, 3200 ~ 460ms,
+  // 6400 ~ 1.9s -- enough to freeze the tab. Names reach this function straight
+  // from third-party RDAP records, so the length is not ours to trust. No real
+  // legal name approaches this bound, and returning the input unchanged is the
+  // right outcome for something this long anyway.
+  if (original.length > MAX_NORMALIZABLE_NAME_LENGTH) return original;
+
+  // Known false positives: names whose tail looks like a legal suffix but isn't
+  // (here "Me" parses as Brazil's ME/Microempresa). Also re-checked inside the
+  // strip loop -- checking only the input meant the guard held for "Trade Me"
+  // but not "Trade Me Limited", which stripped through to "Trade".
+  if (isKnownIntactName(original)) return original;
 
   const legalSuffixPatterns = [
     "Corporation", // Corporation (US and other common-law jurisdictions)
@@ -283,6 +318,9 @@ function stripCompanyTypeSuffix(name) {
 
   // Strip trailing suffixes (may be multiple layers)
   while (candidate && candidate !== previous && suffixRegex.test(candidate)) {
+    // Re-check every layer: "Trade Me Limited" reaches "Trade Me" here, and
+    // without this the next pass strips "Me" as a Brazilian ME suffix.
+    if (isKnownIntactName(candidate)) break;
     previous = candidate;
     const stripped = candidate.replace(suffixRegex, "").trim().replace(/[\s,().-]+$/g, "").trim();
     // Reject a strip that orphans a real "(" that was balanced before this step --
@@ -696,10 +734,16 @@ function sanitizeRdapOrgName(name) {
     candidate = collapsedLegalAlias;
   }
 
-  // Extract text after trading-as patterns if present.
-  const tradingAsMatch = candidate.match(/(?:trading\s+as|t\s*\/\s*a|d\s*\/?\s*b\s*\/?\s*a|dba)\s+(.+)$/i);
+  // Extract text after trading-as patterns if present. Anchored, and requiring a
+  // person/legal part before the marker, exactly like the twin in
+  // parseRdapTradingAsIdentity below. Unanchored, the marker matched anywhere in
+  // the string: "DBA Systems Inc" became "Systems Inc" and "Sundba Media Group"
+  // became "Media Group", both from a mid-word or leading "dba".
+  const tradingAsMatch = candidate.match(
+    /^(.+?)\s+(?:trading\s+as|t\s*\/\s*a|d\s*\/?\s*b\s*\/?\s*a|dba)\s+(.+)$/i,
+  );
   if (tradingAsMatch) {
-    const extracted = tradingAsMatch[1].trim();
+    const extracted = tradingAsMatch[2].trim();
     // Use the extraction if it's substantially longer than or similar to the person part (avoid picking the person name)
     if (extracted.length >= 5) {
       candidate = extracted;
@@ -758,7 +802,12 @@ function parsePolishScPartnerIdentity(name) {
   if (!original) return { name: "", knownAs: "" };
 
   const base = original.replace(/^(.+?)\s*,\s*remarks\s*:.*/i, "$1").trim();
-  const match = base.match(/^(.*?\bS\.?\s*C\.?)\s+(.+)$/i);
+  // The company part is required (`.+?\s+`), not optional. With `.*?` a *leading*
+  // S.C. matched with nothing before it, so the Romanian "Societate Comerciala"
+  // prefix in "S.C. Digital Cable Systems Romania SRL" parsed as a Polish civil
+  // partnership and the name collapsed to "S.C" -- the partner-tail heuristic
+  // below waves it through, because that tail does carry two Capitalized pairs.
+  const match = base.match(/^(.+?\s+S\.?\s*C\.?)\s+(.+)$/i);
   if (!match) {
     return { name: sanitizeRdapOrgName(original), knownAs: "" };
   }
