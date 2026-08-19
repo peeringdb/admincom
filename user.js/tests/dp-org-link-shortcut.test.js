@@ -190,3 +190,10 @@ test('re-hydrating the same anchor does not insert a second org shortcut', async
   assert.equal(anchor.nextElementSibling, firstShortcut, 'shortcut identity should be unchanged');
   assert.equal(firstShortcut.nextElementSibling, null, 'no second shortcut chained after the first');
 });
+
+test('DP SCRIPT_VERSION comes from GM_info, not a hard-coded literal', () => {
+  // See the matching CP case. DP's constant was previously declared and never
+  // read at all; it now feeds the init debug line, mirroring CP and FP.
+  // '0.0.0-test' is what the browser-shim sandbox stubs.
+  assert.equal(loadDp().SCRIPT_VERSION, '0.0.0-test');
+});
