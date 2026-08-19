@@ -1571,7 +1571,11 @@
    * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {object} ixfData - Parsed IX-F member-export JSON.
    * @param {{ asn: string|number, ipaddr4: string, ipaddr6: string }} target
-   * @returns {{ matched: "ip"|"asn-only"|"none", connection: object|null, vlan: object|null, asnEntries: Array<{v4: string, v6: string}> }}
+   * "none" is a positive claim of absence and the UI turns it into a
+   * "Remove netixlan entry" button, so it is only ever returned from an
+   * export we could actually read. Anything we could not interpret comes
+   * back as "unreadable" instead -- see the guard in the body.
+   * @returns {{ matched: "ip"|"asn-only"|"none"|"unreadable", reason: string, connection: object|null, vlan: object|null, asnEntries: Array<{v4: string, v6: string}> }}
    */
   function extractIxfMatchForAsnIp(ixfData, { asn, ipaddr4, ipaddr6 } = {}) {
     const targetAsn = String(asn ?? "").trim();
@@ -1580,7 +1584,19 @@
     const memberList = Array.isArray(ixfData?.member_list) ? ixfData.member_list : [];
     const asnEntries = [];
 
-    if (!targetAsn) return { matched: "none", connection: null, vlan: null, asnEntries };
+    // A 200-OK body is not the same as a readable IX-F export. A CDN error
+    // page, a renamed schema, a feed that moved, or a URL pointing at another
+    // exchange all parse to an empty member_list -- that is silence, not
+    // evidence that the network is absent. Coercing it to [] and reporting
+    // "none" told the admin "IX-F has no entry for this ASN at all" and
+    // offered to delete the netixlan row on the strength of it.
+    if (!memberList.length) {
+      return { matched: "unreadable", reason: "no-member-list", connection: null, vlan: null, asnEntries };
+    }
+    // Likewise, with no ASN to look for there is nothing to conclude.
+    if (!targetAsn) {
+      return { matched: "unreadable", reason: "no-target-asn", connection: null, vlan: null, asnEntries };
+    }
 
     for (const member of memberList) {
       const memberAsn = String(member?.asnum ?? member?.asn ?? "").trim();
@@ -1598,13 +1614,13 @@
           const v4Matches = !!targetV4 && v4 === targetV4;
           const v6Matches = !!targetV6Norm && !!v6 && normalizeIpv6ForCompareFp(v6) === targetV6Norm;
           if (v4Matches || v6Matches) {
-            return { matched: "ip", connection, vlan, asnEntries };
+            return { matched: "ip", reason: "", connection, vlan, asnEntries };
           }
         }
       }
     }
 
-    return { matched: asnEntries.length ? "asn-only" : "none", connection: null, vlan: null, asnEntries };
+    return { matched: asnEntries.length ? "asn-only" : "none", reason: "", connection: null, vlan: null, asnEntries };
   }
 
   /**
@@ -2985,9 +3001,52 @@
   }
 
   /**
+   * Renders the "we could not read this IX-F export" result.
+   * Purpose: Report that the check was inconclusive, distinctly from
+   * reporting that the network is genuinely absent from the feed.
+   * Necessity: Both used to render the same panel, so an unreadable export
+   * -- a CDN error page, a moved feed, a URL pointing at the wrong exchange
+   * -- presented as a confident negative alongside a "Remove netixlan
+   * entry" button. This state deliberately offers no destructive action;
+   * the admin's next step is to look at the feed, not to delete a row.
+   * @ai Preserve the absence of a remove/resolve control here.
+   * @param {HTMLElement} panel - Result panel for this netixlan row.
+   * @param {object} netixlanRow - Live netixlan record being checked.
+   * @param {string} reason - Machine reason from extractIxfMatchForAsnIp.
+   * @param {string} ixfUrl - Export URL that was fetched.
+   * @returns {void}
+   */
+  function renderUnreadableIxfExportResult(panel, netixlanRow, reason, ixfUrl) {
+    panel.textContent = "";
+
+    const heading = document.createElement("div");
+    heading.textContent = "IX-F check inconclusive";
+    heading.style.fontWeight = "bold";
+    panel.appendChild(heading);
+
+    const detail = document.createElement("div");
+    detail.textContent = reason === "no-target-asn"
+      ? `Netixlan #${netixlanRow.id ?? ""} has no ASN to look up, so the export could not be checked.`
+      : "The export was fetched but contains no readable member_list, so it cannot show whether "
+        + `AS${netixlanRow.asn} is present. This is not evidence that the entry should be removed.`;
+    panel.appendChild(detail);
+
+    if (ixfUrl) {
+      const source = document.createElement("div");
+      source.style.marginTop = "4px";
+      source.textContent = `Source: ${ixfUrl}`;
+      panel.appendChild(source);
+    }
+  }
+
+  /**
    * Renders the "IX-F has no entry for this ASN at all" result, with a
    * "Remove netixlan entry" option (see removeNetixlanEntry for why this
    * is a native confirm() rather than a second custom button).
+   * Only reachable from a readable export -- extractIxfMatchForAsnIp
+   * returns "unreadable" rather than "none" when it could not interpret
+   * the feed, precisely so this destructive path cannot be reached on a
+   * false negative.
    * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function renderNoIxfEntryResult(panel, netixlanId, netixlanRow) {
@@ -3101,6 +3160,10 @@
         ipaddr6: netixlanRow.ipaddr6,
       });
 
+      if (matchResult.matched === "unreadable") {
+        renderUnreadableIxfExportResult(panel, netixlanRow, matchResult.reason, ixfUrl);
+        return;
+      }
       if (matchResult.matched === "none") {
         renderNoIxfEntryResult(panel, netixlanId, netixlanRow);
         return;

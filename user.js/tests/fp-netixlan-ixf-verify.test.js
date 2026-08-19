@@ -121,15 +121,42 @@ test('extractIxfMatchForAsnIp', async (t) => {
     assert.equal(result.asnEntries.length, 0);
   });
 
-  await t.test('malformed/empty ixfData -> "none" without throwing', () => {
-    assert.equal(hooks.extractIxfMatchForAsnIp(null, { asn: 64500 }).matched, 'none');
-    assert.equal(hooks.extractIxfMatchForAsnIp({}, { asn: 64500 }).matched, 'none');
-    assert.equal(hooks.extractIxfMatchForAsnIp({ member_list: 'nope' }, { asn: 64500 }).matched, 'none');
+  await t.test('an unreadable export is "unreadable", never "none"', () => {
+    // Regression: all of these used to coerce to [] and report "none", which
+    // the panel renders as "IX-F has no entry for this ASN at all" next to a
+    // "Remove netixlan entry" button. A 200-OK CDN error page, a renamed
+    // schema, or a URL pointing at another exchange is silence, not absence,
+    // and must never reach the destructive path.
+    for (const [label, body] of [
+      ['null body', null],
+      ['empty object', {}],
+      ['non-IX-F JSON', { detail: 'Not Found' }],
+      ['member_list is not an array', { member_list: 'nope' }],
+      ['member_list present but empty', { member_list: [] }],
+    ]) {
+      const result = hooks.extractIxfMatchForAsnIp(body, { asn: 64500, ipaddr4: '1.2.3.4' });
+      assert.equal(result.matched, 'unreadable', label);
+      assert.equal(result.reason, 'no-member-list', label);
+      assert.notEqual(result.matched, 'none', label);
+    }
   });
 
-  await t.test('missing asn -> "none"', () => {
+  await t.test('missing asn -> "unreadable", not a claim of absence', () => {
     const ixfData = { member_list: [ixfMember({ asnum: 64500, vlans: [{ ipv4: { address: '1.2.3.4' }, ipv6: {} }] })] };
-    assert.equal(hooks.extractIxfMatchForAsnIp(ixfData, { asn: '', ipaddr4: '1.2.3.4' }).matched, 'none');
+    const result = hooks.extractIxfMatchForAsnIp(ixfData, { asn: '', ipaddr4: '1.2.3.4' });
+    assert.equal(result.matched, 'unreadable');
+    assert.equal(result.reason, 'no-target-asn');
+  });
+
+  await t.test('a readable export that genuinely lacks the ASN is still "none"', () => {
+    // The other half of the fix: "none" must keep working where it is true,
+    // or the Remove path becomes unreachable and the guard is vacuous.
+    const ixfData = {
+      member_list: [ixfMember({ asnum: 64999, vlans: [{ ipv4: { address: '9.9.9.9' }, ipv6: {} }] })],
+    };
+    const result = hooks.extractIxfMatchForAsnIp(ixfData, { asn: 64500, ipaddr4: '1.2.3.4' });
+    assert.equal(result.matched, 'none');
+    assert.equal(result.asnEntries.length, 0);
   });
 });
 
@@ -205,8 +232,18 @@ test('buildIxfDiff', async (t) => {
   });
 
   await t.test('returns [] when there is no IP match', () => {
-    const noMatch = hooks.extractIxfMatchForAsnIp({}, { asn: 64500 });
+    const noMatch = hooks.extractIxfMatchForAsnIp(
+      { member_list: [ixfMember({ asnum: 64999, vlans: [{ ipv4: { address: '9.9.9.9' }, ipv6: {} }] })] },
+      { asn: 64500 },
+    );
+    assert.equal(noMatch.matched, 'none');
     assert.equal(hooks.buildIxfDiff({}, noMatch).length, 0);
+  });
+
+  await t.test('returns [] for an unreadable export too', () => {
+    const unreadable = hooks.extractIxfMatchForAsnIp({}, { asn: 64500 });
+    assert.equal(unreadable.matched, 'unreadable');
+    assert.equal(hooks.buildIxfDiff({}, unreadable).length, 0);
   });
 });
 
