@@ -34,7 +34,11 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbFpConsolidated";
-  const SCRIPT_VERSION = "1.1.34";
+  // Sourced from the @version header at install time (Tampermonkey always injects
+  // GM_info, no @grant needed) so it can never drift from the shipped version.
+  // The fallback only engages outside Tampermonkey (e.g. Greasemonkey 4 exposes
+  // GM.info) and is deliberately unmistakable if it ever reaches an audit log.
+  const SCRIPT_VERSION = typeof GM_info !== "undefined" ? GM_info.script.version : "0.0.0-unknown";
   // RDAP fallback client is intentionally CP-only; FP does not implement RDAP lookups.
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
@@ -4348,6 +4352,7 @@
   // @ai Preserve execution ordering, locks, and route/module boundaries.
   if (typeof window !== "undefined" && window.__PDB_TEST__) {
     window.__pdbFpTestHooks__ = {
+      SCRIPT_VERSION,
       getRouteContext,
       modules,
       resolveEntityPayloadWithSharedCache,
