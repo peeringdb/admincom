@@ -4380,7 +4380,10 @@
     if (!/^\d+$/.test(id)) return { rows: [], cutoffIso: "", source: "", error: "bad-ixlan-id" };
     const cutoffMs = Date.now() - Math.max(1, Number(windowMinutes) || 60) * 60 * 1000;
     const cutoffIso = new Date(cutoffMs).toISOString().replace(/\.\d{3}Z$/, "Z");
-    // Try server-side filter first.
+    // Try server-side filter first. Both catch blocks below were dead code while
+    // pdbFetch returned null: the try always reached its return, so a rejected
+    // updated__gte filter reported "0 rows, no error" and the client-filter
+    // fallback never ran. They are live now that pdbFetch throws.
     try {
       const serverUrl = `${PEERINGDB_API_BASE_URL}/netixlan?ixlan_id=${encodeURIComponent(id)}&updated__gte=${encodeURIComponent(cutoffIso)}&depth=0&limit=250`;
       const data = await pdbFetch(serverUrl);
@@ -5680,16 +5683,46 @@
   }
 
   /**
+   * Builds the error pdbFetch rejects with.
+   * Purpose: Give callers a single recognisable failure type carrying enough
+   * context to report or branch on, instead of an untyped null that is
+   * indistinguishable from a legitimately empty response.
+   * @param {string} url - Request URL that failed.
+   * @param {object} detail - Same shape passed to recordFetchFailure (type,
+   *   mode, status, message, ...), attached for callers that want specifics.
+   * @returns {Error} Error with name "PdbFetchError" plus url/detail/status.
+   */
+  function makePdbFetchError(url, detail) {
+    const status = detail && typeof detail.status === "number" ? detail.status : 0;
+    const suffix = status ? ` (HTTP ${status})` : "";
+    const error = new Error(`pdbFetch ${detail?.type || "failed"}${suffix}: ${url}`);
+    error.name = "PdbFetchError";
+    error.url = url;
+    error.status = status;
+    error.detail = detail || {};
+    return error;
+  }
+
+  /**
    * Unified JSON fetch helper for all script-initiated HTTP requests.
    * Purpose: Single network abstraction with timeout, retry, and error normalisation
    * for both same-origin (PeeringDB API via fetch) and cross-origin (RDAP via
    * GM_xmlhttpRequest) call sites.
    * Necessity: Prevents N ad-hoc GM_xmlhttpRequest patterns from diverging on
    * timeout handling or header construction.
+   *
+   * THROWS on failure -- it does not return null. This previously resolved to
+   * null for every failure mode, which silently made `catch` blocks around it
+   * dead code: fetchRecentNetixlanChanges had two, and its entire client-side
+   * fallback was unreachable because the try block always returned. Callers
+   * must handle rejection; a resolved value is always a parsed payload.
    * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+   *     Do NOT reintroduce a null return -- callers rely on rejection to detect failure.
    * @param {string} url - Absolute URL to fetch.
    * @param {{ headers?: object, timeout?: number, retries?: number }} [options]
-   * @returns {Promise<object|null>} Parsed JSON or null on any failure.
+   * @returns {Promise<object>} Parsed JSON payload.
+   * @throws {Error} PdbFetchError (see makePdbFetchError) on HTTP error, parse
+   *   failure, transport error or timeout.
    */
   async function pdbFetch(url, { headers = {}, timeout = PDB_API_TIMEOUT_MS, retries = PDB_API_RETRIES } = {}) {
     const fullHeaders = buildTampermonkeyRequestHeaders(headers);
@@ -5728,7 +5761,7 @@
             clearFetchFailure(url);
             return parsed;
           } catch (parseError) {
-            recordFetchFailure(url, {
+            const detail = {
               type: "parse",
               mode: "same-origin",
               attempt: 1,
@@ -5736,12 +5769,13 @@
               status: response.status,
               statusText: response.statusText,
               message: String(parseError?.message || parseError || "json-parse-failed"),
-            });
-            return null;
+            };
+            recordFetchFailure(url, detail);
+            throw makePdbFetchError(url, detail);
           }
         }
 
-        recordFetchFailure(url, {
+        const httpDetail = {
           type: "http",
           mode: "same-origin",
           attempt: 1,
@@ -5749,23 +5783,29 @@
           status: response.status,
           statusText: response.statusText,
           ok: false,
-        });
-        return null;
-      } catch (_err) {
-        recordFetchFailure(url, {
+        };
+        recordFetchFailure(url, httpDetail);
+        throw makePdbFetchError(url, httpDetail);
+      } catch (err) {
+        // A PdbFetchError from the branches above is already recorded; only a
+        // genuine transport/abort failure needs recording here. Rethrowing
+        // unchanged keeps the original status and type intact for callers.
+        if (err?.name === "PdbFetchError") throw err;
+        const exceptionDetail = {
           type: "exception",
           mode: "same-origin",
           attempt: 1,
           retries,
-          message: String(_err?.message || _err || "fetch-exception"),
-          name: String(_err?.name || "Error"),
+          message: String(err?.message || err || "fetch-exception"),
+          name: String(err?.name || "Error"),
           timeout,
-        });
-        return null;
+        };
+        recordFetchFailure(url, exceptionDetail);
+        throw makePdbFetchError(url, exceptionDetail);
       }
     }
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       logExternalRequestUserAgent({
         method: "GET",
         url,
@@ -5790,7 +5830,7 @@
               resolve(parsed);
             }
             catch (_err) {
-              recordFetchFailure(url, {
+              const detail = {
                 type: "parse",
                 mode: "cross-origin",
                 attempt: 1,
@@ -5798,11 +5838,12 @@
                 status: response.status,
                 statusText: response.statusText,
                 message: String(_err?.message || _err || "json-parse-failed"),
-              });
-              resolve(null);
+              };
+              recordFetchFailure(url, detail);
+              reject(makePdbFetchError(url, detail));
             }
           } else {
-            recordFetchFailure(url, {
+            const detail = {
               type: "http",
               mode: "cross-origin",
               attempt: 1,
@@ -5810,29 +5851,32 @@
               status: response.status,
               statusText: response.statusText,
               ok: false,
-            });
-            resolve(null);
+            };
+            recordFetchFailure(url, detail);
+            reject(makePdbFetchError(url, detail));
           }
         },
         onerror: () => {
-          recordFetchFailure(url, {
+          const detail = {
             type: "error",
             mode: "cross-origin",
             attempt: 1,
             retries,
             timeout,
-          });
-          resolve(null);
+          };
+          recordFetchFailure(url, detail);
+          reject(makePdbFetchError(url, detail));
         },
         ontimeout: () => {
-          recordFetchFailure(url, {
+          const detail = {
             type: "timeout",
             mode: "cross-origin",
             attempt: 1,
             retries,
             timeout,
-          });
-          resolve(null);
+          };
+          recordFetchFailure(url, detail);
+          reject(makePdbFetchError(url, detail));
         },
       });
     });
@@ -6591,13 +6635,22 @@
     const variables = { first: limit, offset };
 
     const url = `${endpoint}?query=${encodeURIComponent(query)}&variables=${encodeURIComponent(JSON.stringify(variables))}`;
-    const payload = await pdbFetch(url, {
-      headers: {
-        Accept: "application/json",
-      },
-      timeout: REQUEST_TIMEOUT_MS,
-      retries: 1,
-    });
+    // null here is a fallback signal, not an error: the caller drops to the REST
+    // transport when this returns falsy. pdbFetch now throws, so that signal is
+    // produced explicitly rather than by pdbFetch happening to return null.
+    let payload = null;
+    try {
+      payload = await pdbFetch(url, {
+        headers: {
+          Accept: "application/json",
+        },
+        timeout: REQUEST_TIMEOUT_MS,
+        retries: 1,
+      });
+    } catch (err) {
+      dbg("names", "GraphQL name batch failed, falling back to REST", { offset, limit, error: err?.message });
+      return null;
+    }
     if (!payload) return null;
     if (payload.errors && Array.isArray(payload.errors) && payload.errors.length > 0) return null;
 
@@ -6623,13 +6676,21 @@
     });
     if (!url) return [];
 
-    const payload = await pdbFetch(url, {
-      headers: {
-        Accept: "application/json",
-      },
-      timeout: REQUEST_TIMEOUT_MS,
-      retries: 1,
-    });
+    // An empty batch is how this reports failure to its caller's paging loop,
+    // which simply stops. Preserved explicitly now that pdbFetch throws.
+    let payload = null;
+    try {
+      payload = await pdbFetch(url, {
+        headers: {
+          Accept: "application/json",
+        },
+        timeout: REQUEST_TIMEOUT_MS,
+        retries: 1,
+      });
+    } catch (err) {
+      dbg("names", "REST name batch failed", { offset, limit, error: err?.message });
+      return [];
+    }
 
     const rows = Array.isArray(payload?.data) ? payload.data : [];
     return rows
@@ -8488,8 +8549,18 @@
       * @param {string} url - Absolute RDAP or bootstrap URL.
       * @returns {Promise<object|null>} Parsed JSON payload, or null when the request fails.
      */
-    function requestJson(url) {
-      return pdbFetch(url, { headers: { Accept: RDAP_ACCEPT_HEADER } });
+    async function requestJson(url) {
+      // getBootstrap carries an "@ai Preserve ... null-on-failure behavior so
+      // RDAP resolution degrades safely" contract, and fetchAutnumRecord relies
+      // on the same. pdbFetch throws now, so that contract is honoured here
+      // rather than inherited: RDAP is a best-effort fallback for a name lookup,
+      // and a failed lookup must not surface as an unhandled rejection.
+      try {
+        return await pdbFetch(url, { headers: { Accept: RDAP_ACCEPT_HEADER } });
+      } catch (err) {
+        dbg("rdap", "RDAP request failed", { url, error: err?.message });
+        return null;
+      }
     }
 
     /**
@@ -9104,7 +9175,13 @@
           const networkId = String(getInputValue("#id_network") || "").trim();
           const ixlanId = String(getInputValue("#id_ixlan") || "").trim();
 
+          // Fire-and-forget: nothing awaits this, so an unhandled rejection here
+          // would surface as a console error with no context and no recovery.
+          // These org/ix toolbar links are decorative -- a failed lookup means
+          // the button is simply absent, which is the pre-existing behavior when
+          // the API returned nothing.
           void (async () => {
+            try {
             let orgId = "";
             let ixId = "";
 
@@ -9159,6 +9236,13 @@
             scheduleDomUpdate(`${MODULE_PREFIX}.networkixlan.toolbarOrder`, () => {
               enforceToolbarButtonOrder(ctx);
             });
+            } catch (err) {
+              dbg("toolbar", "networkixlan org/ix lookup failed; links omitted", {
+                networkId,
+                ixlanId,
+                error: err?.message,
+              });
+            }
           })();
         }
 
@@ -11107,6 +11191,8 @@
   if (typeof window !== "undefined" && window.__PDB_TEST__) {
     window.__pdbCpTestHooks__ = {
       SCRIPT_VERSION,
+      pdbFetch,
+      fetchRecentNetixlanChanges,
       getRouteContext,
       modules,
       getOrganizationName,
