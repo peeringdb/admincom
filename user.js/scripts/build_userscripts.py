@@ -48,7 +48,23 @@ def render(src_path: pathlib.Path) -> str:
         block = banner + fragment.rstrip('\n') + '\n' + GENERATED_FOOTER
         return '\n'.join(indent + line if line else line for line in block.splitlines())
 
-    return INCLUDE_RE.sub(_replace, text)
+    rendered, substitutions = INCLUDE_RE.subn(_replace, text)
+    if substitutions == 0:
+        # A .src.js that loses its marker still builds, still passes
+        # `node --check` (the syntax is valid; the references are not), and
+        # still reports 'up to date' -- then throws ReferenceError in the
+        # browser on first use, because dbg/fetchWithRetry and friends were
+        # never inlined. Every script in this repo depends on the shared
+        # fragment, so zero markers means the marker was lost, not that the
+        # script genuinely needs no lib. If one ever legitimately does, that
+        # is a deliberate decision and this guard is where to record it.
+        raise ValueError(
+            f'{src_path}: no /* @include <name> */ marker found. The shared '
+            f'lib would not be inlined and the generated script would '
+            f'ReferenceError at runtime. Restore the marker, or update this '
+            f'guard if the script genuinely needs no lib.'
+        )
+    return rendered
 
 
 def header_block(path: pathlib.Path) -> str:
