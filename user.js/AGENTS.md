@@ -216,6 +216,13 @@ files above rather than waiting on a `lib/*.js` extraction first.
   `major.minor.bugfix` (see README's Metadata convention — if a script still carries an old
   `.YYYYMMDD` 4th segment, bump the bugfix number rather than dropping the date, or Tampermonkey will
   read it as a downgrade). Don't touch `@updateURL`/`@downloadURL`/`@supportURL`.
+  The build script enforces that the two `@version` values match, so forgetting one fails
+  `build_userscripts.py --check` (and therefore CI) rather than shipping a silent mismatch.
+- Don't reintroduce a hard-coded version constant. Each script reads its own version from
+  `GM_info.script.version`, which Tampermonkey binds to the `@version` header at install
+  time — so the header is the single source of truth and `SCRIPT_VERSION` is derived, never
+  maintained. CP stamps that value into its audit logs, so drift there is a correctness
+  bug, not a cosmetic one.
 - Don't rename the `pdbCpConsolidated.*` / `pdbFpConsolidated.*` storage-key namespaces or the shared
   `pdbAdmincom.debug` flag (CP + FP intentionally share that one key since both run on the
   `peeringdb.com` origin) — saved user config depends on these. General naming pattern:

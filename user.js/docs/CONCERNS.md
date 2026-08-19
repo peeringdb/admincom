@@ -41,7 +41,7 @@
 |------|-------------|------------------------|
 | `peeringdb-cp-consolidated-tools.user.js` | Largest file (~490KB), most integrations (RDAP, IX-F, PeeringDB API), most modules; highest churn in the repo | Edit `.src.js`, never the generated file; keep changes scoped to one module at a time per the existing `modules[]` boundaries; run `--check` + `node --check` before every commit |
 | `peeringdb-deskpro-tools.user.js` / `.meta.js` | Second-highest churn; version-bump-heavy | Same discipline as CP; also confirm the DeskPro-specific proactive rate-limit throttling isn't broken by future retry-logic changes |
-| `peeringdb-cp-consolidated-tools.meta.js` | Frequent version-only churn | Low actual risk — mostly `@version` bumps, not logic changes; still worth confirming version format follows `major.minor.bugfix` ([README.md](../README.md)) |
+| `peeringdb-cp-consolidated-tools.meta.js` | Frequent version-only churn | Low actual risk — mostly `@version` bumps, not logic changes. `build_userscripts.py` now fails if the `.src.js` and `.meta.js` `@version` values disagree, so the pair can no longer drift silently; the format itself (`major.minor.bugfix`, [README.md](../README.md)) is still a human check |
 
 ## CP File-Split Progress
 
