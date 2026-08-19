@@ -23,7 +23,11 @@ No traditional `main()`/CLI entry point. Three effective entry points, one per s
 injected by Tampermonkey at `document-end` on a matching URL — selection is entirely via each
 `.meta.js`/`.user.js` header's `@match`/`@exclude`/`@run-at` directives, no runtime router:
 
-- `peeringdb-cp-consolidated-tools.user.js` — `@match https://www.peeringdb.com/cp/peeringdb_server/*/*/change/*` (+ beta host)
+- `peeringdb-cp-consolidated-tools.user.js` — `@match https://www.peeringdb.com/cp/*` (+ beta host).
+  This is the whole Django admin site, not just `peeringdb_server` change forms; the
+  narrower `/cp/peeringdb_server/*/*/change/*` pattern this file used to claim understates
+  the injection surface. Route scoping happens in the `modules[]` registry's `match(ctx)`
+  predicates, not in the header — see the note at `peeringdb-cp-consolidated-tools.src.js:1329`.
 - `peeringdb-fp-consolidated-tools.user.js` — `@match https://www.peeringdb.com/*` (excludes `/cp/*`)
 - `peeringdb-deskpro-tools.user.js` — `@match https://peeringdb.deskpro.com/app*`
 

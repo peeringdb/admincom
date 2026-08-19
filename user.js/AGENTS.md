@@ -158,13 +158,44 @@ no new dependency beyond Node itself, which is already required for `node --chec
   the current sole direct caller of these three, though the underlying `lib/admincom-common.js`
   fragment is identical across all three scripts. One case documents a real discrepancy between
   `isNegativeCacheEntry`'s declared `boolean` return type and its actual behavior — it returns the
-  falsy input itself (`null`/`undefined`), not coerced to `false` — locked in rather than fixed).
+  falsy input itself (`null`/`undefined`), not coerced to `false` — locked in rather than fixed);
+- the test shim itself (`browser-shim.test.js` — the fake fetch's `headers.get()`, status/ok
+  derivation, the `{ __response: true, ... }` and `{ __sequence: [...] }` fixture forms, and call
+  recording. The shim gets its own tests because a gap in it silently makes production paths
+  *unreachable* rather than merely untested: its fake response exposed no `headers.get()`, so
+  `fetchWithRetry`'s `Retry-After` branch threw on contact and the retry policy went unexercised
+  for as long as it existed);
+- CP's `pdbFetch` error contract (`cp-pdbfetch-errors.test.js` — that it rejects with a typed
+  `PdbFetchError` rather than resolving `null`, and that `fetchRecentNetixlanChanges`'
+  client-filter fallback is reachable again as a result);
+- CP's IX-F merge apply loop (`cp-ixf-merge-apply.test.js` — the real write path end to end
+  through the shim, asserting on recorded request methods. The load-bearing assertions are
+  negative: no `DELETE` is issued when the keeper read-back disagrees, when the live re-check
+  fails, when a field mismatch is unacknowledged, or when the IX-F map is unavailable);
+- CP's modal safeguards (`cp-modal-safeguards.test.js` — **source** assertions, not behavioral
+  ones, and the file explains why at length: the shim's `FakeElement` has no `addEventListener`,
+  so a modal cannot be constructed or clicked through `loadScript` at all. They pin that `close()`
+  still cancels, that each opener still holds until dismissal, and that the type-to-confirm input
+  is still not pre-filled — the three safeguards that were previously present in the UI and inert
+  in effect);
+- the build script's two guards — the `@include` marker (`build-include-marker.test.js`) and
+  `@version` parity between each `.src.js` and its `.meta.js` (`build-version-parity.test.js`,
+  covering a mismatch, a missing manifest, a missing `@version` line on either side, two bad pairs
+  in one run, and a stray `@version` below the metadata block). These are the only tests that spawn
+  a process: the build script is Python and the suite is `node:test`, but the alternative is a
+  second test runner, which the note above says not to add without discussing it first. They share
+  `tests/helpers/build-script-runner.js`, which runs `build_userscripts.py` against a throwaway
+  repo layout in a temp dir; its fixture defaults produce a *well-formed* single-script repo so a
+  fixture built to exercise one guard does not trip the other. Both skip with a reason when no
+  Python is on `PATH`.
 
 These are the highest-regression-risk surfaces, since the strings/DOM output are asserted verbatim.
 It does **not** cover every module in every script (CP alone has ~207 top-level helper functions);
 most still rely on manual smoke testing, which remains the primary verification method for
-DOM-heavy modules. Every pure-logic target identified in the initial coverage-expansion pass is now
-covered; see `docs/CONCERNS.md`'s Top Risks row for the current state and how to keep extending it —
+DOM-heavy modules. The initial coverage-expansion pass called itself complete; it was not — the
+retry wrappers had no coverage and the shim could not have exercised them. Treat any "fully
+covered" claim as something to re-check against the harness. See `docs/CONCERNS.md`'s Top Risks
+row for the current state and how to keep extending it —
 add functions to the relevant `window.__pdbXxTestHooks__` object and follow the pattern of the test
 files above rather than waiting on a `lib/*.js` extraction first.
 
