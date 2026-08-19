@@ -215,6 +215,10 @@ function loadScript(scriptPath, opts) {
     requestAnimationFrame: (cb) => setTimeout(cb, 0),
     addEventListener() {},
     removeEventListener() {},
+    // Tampermonkey always injects GM_info regardless of @grant; the scripts read
+    // GM_info.script.version rather than hard-coding their own version string, so
+    // the sandbox must provide it or the IIFE throws before exporting its hooks.
+    GM_info: { script: { version: '0.0.0-test' } },
     __PDB_TEST__: true,
   };
   sandbox.window = sandbox; // scripts read both bare `document`/`location` and `window.*`
