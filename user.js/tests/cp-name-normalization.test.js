@@ -57,6 +57,38 @@ test('stripCompanyTypeSuffix', async (t) => {
     assert.equal(lib.stripCompanyTypeSuffix('Trade Me'), 'Trade Me');
   });
 
+  await t.test('the "Trade Me" exception survives an outer legal suffix', () => {
+    // Regression: the guard used to compare the *input* only, so it held for
+    // the bare name and evaporated on the commoner registered form -- the
+    // first pass stripped "Limited" and the second ate "Me" as Brazil's ME.
+    assert.equal(lib.stripCompanyTypeSuffix('Trade Me Limited'), 'Trade Me');
+    assert.equal(lib.stripCompanyTypeSuffix('Trade Me Ltd.'), 'Trade Me');
+  });
+
+  await t.test('a pathologically long name returns immediately, unchanged', () => {
+    // Regression: several patterns here pair a lazy group with a separator
+    // class and backtrack quadratically -- a separator-dense 6400-char name
+    // measured ~1.9s, and these strings arrive verbatim from third-party
+    // RDAP records. Timing is asserted loosely (a 200x margin over the
+    // measured cost) so this fails on a reintroduced blowup, not on a slow
+    // CI runner.
+    const pathological = 'A.-, '.repeat(4000); // 20,000 chars
+    const started = Date.now();
+    assert.equal(lib.stripCompanyTypeSuffix(pathological), pathological.trim());
+    assert.ok(
+      Date.now() - started < 200,
+      `stripCompanyTypeSuffix took ${Date.now() - started}ms on a 20k-char name`,
+    );
+  });
+
+  await t.test('the length guard does not disturb realistic names', () => {
+    // 200 chars is far above any real legal name; confirm a long-but-plausible
+    // one still normalizes rather than being waved through by the guard.
+    const longButReal = `${'Global Interconnection Services '.repeat(4).trim()} GmbH`;
+    assert.ok(longButReal.length < 200);
+    assert.equal(lib.stripCompanyTypeSuffix(longButReal).endsWith('GmbH'), false);
+  });
+
   await t.test('ASCII-transliterated Turkish "Limited Sirketi" is recognized', () => {
     assert.equal(
       lib.stripCompanyTypeSuffix('AnatoliaCore Teknoloji Limited Sirketi'),
@@ -191,6 +223,32 @@ test('parsePolishScPartnerIdentity splits company/partner tail', () => {
   const result = lib.parsePolishScPartnerIdentity('NET-KONT@KT S.C. Dariusz Koper Andrzej Nowak');
   assert.equal(result.name, 'NET-KONT@KT S.C');
   assert.equal(result.knownAs, 'Dariusz Koper Andrzej Nowak');
+});
+
+test('sanitizeRdapOrgName only honors an anchored trading-as marker', () => {
+  // Regression: the extraction regex was unanchored, so "dba" matched at the
+  // start of a string or in the middle of a word and the org name lost
+  // everything before it. The anchored form below mirrors the correct twin in
+  // parseRdapTradingAsIdentity.
+  assert.equal(lib.sanitizeRdapOrgName('DBA Systems Inc'), 'DBA Systems Inc');
+  assert.equal(lib.sanitizeRdapOrgName('Sundba Media Group'), 'Sundba Media Group');
+  assert.equal(lib.sanitizeRdapOrgName('T/A Networks Limited'), 'T/A Networks Limited');
+  // A genuine trading-as name must still resolve to the trading name.
+  assert.equal(lib.sanitizeRdapOrgName('Remzi Toker trading as VENTURESDC'), 'VENTURESDC');
+  assert.equal(lib.sanitizeRdapOrgName('Jane Roe dba Acme Networks'), 'Acme Networks');
+});
+
+test('parsePolishScPartnerIdentity requires a company before the S.C. marker', () => {
+  // Regression: a lazy leading group let a *prefix* S.C. match with nothing
+  // before it, so Romania's "Societate Comerciala" prefix was read as a Polish
+  // civil partnership and the whole name collapsed to "S.C".
+  const romanian = lib.parsePolishScPartnerIdentity('S.C. Digital Cable Systems Romania SRL');
+  assert.equal(romanian.name, 'S.C. Digital Cable Systems Romania SRL');
+  assert.equal(romanian.knownAs, '');
+
+  // Same input through the dispatcher that CP actually calls.
+  const viaDispatcher = lib.parseOrganizationNameIdentity('S.C. Digital Cable Systems Romania SRL');
+  assert.equal(viaDispatcher.name, 'S.C. Digital Cable Systems Romania SRL');
 });
 
 test('looksLikePersonalNameShape', () => {
