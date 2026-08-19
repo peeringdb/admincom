@@ -170,3 +170,11 @@ test('FP generic fallback normalizes titles on every other page', async (t) => {
     assert.equal(titleFor({ pathname: '/some-new-route-nobody-mapped-yet' }, { title: '' }), '');
   });
 });
+
+test('FP SCRIPT_VERSION comes from GM_info, not a hard-coded literal', () => {
+  // See the matching CP case: the version is read from the @version header at
+  // install time so it can't drift. FP reports it in its self-check warning and
+  // init debug line. '0.0.0-test' is what the browser-shim sandbox stubs.
+  const { hooks } = loadScript(SCRIPT_PATH, { hooksKey: '__pdbFpTestHooks__', pathname: '/' });
+  assert.equal(hooks.SCRIPT_VERSION, '0.0.0-test');
+});
