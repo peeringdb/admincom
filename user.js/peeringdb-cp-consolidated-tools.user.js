@@ -4528,16 +4528,26 @@
 
   /**
    * Applies a list of merge candidates sequentially.
-    * Purpose: For each candidate, pre-clear the sibling row's transfer IP
-    * (so unique-ip validation does not block keeper PUT), then PUT the
-    * keeper with both ipv4 + ipv6, then DELETE the sibling.
+   * Purpose: For each candidate, re-read both rows live and re-confirm the
+   * pair still merges, pre-clear the sibling row's transfer IP (so unique-ip
+   * validation does not block keeper PUT), PUT the keeper with both IPs plus
+   * anything the doomed row carries that the keeper lacks, verify that landed,
+   * then DELETE the sibling.
+   * Necessity: this loop used to write from the refresh()-time snapshot and
+   * PUT only ipaddr4/ipaddr6, so (a) rows edited between render and Apply were
+   * merged on stale premises, and (b) speed/is_rs_peer/bfd_support/operational
+   * /notes carried solely by the doomed row were destroyed by the DELETE. The
+   * conflict resolver already did all of this correctly; this ports its
+   * discipline rather than introducing a second mechanism.
    * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+   * @ai Do NOT DELETE before the keeper read-back confirms every absorbed field.
    * @param {object[]} candidates - Selected merge candidates.
+   * @param {Map|null} ixfMap - IX-F ASN->pairs map used to re-confirm the pair.
    * @param {{ cancelled: boolean }} signal - External cancel flag.
    * @param {Function} onProgress - Per-row callback.
    * @returns {Promise<object[]>} Outcomes for the audit log.
    */
-  async function applyIxfMerges(candidates, signal, onProgress) {
+  async function applyIxfMerges(candidates, ixfMap, signal, onProgress) {
     const outcomes = [];
     for (const candidate of candidates) {
       const base = {
@@ -4547,6 +4557,8 @@
         ipv4: candidate.ipv4,
         ipv6: candidate.ipv6,
         shape: candidate.shape || "split",
+        absorbed: {},
+        acknowledgedMismatches: [],
       };
       if (signal?.cancelled) {
         outcomes.push({ ...base, status: "cancelled" });
@@ -4555,7 +4567,58 @@
 
       onProgress?.(candidate, { status: "in-flight" });
 
-      const otherOriginal = buildNetixlanPutPayload(candidate.otherRow);
+      const abort = async (status, error, extra = {}) => {
+        const outcome = { ...base, ...extra, status, error };
+        outcomes.push(outcome);
+        onProgress?.(candidate, outcome);
+        if (IXF_MEMBER_APPLY_DELAY_MS > 0) await new Promise((r) => setTimeout(r, IXF_MEMBER_APPLY_DELAY_MS));
+      };
+
+      // Live re-read. Everything below is decided from these rows, never from
+      // the refresh()-time snapshot the table was rendered from.
+      const [freshKeeperRes, freshOtherRes] = await Promise.all([
+        fetchNetixlanRowById(candidate.keeperRow.id),
+        fetchNetixlanRowById(candidate.otherRow.id),
+      ]);
+      if (freshKeeperRes.error || freshOtherRes.error || !freshKeeperRes.row || !freshOtherRes.row) {
+        await abort("aborted", freshKeeperRes.error || freshOtherRes.error || "no-row", { gateFailed: "fresh-reread" });
+        continue;
+      }
+
+      // Re-run the same predicate that produced this candidate, against the
+      // live rows. If the pair no longer merges -- an IP moved, a row was
+      // edited, IX-F no longer confirms it -- this one is out.
+      const liveCandidates = ixfMap
+        ? findIxfMergeCandidates([freshKeeperRes.row, freshOtherRes.row], ixfMap)
+        : [];
+      const liveCandidate = liveCandidates.find((c) =>
+        String(c.keeperRow.id) === String(candidate.keeperRow.id) &&
+        String(c.otherRow.id) === String(candidate.otherRow.id) &&
+        c.ipv4 === candidate.ipv4 &&
+        normalizeIpv6ForCompare(c.ipv6) === normalizeIpv6ForCompare(candidate.ipv6) &&
+        (c.shape || "split") === (candidate.shape || "split"),
+      );
+      if (!liveCandidate) {
+        await abort("aborted", ixfMap ? "live-recheck-failed" : "ixf-map-unavailable", { gateFailed: "live-recheck" });
+        continue;
+      }
+
+      // What this DELETE would absorb, and what it would discard. The
+      // acknowledgement is bound to the exact disagreement set the admin saw;
+      // a set that changed under us is a new decision, not an approved one.
+      const effects = summarizeIxfMergeEffects(liveCandidate);
+      base.absorbed = { ...effects.merge };
+      base.acknowledgedMismatches = effects.mismatches.map((m) => m.field);
+      if (effects.mismatches.length > 0 && candidate.acknowledgedMismatchKey !== effects.mismatchKey) {
+        await abort(
+          "aborted",
+          `unacknowledged-mismatch:${effects.mismatches.map((m) => m.field).join(",")}`,
+          { gateFailed: "mismatch-ack" },
+        );
+        continue;
+      }
+
+      const otherOriginal = buildNetixlanPutPayload(freshOtherRes.row);
       const otherNeutralized = { ...otherOriginal };
       const candidateV4 = String(candidate.ipv4 || "").trim();
       const candidateV6Norm = normalizeIpv6ForCompare(candidate.ipv6 || "");
@@ -4575,7 +4638,7 @@
       }
 
       if (neutralizeChanged) {
-        const otherUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${candidate.otherRow.id}`;
+        const otherUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${freshOtherRes.row.id}`;
         const neutralizeRes = await pdbPost(otherUrl, "PUT", otherNeutralized, { contentType: "application/json", retries: 1 });
         const neutralizeOk = Number(neutralizeRes?.status || 0) >= 200 && Number(neutralizeRes?.status || 0) < 300;
         if (!neutralizeOk) {
@@ -4592,17 +4655,23 @@
         }
       }
 
-      const putBody = buildNetixlanPutPayload(candidate.keeperRow);
+      // Absorb before the DELETE: any preserved field the doomed row carries
+      // and the keeper lacks is copied over, because the DELETE is about to
+      // destroy its only carrier. IPs are set explicitly from the IX-F-
+      // confirmed pair, which is why summarizeIxfMergeEffects skips both
+      // families. Disagreements are not absorbed -- the keeper's value stands,
+      // and the admin has already acknowledged the loss above.
+      const putBody = { ...buildNetixlanPutPayload(freshKeeperRes.row), ...effects.merge };
       putBody.ipaddr4 = candidate.ipv4;
       putBody.ipaddr6 = candidate.ipv6;
-      const putUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${candidate.keeperRow.id}`;
+      const putUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${freshKeeperRes.row.id}`;
       const putResult = await pdbPost(putUrl, "PUT", putBody, { contentType: "application/json", retries: 1 });
       const putOk = Number(putResult?.status || 0) >= 200 && Number(putResult?.status || 0) < 300;
       if (!putOk) {
         let rollbackStatus = 0;
         let rollbackError = "";
         if (neutralizeChanged) {
-          const otherUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${candidate.otherRow.id}`;
+          const otherUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${freshOtherRes.row.id}`;
           const rollbackRes = await pdbPost(otherUrl, "PUT", otherOriginal, { contentType: "application/json", retries: 1 });
           rollbackStatus = Number(rollbackRes?.status || 0);
           const rollbackOk = rollbackStatus >= 200 && rollbackStatus < 300;
@@ -4621,7 +4690,29 @@
         if (IXF_MEMBER_APPLY_DELAY_MS > 0) await new Promise((r) => setTimeout(r, IXF_MEMBER_APPLY_DELAY_MS));
         continue;
       }
-      const delUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${candidate.otherRow.id}`;
+      // Verify the keeper actually holds everything before destroying the only
+      // other copy. Same discipline as applyConflictDeletes: a PUT that
+      // returned 2xx but did not persist a field must not be followed by a
+      // DELETE, because the doomed row is the last carrier.
+      const verifyRes = await fetchNetixlanRowById(freshKeeperRes.row.id);
+      if (verifyRes.error || !verifyRes.row) {
+        await abort("keeper-verify-failed", verifyRes.error || "no-row");
+        continue;
+      }
+      const wanted = { ...effects.merge, ipaddr4: candidate.ipv4, ipaddr6: candidate.ipv6 };
+      const mismatched = [];
+      for (const [field, want] of Object.entries(wanted)) {
+        const got = verifyRes.row[field];
+        if (normalizeNetixlanFieldForCompare(field, want) !== normalizeNetixlanFieldForCompare(field, got)) {
+          mismatched.push(field);
+        }
+      }
+      if (mismatched.length > 0) {
+        await abort("keeper-verify-failed", `mismatch:${mismatched.join(",")}`);
+        continue;
+      }
+
+      const delUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${freshOtherRes.row.id}`;
       const delResult = await pdbPost(delUrl, "DELETE", "", { contentType: "application/json", retries: 1 });
       const delOk = Number(delResult?.status || 0) >= 200 && Number(delResult?.status || 0) < 300;
       const outcome = {
@@ -4775,14 +4866,75 @@
 
     let candidates = [];
     let ixfUrlInUse = "";
+    // Kept at modal scope so applyIxfMerges can re-confirm each pair against
+    // the same IX-F data at write time, not just at render time.
+    let ixfMap = null;
     let cancelSignal = { cancelled: false };
+
+    /**
+     * Builds the "Merge effect" cell: what the keeper absorbs, and any field
+     * both rows disagree on, with the acknowledgement the admin must tick.
+     * Purpose: Put the consequence of the DELETE in front of the admin before
+     * Apply, instead of leaving it to the changelog afterwards.
+     * Necessity: v4-only and v6-only rows are created independently and
+     * commonly disagree on speed or is_rs_peer. Hard-failing every such pair
+     * would block most real merges; merging silently would discard the doomed
+     * row's value with no record. Neither is the admin's call to skip.
+     * @ai Preserve the acknowledgement gate -- applyIxfMerges aborts any
+     *   candidate whose acknowledgedMismatchKey does not match what it re-reads.
+     * @param {object} candidate - Annotated merge candidate.
+     * @returns {HTMLElement} Table cell.
+     */
+    function buildMergeEffectCell(candidate) {
+      const cell = document.createElement("td");
+      Object.assign(cell.style, { padding: "5px 8px", borderBottom: "1px solid #eee", verticalAlign: "top" });
+      const effects = candidate.effects || { merge: {}, mismatches: [], mismatchKey: "" };
+
+      const absorbedFields = Object.keys(effects.merge);
+      if (absorbedFields.length > 0) {
+        const line = document.createElement("div");
+        line.textContent = `absorbs ${absorbedFields.join(", ")}`;
+        Object.assign(line.style, { color: "#15803d" });
+        cell.appendChild(line);
+      }
+
+      if (effects.mismatches.length === 0) {
+        if (absorbedFields.length === 0) {
+          const line = document.createElement("div");
+          line.textContent = "no data loss";
+          Object.assign(line.style, { color: "#666" });
+          cell.appendChild(line);
+        }
+        return cell;
+      }
+
+      for (const mismatch of effects.mismatches) {
+        const line = document.createElement("div");
+        line.textContent = `${mismatch.field}: keeper=${String(mismatch.keeper)} doomed=${String(mismatch.doomed)} (doomed value is discarded)`;
+        Object.assign(line.style, { color: "#b91c1c" });
+        cell.appendChild(line);
+      }
+
+      const ackLabel = document.createElement("label");
+      Object.assign(ackLabel.style, { display: "block", marginTop: "3px", color: "#b91c1c", cursor: "pointer" });
+      const ack = document.createElement("input");
+      ack.type = "checkbox";
+      ack.checked = candidate.acknowledgedMismatchKey === effects.mismatchKey;
+      ack.addEventListener("change", () => {
+        candidate.acknowledgedMismatchKey = ack.checked ? effects.mismatchKey : "";
+      });
+      ackLabel.appendChild(ack);
+      ackLabel.appendChild(document.createTextNode(" I reviewed this mismatch"));
+      cell.appendChild(ackLabel);
+      return cell;
+    }
 
     /** Re-renders the candidate table. */
     function render() {
       table.textContent = "";
       const thead = document.createElement("thead");
       const trh = document.createElement("tr");
-      for (const label of ["✓", "ASN", "Shape", "Keeper id", "Other id", "IPv4", "IPv6", "Status"]) {
+      for (const label of ["✓", "ASN", "Shape", "Keeper id", "Other id", "IPv4", "IPv6", "Merge effect", "Status"]) {
         const th = document.createElement("th");
         th.textContent = label;
         Object.assign(th.style, { textAlign: "left", padding: "6px 8px", borderBottom: "1px solid #ccc", background: "#fafafa", position: "sticky", top: "0" });
@@ -4805,7 +4957,7 @@
           shapeCell.title = "v4-only keeper + dual stale row: absorb v6, DELETE the stale row whose v4 disagrees with IX-F.";
           Object.assign(shapeCell.style, { color: "#b45309", fontWeight: "600" });
         }
-        tr.append(cbCell, td(candidate.asn), shapeCell, td(candidate.keeperRow.id), td(candidate.otherRow.id), td(candidate.ipv4 || ""), td(candidate.ipv6 || ""), td(candidate.applyStatus || "ready"));
+        tr.append(cbCell, td(candidate.asn), shapeCell, td(candidate.keeperRow.id), td(candidate.otherRow.id), td(candidate.ipv4 || ""), td(candidate.ipv6 || ""), buildMergeEffectCell(candidate), td(candidate.applyStatus || "ready"));
         tbody.appendChild(tr);
       }
       table.appendChild(tbody);
@@ -4835,9 +4987,23 @@
         status.textContent = "PDB netixlan fetch failed.";
         candidates = []; render(); return;
       }
-      const ixfMap = extractIxfAsnIpPairs(ixfResult.data);
-      candidates = findIxfMergeCandidates(rows, ixfMap).map((c) => ({ ...c, selected: true, applyStatus: "" }));
-      status.textContent = `ixlan #${ixlanId} — ${rows.length} PDB rows • ${ixfMap.size} IX-F ASNs • ${candidates.length} mergeable split pair(s)`;
+      ixfMap = extractIxfAsnIpPairs(ixfResult.data);
+      candidates = findIxfMergeCandidates(rows, ixfMap).map((c) => {
+        const effects = summarizeIxfMergeEffects(c);
+        return {
+          ...c,
+          selected: true,
+          applyStatus: "",
+          effects,
+          // Set only when the admin ticks the row's acknowledgement box, and
+          // compared by value at apply time so a disagreement that changed in
+          // between re-prompts instead of riding on the old tick.
+          acknowledgedMismatchKey: "",
+        };
+      });
+      const reviewCount = candidates.filter((c) => c.effects.mismatches.length > 0).length;
+      status.textContent = `ixlan #${ixlanId} — ${rows.length} PDB rows • ${ixfMap.size} IX-F ASNs • ${candidates.length} mergeable split pair(s)`
+        + (reviewCount ? ` • ${reviewCount} need mismatch review` : "");
       render();
     }
 
@@ -4845,9 +5011,25 @@
     applyBtn.addEventListener("click", async () => {
       const selected = candidates.filter((c) => c.selected);
       if (selected.length === 0) { status.textContent = "Nothing selected to apply."; return; }
+      // Refuse the whole batch rather than silently skipping rows: a partial
+      // apply that quietly dropped the rows needing review would read as
+      // success. applyIxfMerges re-checks this against live data anyway; this
+      // is the early, legible failure.
+      const unreviewed = selected.filter(
+        (c) => c.effects.mismatches.length > 0 && c.acknowledgedMismatchKey !== c.effects.mismatchKey,
+      );
+      if (unreviewed.length > 0) {
+        status.textContent = `Review the mismatch on ${unreviewed.length} selected row(s) first `
+          + `(AS${unreviewed.map((c) => c.asn).join(", AS")}), or unselect them.`;
+        return;
+      }
+      const absorbing = selected.filter((c) => Object.keys(c.effects.merge).length > 0).length;
+      const discarding = selected.filter((c) => c.effects.mismatches.length > 0).length;
       const confirmed = window.confirm(
         `Merge ${selected.length} split netixlan pair(s)?\n` +
-        `Each merge will pre-clear the sibling transfer IP if needed, PUT both IPs onto the older (lower-id) row, then DELETE the sibling.\n` +
+        `Each merge re-reads both rows, pre-clears the sibling transfer IP if needed, PUTs both IPs onto the older (lower-id) row, verifies it, then DELETEs the sibling.\n` +
+        `Absorbing fields from the deleted row: ${absorbing}\n` +
+        `Discarding a disagreeing value you acknowledged: ${discarding}\n` +
         `ixlan: #${ixlanId}\n` +
         `IX-F source: ${ixfUrlInUse}`,
       );
@@ -4855,17 +5037,20 @@
       applyBtn.disabled = true; refreshBtn.disabled = true;
       cancelApplyBtn.style.display = ""; cancelSignal = { cancelled: false };
       cancelApplyBtn.onclick = () => { cancelSignal.cancelled = true; };
-      const outcomes = await applyIxfMerges(selected, cancelSignal, (candidate, update) => {
+      const outcomes = await applyIxfMerges(selected, ixfMap, cancelSignal, (candidate, update) => {
         candidate.applyStatus = update.status === "in-flight" ? "applying…" : `${update.status}${update.httpStatus ? ` (${update.httpStatus})` : ""}${update.error ? ` — ${update.error}` : ""}`;
         render();
       });
       recordIxfMergeAuditEntry({ ixlanId, ixfUrl: ixfUrlInUse, outcomes });
       applyBtn.disabled = false; refreshBtn.disabled = false; cancelApplyBtn.style.display = "none";
-      const ok = outcomes.filter((o) => o.status === "done").length;
-      const preclearErr = outcomes.filter((o) => o.status === "preclear-failed").length;
-      const putErr = outcomes.filter((o) => o.status === "put-failed").length;
-      const delErr = outcomes.filter((o) => o.status === "delete-failed").length;
-      status.textContent = `Apply complete — ok:${ok} preclear-failed:${preclearErr} put-failed:${putErr} delete-failed:${delErr} cancelled:${outcomes.filter((o) => o.status === "cancelled").length}`;
+      const count = (s) => outcomes.filter((o) => o.status === s).length;
+      status.textContent = `Apply complete — ok:${count("done")} aborted:${count("aborted")} `
+        + `preclear-failed:${count("preclear-failed")} put-failed:${count("put-failed")} `
+        + `keeper-verify-failed:${count("keeper-verify-failed")} delete-failed:${count("delete-failed")} `
+        + `cancelled:${count("cancelled")}`;
+      // Aborted rows are the ones a live re-read disqualified; refresh so the
+      // table reflects why rather than leaving a stale "ready".
+      if (count("aborted") > 0) await refresh();
     });
 
     await refresh();
@@ -4988,13 +5173,15 @@
    *
    * Skips the conflicting family entirely — the renumber flow already
    * gives the keeper its post-renumber IP on that family (gates 3 & 4
-   * verify this).
+   * verify this). `family: "both"` skips ipaddr4 and ipaddr6 together, for
+   * the IX-F merge path, which writes both addresses onto the keeper from
+   * the IX-F-confirmed pair and so owns neither field's merge decision.
    *
    * Purpose: Prevent IP-family / attribute data loss when a DELETE would
    * otherwise destroy the only carrier of a value (operator-discovered
    * bug: ixlan #3990, doomed #93168 IPv6 would have been lost).
    * @ai Preserve normalization/parsing rules and backward-compatible output formats.
-   * @param {{ doomedRow: object, keeperRow: object, family: 4|6 }} args
+   * @param {{ doomedRow: object, keeperRow: object, family: 4|6|"both" }} args
    * @returns {{ merge: object, blockers: Array<{ field: string, kind: string, doomed: *, keeper: * }> }}
    */
   function buildMergePlan(args) {
@@ -5002,9 +5189,11 @@
     const merge = {};
     const blockers = [];
     if (!doomedRow || !keeperRow) return { merge, blockers };
-    const conflictingFamilyField = family === 4 ? "ipaddr4" : "ipaddr6";
+    const skippedFamilyFields = family === "both"
+      ? ["ipaddr4", "ipaddr6"]
+      : [family === 4 ? "ipaddr4" : "ipaddr6"];
     for (const field of PRESERVED_NETIXLAN_FIELDS) {
-      if (field === conflictingFamilyField) continue;
+      if (skippedFamilyFields.includes(field)) continue;
       const d = doomedRow[field];
       const k = keeperRow[field];
       const dHas = isMergeableValue(d);
@@ -5026,6 +5215,42 @@
       }
     }
     return { merge, blockers };
+  }
+
+  /**
+   * Summarizes what an IX-F merge would absorb from the doomed row and what
+   * it would discard.
+   * Purpose: Give the audit modal a per-candidate answer to "does this DELETE
+   * destroy anything?" so mismatches can be shown before Apply rather than
+   * discovered in the changelog afterwards.
+   * Necessity: applyIxfMerges used to PUT only ipaddr4/ipaddr6 onto the
+   * keeper, so speed/is_rs_peer/bfd_support/operational/notes carried solely
+   * by the doomed row were destroyed by the DELETE with nothing recorded.
+   * Split v4-only/v6-only rows are created independently and disagree often,
+   * so a mismatch is a normal finding to review, not an error.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * @param {{ keeperRow: object, otherRow: object }} candidate - Merge candidate.
+   * @returns {{ merge: object, mismatches: Array<{ field: string, keeper: *, doomed: * }>,
+   *             mismatchKey: string }} Fields to absorb, disagreements to review,
+   *   and a stable key identifying the disagreement set.
+   */
+  function summarizeIxfMergeEffects(candidate) {
+    const plan = buildMergePlan({
+      doomedRow: candidate?.otherRow,
+      keeperRow: candidate?.keeperRow,
+      family: "both",
+    });
+    const mismatches = plan.blockers
+      .filter((b) => b.kind === "field-mismatch")
+      .map((b) => ({ field: b.field, keeper: b.keeper, doomed: b.doomed }));
+    // Stable identity for the disagreement set, so an acknowledgement made
+    // against what the admin saw cannot silently carry over to a different
+    // set discovered during the live re-read at apply time.
+    const mismatchKey = mismatches
+      .map((m) => `${m.field}=${String(m.keeper)}|${String(m.doomed)}`)
+      .sort()
+      .join(";");
+    return { merge: plan.merge, mismatches, mismatchKey };
   }
 
   /**
@@ -12697,6 +12922,8 @@
       extractIxfAsnIpPairs,
       findIxfMergeCandidates,
       buildMergePlan,
+      summarizeIxfMergeEffects,
+      applyIxfMerges,
       verifyConflictGates,
       classifyNetworkNamePattern,
       buildNetworkNamePatternSummary,

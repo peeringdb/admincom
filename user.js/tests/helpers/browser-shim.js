@@ -296,7 +296,22 @@ function makeFakeFetch(fetchMap, calls) {
       return makeFakeResponse(404, {});
     }
 
-    const entry = fetchMap[key];
+    let entry = fetchMap[key];
+
+    // A { __sequence: [...] } entry serves its elements in order, repeating
+    // the last one once exhausted. Read-modify-verify flows need this: CP's
+    // IX-F merge GETs the keeper, PUTs it, then GETs it again to confirm the
+    // write landed before deleting the only other copy -- and a single static
+    // response per URL cannot express "different after the write". Each
+    // element is itself a bare body or a __response descriptor.
+    if (entry && typeof entry === 'object' && Array.isArray(entry.__sequence)) {
+      const seq = entry.__sequence;
+      if (seq.length === 0) return makeFakeResponse(404, {});
+      const index = Math.min(entry.__served || 0, seq.length - 1);
+      entry.__served = (entry.__served || 0) + 1;
+      entry = seq[index];
+    }
+
     if (entry && typeof entry === 'object' && entry.__response === true) {
       return makeFakeResponse(
         typeof entry.status === 'number' ? entry.status : 200,
