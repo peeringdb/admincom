@@ -156,6 +156,15 @@
   const WL_MESSAGE_LIST_SELECTOR = "div[data-ticket-message-list-scrolled]";
   const WL_SUBJECT_SELECTOR = '[data-dp-name="ticketHeader-subject-title"] h1';
   const WL_SUGGEST_REGEX = /\[SUGGEST\]/i;
+  // A hostname is only ever emitted into a shell command an admin pastes into a
+  // root prompt, and the `website` field it derives from is unapproved submitter
+  // input (fetchPeeringDbObjectForWhitelist deliberately queries without a status
+  // filter so `pending` records resolve). The WHATWG URL parser tolerates shell
+  // metacharacters in a hostname -- "$(", backticks, ";" and '"' all survive
+  // new URL() -- so parseability is not a safety property. Require strict LDH
+  // labels instead: a-z 0-9 and interior hyphens, at least two dot-separated
+  // labels, each 1-63 chars. Anything else is refused rather than escaped.
+  const WL_HOSTNAME_REGEX = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 
   // ── IXLAN Peer Renumber launcher ─────────────────────────────────────────
   // Detects "<old CIDR> -> <new CIDR>" pairs in the active ticket and opens
@@ -2766,19 +2775,29 @@
    * Purpose: Normalize raw website field values into parseable hostnames; accepts
    * bare hostnames (e.g. "example.com") or full URLs.
    * @ai Preserve normalization/parsing rules and backward-compatible output formats.
-   * @param {string} websiteValue - Raw `website` field from PeeringDB.
-   * @returns {string} Lowercased hostname, or empty string when unparseable.
+   * Security: The result is interpolated into a `pihole allow` command the admin
+   * copies into a root shell, so this is a trust boundary, not just a parser.
+   * Every returned value must satisfy WL_HOSTNAME_REGEX; anything that does not
+   * yields "" so no command is offered at all. There is deliberately no
+   * best-effort fallback -- an input the URL parser rejects is less trustworthy
+   * than one it accepts, not more.
+   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   *     Do NOT reintroduce a string-slicing fallback for unparseable input.
+   * @param {string} websiteValue - Raw `website` field from PeeringDB (untrusted).
+   * @returns {string} Lowercased hostname, or empty string when unparseable or
+   *   not a syntactically valid hostname.
    */
   function extractWhitelistHostname(websiteValue) {
     const raw = String(websiteValue || "").trim();
     if (!raw) return "";
     const candidate = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    let hostname = "";
     try {
-      const url = new URL(candidate);
-      return String(url.hostname || "").toLowerCase();
+      hostname = String(new URL(candidate).hostname || "").toLowerCase();
     } catch (_error) {
-      return raw.replace(/^https?:\/\//i, "").split("/")[0].toLowerCase();
+      return "";
     }
+    return WL_HOSTNAME_REGEX.test(hostname) ? hostname : "";
   }
 
   /**
@@ -2792,13 +2811,19 @@
    */
   function deriveWhitelistCandidates(hostname) {
     const host = String(hostname || "").trim().toLowerCase();
-    if (!host || !host.includes(".")) return [];
+    // Defence in depth: callers should already have passed this through
+    // extractWhitelistHostname, but this function is what feeds
+    // buildWhitelistCommand, so it re-checks rather than trusting its input.
+    if (!WL_HOSTNAME_REGEX.test(host)) return [];
 
     let registrable = host;
     try {
       if (typeof psl === "object" && typeof psl.get === "function") {
         const resolved = psl.get(host);
-        if (resolved && typeof resolved === "string") registrable = resolved.toLowerCase();
+        // psl is a third-party @require'd from a CDN and is being handed an
+        // untrusted string, so its output is validated exactly like its input.
+        const lowered = resolved && typeof resolved === "string" ? resolved.toLowerCase() : "";
+        if (WL_HOSTNAME_REGEX.test(lowered)) registrable = lowered;
       }
     } catch (_error) {
       // psl unavailable or threw — fall back to hostname as registrable.
@@ -2808,7 +2833,7 @@
     const seen = new Set();
     const result = [];
     for (const c of candidates) {
-      if (!c || !c.includes(".")) continue;
+      if (!WL_HOSTNAME_REGEX.test(c)) continue;
       if (seen.has(c)) continue;
       seen.add(c);
       result.push(c);
@@ -3706,6 +3731,7 @@
       hydrateAsnLinkLabel,
       parseWhitelistChangeHref,
       extractWhitelistHostname,
+      deriveWhitelistCandidates,
       linkifyText,
       findProbableStandaloneAsnHits,
       buildWhitelistCommand,

