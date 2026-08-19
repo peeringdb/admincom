@@ -3718,6 +3718,10 @@
   if (typeof window !== "undefined" && window.__PDB_TEST__) {
     window.__pdbDpTestHooks__ = {
       SCRIPT_VERSION,
+      // From lib/admincom-common.js, inlined identically into all three scripts.
+      // Exported here so the retry policy can be tested against the real shipped
+      // code rather than a re-implementation; DP is simply the smallest host.
+      fetchWithRetry,
       parsePeeringDbEntityFromHref,
       hydrateExistingPeeringDbAnchor,
       ensureOrgShortcut,
