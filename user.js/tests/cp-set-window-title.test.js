@@ -129,3 +129,14 @@ test('CP generic fallback normalizes titles outside peeringdb_server', async (t)
     assert.equal(titleFor({ pathname: '/cp/' }, { title: '' }), '');
   });
 });
+
+test('CP SCRIPT_VERSION comes from GM_info, not a hard-coded literal', () => {
+  // Guards the change that removed the hand-maintained version constant: it had
+  // drifted two patch releases behind the @version header while being stamped
+  // into the renumber / IX-F / conflict-resolve audit logs, so DELETEs were
+  // attributed to a build that never ran. The shim stubs GM_info.script.version
+  // as '0.0.0-test', so a regression to a literal -- or a silent fall back to
+  // "0.0.0-unknown" because GM_info went missing -- fails right here.
+  const { hooks } = loadScript(SCRIPT_PATH, { hooksKey: '__pdbCpTestHooks__', pathname: '/cp/' });
+  assert.equal(hooks.SCRIPT_VERSION, '0.0.0-test');
+});
