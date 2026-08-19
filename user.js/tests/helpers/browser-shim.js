@@ -165,6 +165,11 @@ function loadScript(scriptPath, opts) {
     localStorage = makeFakeStorage(),
   } = opts;
 
+  // Every fake-fetch request lands here in order. Returned from loadScript so a
+  // test can assert request count and method -- the only observable difference
+  // between one request and a retried one.
+  const fetchCalls = [];
+
   const source = fs.readFileSync(scriptPath, 'utf-8');
 
   const fakeDocument = {
@@ -207,7 +212,7 @@ function loadScript(scriptPath, opts) {
     URL,
     URLSearchParams,
     AbortController,
-    fetch: makeFakeFetch(fetchMap),
+    fetch: makeFakeFetch(fetchMap, fetchCalls),
     MutationObserver: class {
       observe() {}
       disconnect() {}
@@ -231,7 +236,30 @@ function loadScript(scriptPath, opts) {
     throw new Error(`${path.basename(scriptPath)} did not expose window.${hooksKey} -- was window.__PDB_TEST__ wired up?`);
   }
 
-  return { window: sandbox, document: fakeDocument, hooks };
+  return { window: sandbox, document: fakeDocument, hooks, fetchCalls };
+}
+
+/**
+ * Builds a fake response object with headers real enough for production code
+ * to read. The previous version exposed only forEach(), so any code calling
+ * response.headers.get() -- which lib/admincom-common.js's fetchWithRetry does
+ * for Retry-After -- threw TypeError before its logic could be reached. That
+ * is why the retry/backoff path had no coverage: not oversight, but a harness
+ * that could not express the case.
+ */
+function makeFakeResponse(status, body, headers = {}) {
+  const lowered = new Map(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), String(v)]));
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: {
+      get: (name) => (lowered.has(String(name).toLowerCase()) ? lowered.get(String(name).toLowerCase()) : null),
+      has: (name) => lowered.has(String(name).toLowerCase()),
+      forEach: (cb) => lowered.forEach((v, k) => cb(v, k)),
+    },
+    json: async () => body,
+    text: async () => JSON.stringify(body),
+  };
 }
 
 /**
@@ -240,24 +268,43 @@ function loadScript(scriptPath, opts) {
  * Purpose: Let API-calling functions run for real (no manual mocking of the
  * function itself) while keeping tests fully offline/deterministic -- no
  * accidental live traffic, no network flakiness.
+ *
+ * A fetchMap value is normally the JSON body to return with a 200. To model a
+ * failure or a header-bearing response, use the descriptor form instead:
+ *
+ *   { __response: true, status: 503, body: {}, headers: { 'Retry-After': '1' } }
+ *
+ * Every call is appended to `calls` as { url, method, body, headers }, so a
+ * test can assert *how many* requests a function issued and with which method
+ * -- the only way to observe retry behavior, since a retried request is
+ * indistinguishable from a single one by its return value alone.
+ *
+ * @param {object} fetchMap - URL -> JSON body, or URL -> response descriptor.
+ * @param {object[]} calls - Array the fake appends each request to, in order.
  */
-function makeFakeFetch(fetchMap) {
-  return async (url) => {
+function makeFakeFetch(fetchMap, calls) {
+  return async (url, init = {}) => {
     const key = String(url);
+    calls.push({
+      url: key,
+      method: String(init.method || 'GET').toUpperCase(),
+      body: init.body,
+      headers: init.headers,
+    });
+
     if (!Object.prototype.hasOwnProperty.call(fetchMap, key)) {
-      return {
-        ok: false,
-        status: 404,
-        headers: { forEach() {} },
-        json: async () => ({}),
-      };
+      return makeFakeResponse(404, {});
     }
-    return {
-      ok: true,
-      status: 200,
-      headers: { forEach() {} },
-      json: async () => fetchMap[key],
-    };
+
+    const entry = fetchMap[key];
+    if (entry && typeof entry === 'object' && entry.__response === true) {
+      return makeFakeResponse(
+        typeof entry.status === 'number' ? entry.status : 200,
+        'body' in entry ? entry.body : {},
+        entry.headers || {},
+      );
+    }
+    return makeFakeResponse(200, entry);
   };
 }
 
@@ -282,4 +329,4 @@ function makeFakeStorage() {
   };
 }
 
-module.exports = { loadScript, el, FakeElement, FakeTextNode, FakeDocumentFragment, makeFakeStorage };
+module.exports = { loadScript, el, FakeElement, FakeTextNode, FakeDocumentFragment, makeFakeStorage, makeFakeResponse };
