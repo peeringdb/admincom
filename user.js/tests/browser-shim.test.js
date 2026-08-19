@@ -82,3 +82,50 @@ test('every request is recorded with its method, so retries are observable', asy
   assert.equal(fetchCalls[0].url, url);
   assert.equal(fetchCalls[2].body, '{"speed":1000}');
 });
+
+test('a __sequence entry serves its responses in order, then repeats the last', async () => {
+  // Read-modify-verify flows need a URL to answer differently before and
+  // after a write; CP's IX-F merge re-reads the keeper to confirm a PUT
+  // landed before deleting the only other copy.
+  const url = 'https://www.peeringdb.com/api/net/9';
+  const { window } = loadScript(SCRIPT_PATH, {
+    hooksKey: '__pdbDpTestHooks__',
+    pathname: '/app/ticket',
+    fetchMap: {
+      [url]: {
+        __sequence: [
+          { data: [{ id: 9, name: 'before' }] },
+          { data: [{ id: 9, name: 'after' }] },
+        ],
+      },
+    },
+  });
+
+  assert.equal((await (await window.fetch(url)).json()).data[0].name, 'before');
+  assert.equal((await (await window.fetch(url)).json()).data[0].name, 'after');
+  // Exhausted: the last element repeats rather than 404ing, so a flow that
+  // re-reads more than the fixture anticipated does not fail confusingly.
+  assert.equal((await (await window.fetch(url)).json()).data[0].name, 'after');
+});
+
+test('a __sequence element may itself be a response descriptor', async () => {
+  const url = 'https://www.peeringdb.com/api/net/10';
+  const { window } = loadScript(SCRIPT_PATH, {
+    hooksKey: '__pdbDpTestHooks__',
+    pathname: '/app/ticket',
+    fetchMap: {
+      [url]: {
+        __sequence: [
+          { __response: true, status: 503, body: {}, headers: { 'Retry-After': '0' } },
+          { data: [{ id: 10 }] },
+        ],
+      },
+    },
+  });
+
+  const first = await window.fetch(url);
+  assert.equal(first.status, 503);
+  assert.equal(first.headers.get('retry-after'), '0');
+  const second = await window.fetch(url);
+  assert.equal(second.status, 200);
+});
