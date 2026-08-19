@@ -64,7 +64,11 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.223";
+  // Sourced from the @version header at install time (Tampermonkey always injects
+  // GM_info, no @grant needed) so it can never drift from the shipped version.
+  // The fallback only engages outside Tampermonkey (e.g. Greasemonkey 4 exposes
+  // GM.info) and is deliberately unmistakable if it ever reaches an audit log.
+  const SCRIPT_VERSION = typeof GM_info !== "undefined" ? GM_info.script.version : "0.0.0-unknown";
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
   const SHARED_USER_AGENT_STORAGE_KEY = "pdbAdmincom.userAgent";
@@ -11102,6 +11106,7 @@
   // @ai Preserve execution ordering, locks, and route/module boundaries.
   if (typeof window !== "undefined" && window.__PDB_TEST__) {
     window.__pdbCpTestHooks__ = {
+      SCRIPT_VERSION,
       getRouteContext,
       modules,
       getOrganizationName,
