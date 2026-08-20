@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name            PeeringDB DP - Consolidated Tools
 // @namespace       https://www.peeringdb.com/
-// @version         1.7.12
+// @version         1.7.13
 // @description     Consolidated DeskPro tools: linkifies/enriches PeeringDB links (ASN/IP/IX/NET/FAC/Carrier), adds an owning-org shortcut link beside each, copies mailto addresses, normalizes PeeringDB CP double-slash links, generates pihole whitelist commands for IX/NET/FAC/Carrier approval tickets
 // @author          <chriztoffer@peeringdb.com>
 // @match           https://peeringdb.deskpro.com/app*
@@ -1581,6 +1581,7 @@
   /**
    * Strips trailing link-emoji tokens from visible anchor text.
    * Purpose: Prevent re-decoration cycles from treating prior emoji icons as label content.
+   * @staged wip — anchor-label emoji cleanup for re-decoration; wire into hydrateExistingPeeringDbAnchor when anchor-label rewriting returns there.
    * @param {string} value - Raw anchor text.
    * @returns {string} Text without trailing link-emoji tokens.
    */
