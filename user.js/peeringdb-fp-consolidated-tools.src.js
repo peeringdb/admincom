@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.1.40
+// @version      1.1.41
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
@@ -133,7 +133,6 @@
 
   /**
    * Reads JSON feature-flag overrides from localStorage.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {object} Parsed override map, or empty object when unavailable/invalid.
    */
   function getFeatureFlagOverrides() {
@@ -149,7 +148,6 @@
 
   /**
    * Returns resolved feature-flag value using defaults plus localStorage overrides.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} flagName - Flag key inside FEATURE_FLAGS.
    * @returns {boolean} Resolved boolean state.
    */
@@ -166,7 +164,6 @@
 
   /**
    * Returns feature-flag default/override/resolved state.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} flagName - Flag key inside FEATURE_FLAGS.
    * @returns {{ defaultValue: boolean, overrideValue: boolean|null, enabled: boolean }|null} Flag state.
    */
@@ -182,7 +179,6 @@
 
   /**
    * Sets a feature-flag override and removes redundant entries.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} flagName - Flag key inside FEATURE_FLAGS.
    * @param {boolean} enabled - Resolved target state.
    */
@@ -210,7 +206,6 @@
 
   /**
    * Removes all feature-flag overrides and restores defaults.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function resetFeatureFlagOverrides() {
     try {
@@ -231,7 +226,6 @@
    * Purpose: Allows individual modules to be toggled on/off without code changes.
    * Necessity: Provides user-level module control for the modular architecture.
    * Supports both JSON array and comma-separated formats for backward compatibility.
-   * @ai Preserve execution ordering, locks, and route/module boundaries.
    */
   function getDisabledModules() {
     const raw = String(window.localStorage?.getItem(DISABLED_MODULES_STORAGE_KEY) || "").trim();
@@ -258,7 +252,6 @@
    * Checks if a module is enabled (not in the disabled set).
    * Purpose: Gate-keeper for module execution in dispatchModules().
    * Necessity: Implements selective module control without removing code.
-   * @ai Preserve execution ordering, locks, and route/module boundaries.
    */
   function isModuleEnabled(moduleId, disabledModules) {
     if (!moduleId) return false;
@@ -268,7 +261,6 @@
 
   /**
    * Returns true when Admin Ops mode is enabled via localStorage.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function isAdminOpsModeEnabled() {
     if (!isFeatureEnabled("adminOpsMode")) return false;
@@ -277,7 +269,6 @@
 
   /**
    * Shows a user-facing notification with a console fallback.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function notifyUser({ title, text, timeout = 2500 }) {
     if (typeof GM_notification === "function") {
@@ -296,7 +287,6 @@
    * Resolves an entity's API JSON payload via the shared cross-script cache
    * (see lib/admincom-common.js -- CP and FP genuinely share this, both
    * running on the peeringdb.com origin), falling back to a live fetch.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {object} ctx - Route context, as returned by getRouteContext().
    * @returns {Promise<object|null>} Resolved payload object or null.
    */
@@ -330,7 +320,6 @@
    * apiPayloadCache./apiPayloadTabCache. prefixes), now replaced by the
    * shared cross-script cache. Safe to call on every init -- becomes a no-op
    * once old entries are gone.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    */
   function migrateLegacyApiPayloadCacheKeys() {
     try {
@@ -371,7 +360,6 @@
    * Purpose: Provides a unique identifier for correlating requests within a session.
    * Necessity: Enables server-side analytics and request tracking without exposing device fingerprint.
    * UUID persists across reloads and tabs via shared domain storage.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    */
   function getSessionUuid() {
     const sessionKey = SESSION_UUID_STORAGE_KEY;
@@ -391,7 +379,6 @@
    * Purpose: Creates a privacy-preserving identifier for requests from untrusted domains.
    * Necessity: Balances analytics tracking with user privacy for non-trusted networks.
    * Returns a 16-character hex string derived from UA, platform, language, CPU count, memory.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function computeClientFingerprint() {
     const parts = [
@@ -417,7 +404,6 @@
    * Necessity: Distinguishes between trusted (localhost, peeringdb.com) and untrusted domains
    * to decide whether to use full browser info or privacy-preserving fingerprint.
    * Also normalizes IPv6 URIs with bracket notation ([::1]) for transparent matching.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function isDomainTrusted(domain) {
     if (!domain) return false;
@@ -448,7 +434,6 @@
    * Necessity: For trusted domains (development, peeringdb.com), includes browser/platform for debugging;
    * for untrusted domains, uses fingerprint only to minimize data exposure.
    * Includes session UUID in both cases for request correlation.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function buildTrustBasedUserAgent(domain) {
     const isTrusted = isDomainTrusted(domain);
@@ -467,7 +452,6 @@
    * Retrieves explicit or auto-computed User-Agent for this session.
    * Purpose: Provide flexible UA configuration with fallback to trust-based generation.
    * Necessity: Allows manual override via localStorage while auto-computing from domain trust.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    */
   function getCustomRequestUserAgent() {
     const sharedConfigured = String(window.localStorage?.getItem(SHARED_USER_AGENT_STORAGE_KEY) || "").trim();
@@ -477,7 +461,6 @@
 
   /**
    * Emits current User-Agent details when diagnostics are enabled.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {boolean} True when emitted.
    */
   function logCurrentUserAgentDebug() {
@@ -500,7 +483,6 @@
 
   /**
    * Emits debug diagnostics for outbound requests.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    */
   function logExternalRequestUserAgent(meta) {
     if (!isDebugEnabled()) return;
@@ -534,7 +516,6 @@
 
   /**
    * Stores the latest fetch failure details by URL for diagnostics.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    */
   function recordFetchFailure(url, details) {
     const key = String(url || "").trim();
@@ -548,7 +529,6 @@
 
   /**
    * Clears any stored fetch failure details for URL.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    */
   function clearFetchFailure(url) {
     const key = String(url || "").trim();
@@ -560,7 +540,6 @@
    * Constructs HTTP headers for Tampermonkey requests with User-Agent.
    * Purpose: Centralize header building for all script-initiated requests.
    * Necessity: Ensures consistent User-Agent and other important headers across all API calls.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    */
   function buildTampermonkeyRequestHeaders(baseHeaders = {}) {
     const headers = { ...baseHeaders };
@@ -578,7 +557,6 @@
 
   /**
    * Installs lightweight fetch instrumentation for debug diagnostics.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    */
   function installFetchDiagnostics() {
     if (fetchInstrumentationInstalled || typeof window.fetch !== "function") return;
@@ -643,7 +621,6 @@
 
   /**
    * Attempts to acquire a named action lock.
-   * @ai Preserve execution ordering, locks, and route/module boundaries.
    */
   function tryBeginActionLock(lockKey) {
     const normalizedKey = String(lockKey || "").trim();
@@ -657,7 +634,6 @@
 
   /**
    * Releases a previously acquired action lock.
-   * @ai Preserve execution ordering, locks, and route/module boundaries.
    */
   function endActionLock(lockKey) {
     const normalizedKey = String(lockKey || "").trim();
@@ -667,7 +643,6 @@
 
   /**
    * Runs async action while holding an action lock.
-   * @ai Preserve execution ordering, locks, and route/module boundaries.
    */
   async function withActionLock(lockKey, fn) {
     if (!tryBeginActionLock(lockKey)) {
@@ -685,7 +660,6 @@
 
   /**
    * Schedules keyed DOM updates and coalesces multiple writes into one frame.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function scheduleDomUpdate(key, fn) {
     const normalizedKey = String(key || "").trim();
@@ -715,7 +689,6 @@
    * Purpose: Provide route info to modules for conditional execution.
    * Necessity: Enables modules to match specific pages (e.g., /net/1234) and determine
    * whether to run. Used by all modules' match() function.
-   * @ai Preserve execution ordering, locks, and route/module boundaries.
    */
   function getRouteContext() {
     const path = window.location.pathname;
@@ -745,7 +718,6 @@
    * Convenience wrapper for querySelector.
    * Purpose: Reduce boilerplate for DOM querying throughout the script.
    * Necessity: Used extensively for finding form fields and toolbar elements.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function qs(selector, root = document) {
     if (!root || typeof root.querySelector !== "function") {
@@ -759,7 +731,6 @@
    * Convenience wrapper for querySelectorAll returning an array.
    * Purpose: Reduce repeated Array.from(querySelectorAll(...)) patterns in FP modules.
    * Necessity: Keeps small DOM iteration helpers aligned with CP utility parity.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function qsa(selector, root = document) {
     try {
@@ -773,7 +744,6 @@
    * Retrieves trimmed innerText from a selected element.
    * Purpose: Safe extraction of display text for form fields and data fields.
    * Necessity: Provides consistent empty-string fallback vs. throwing on missing elements.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getText(selector, root = document) {
     const el = qs(selector, root);
@@ -784,7 +754,6 @@
    * Retrieves trimmed value from form input elements (input, select, textarea).
    * Purpose: Unified value extraction that handles both .value property and data attributes.
    * Necessity: Normalizes form field reading across different input types.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getInputValue(selector, root = document) {
     const el = qs(selector, root);
@@ -799,7 +768,6 @@
 
   /**
    * Reads a normalized value from a data-edit field in the current page.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getDataEditValue(name, root = document) {
     const el = qs(`[data-edit-name="${name}"]`, root);
@@ -809,7 +777,6 @@
 
   /**
    * Parses a value into a finite number, returning null when invalid.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function toNumeric(value) {
     const n = Number(String(value || "").replace(/[^\d.-]/g, ""));
@@ -818,7 +785,6 @@
 
   /**
    * Resolves current entity type/id from route context, with ASN->network fallback.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getCurrentEntityTypeAndId(ctx = null) {
     const route = ctx || getRouteContext();
@@ -861,7 +827,6 @@
 
   /**
    * Returns update-name exclusion metadata for the current entity, or null.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getUpdateNameExcludedEntityInfo(ctx = null) {
     const { type, id } = getCurrentEntityTypeAndId(ctx);
@@ -906,7 +871,6 @@
 
   /**
    * Attempts to resolve the parent organization ID from route, fields, or links.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getParentOrgId(ctx = null) {
     const route = ctx || getRouteContext();
@@ -934,7 +898,6 @@
 
   /**
    * Builds the API URL for the current entity context.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    */
   function getCurrentEntityApiUrl(ctx = null) {
     const { type, id } = getCurrentEntityTypeAndId(ctx);
@@ -944,7 +907,6 @@
 
   /**
    * Maps frontend entity slugs to CP model names.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getCpEntityNameByType(type) {
     const map = {
@@ -959,7 +921,6 @@
 
   /**
    * Builds a CP organization change-page URL from org ID.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function buildCpOrgChangeUrl(orgId) {
     if (!/^\d+$/.test(String(orgId || "").trim())) return "";
@@ -968,7 +929,6 @@
 
   /**
    * Builds a CP organization user-manager anchor URL from org ID.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function buildCpUserManagerUrl(orgId) {
     const base = buildCpOrgChangeUrl(orgId);
@@ -978,7 +938,6 @@
 
   /**
    * Builds a CP list-search URL for an entity type and identifier.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function buildCpEntitySearchUrl(type, id) {
     const cpName = getCpEntityNameByType(type);
@@ -989,7 +948,6 @@
 
   /**
    * Builds a CP network search URL from an ASN value.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function buildCpNetworkSearchUrlByAsn(asn) {
     const normalizedAsn = String(asn || "").replace(/\D/g, "");
@@ -999,7 +957,6 @@
 
   /**
    * Returns true when current page appears to be a frontend 404 document.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function isFrontendNotFoundPage() {
     const title = String(document.title || "").toLowerCase();
@@ -1017,7 +974,6 @@
    * when the query looks like an ASN lookup: "AS15169", "ASN15169",
    * "as 15169", "ASN 15169", or a bare number ("15169") with no prefix at
    * all, since admins commonly type just the digits.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function extractAsnFromSearchQuery(query) {
     const match = String(query || "").trim().match(/^(?:ASN?\s*)?(\d+)$/i);
@@ -1028,7 +984,6 @@
    * Returns the total match count reported at the top of a frontend
    * /search results page (parsed from "About N results"), or NaN if the
    * summary element is missing or unparseable.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getFrontendSearchResultCount() {
     const summary = getText("#search-list-view .mb-3");
@@ -1039,7 +994,6 @@
   /**
    * Returns true when the frontend /search results page reports zero
    * matches across every category ("About 0 results").
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function isFrontendZeroResultSearchPage() {
     return getFrontendSearchResultCount() === 0;
@@ -1049,7 +1003,6 @@
    * When a frontend /search results page has exactly one match, returns
    * the absolute URL of that single result's entity link; otherwise
    * returns "".
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getSingleFrontendSearchResultUrl() {
     if (getFrontendSearchResultCount() !== 1) return "";
@@ -1072,7 +1025,6 @@
    * Purpose: The netixlan IX-F resolve PUT needs X-CSRFToken; FP has never
    * needed to write before, so unlike CP there's no existing helper for
    * this yet.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {string} CSRF token, or "" if unavailable.
    */
   function getCsrfTokenFp() {
@@ -1096,7 +1048,6 @@
    * exchange, would otherwise re-fetch the same (often large) third-party
    * document every click; only successful fetches are cached, so a failed
    * lookup is always retried fresh on the next click.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} ixfUrl - The IX-F export URL.
    * @returns {Promise<{ data: object|null, status: number, error: string }>}
    */
@@ -1152,7 +1103,6 @@
    * equal without pulling in CP's full BigInt parseIp/formatIp -- that's
    * renumbering-grade machinery this feature doesn't need, just enough to
    * make IX-F's and PDB's spelling of the same address match.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} ip - IPv6 address string (or empty).
    * @returns {string} Canonical comparison key, or "" for empty input.
    */
@@ -1188,7 +1138,6 @@
    * entry that matches either family and diffs both against it, the same
    * simplification the rest of this feature makes; reconciling that kind
    * of split is what CP's separate IX-F Member Audit tool exists for.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {object} ixfData - Parsed IX-F member-export JSON.
    * @param {{ asn: string|number, ipaddr4: string, ipaddr6: string }} target
    * "none" is a positive claim of absence and the UI turns it into a
@@ -1252,7 +1201,6 @@
    * (Resolve); ipaddr4/ipaddr6 are informational only -- an IP mismatch is
    * a renumber-class change with its own safety-gated CP tool, not
    * something a single click here should silently rewrite.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {object} netixlanRow - Live PDB netixlan record (from /api/netixlan/<id>).
    * @param {{ matched: string, connection: object|null, vlan: object|null }} ixfMatchResult
    * @returns {Array<{ field: string, label: string, pdbValue: *, ixfValue: *, differs: boolean, autoFixable: boolean }>}
@@ -1316,7 +1264,6 @@
    * differ.
    * Necessity: ipaddr4/ipaddr6 are never touched here even if they
    * differ -- see buildIxfDiff's autoFixable:false for why.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {object} netixlanRow - Live PDB netixlan record.
    * @param {Array<{ field: string, ixfValue: *, differs: boolean, autoFixable: boolean }>} diffEntries
    * @returns {object} Sanitized payload safe for PUT.
@@ -1340,7 +1287,6 @@
 
   /**
    * Builds a CP account email-address search URL.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function buildCpAccountSearchUrl(query) {
     const q = String(query || "").trim();
@@ -1350,7 +1296,6 @@
 
   /**
    * Returns the best-effort current entity name from rendered/editable fields.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getCurrentEntityName() {
     return (
@@ -1362,7 +1307,6 @@
 
   /**
    * Extracts the current ASN as digits only.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getCurrentAsn() {
     const raw = getDataEditValue("asn") || getText('div[data-edit-name="asn"]') || getInputValue("#id_asn");
@@ -1372,7 +1316,6 @@
 
   /**
    * Collects visible usernames, emails, and email domains from org user manager rows.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getVisibleUserIdentityData() {
     const rows = qsa('#org-user-manager > div[data-edit-template="user-item"] > .editable');
@@ -1403,7 +1346,6 @@
 
   /**
    * Collects related object IDs from visible API listing sections on the page.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function getRelatedObjectIds() {
     const result = {
@@ -1435,7 +1377,6 @@
 
   /**
    * Formats a compact semicolon-separated summary of key entity identifiers.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    */
   function formatEntityIdsBundle(ctx = null) {
     const route = ctx || getRouteContext();
@@ -1458,7 +1399,6 @@
 
   /**
    * Formats a multiline triage summary for quick admin review/copy workflows.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    */
   function formatAdminTriageSummary(ctx = null) {
     const route = ctx || getRouteContext();
@@ -1484,7 +1424,6 @@
 
   /**
    * Collects unique external links from known fields and visible anchor tags.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function collectExternalLinks() {
     const links = new Set();
@@ -1505,7 +1444,6 @@
 
   /**
    * Opens validated URLs in new tabs, prompting confirmation for large batches.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function openUrlsWithConfirm(urls, threshold = 3) {
     const valid = Array.from(new Set((urls || []).map((u) => String(u || "").trim()).filter(Boolean)));
@@ -1526,7 +1464,6 @@
    * Copies text to clipboard with modern and fallback implementations.
    * Purpose: Enable "Copy URL" and similar copy actions for user convenience.
    * Necessity: Handles browsers with and without Clipboard API support.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   async function copyToClipboard(text) {
     const normalizedText = String(text ?? "");
@@ -1566,7 +1503,6 @@
    * Retrieves the container element for top-right toolbar buttons.
    * Purpose: Centralize toolbar element selection with fallback selectors.
    * Necessity: Top-right button area varies in PeeringDB pages; needs fallback chain.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function getTopRightToolbarContainer(parentSelector = "div.right.button-bar > div:first-child") {
     return qs(parentSelector);
@@ -1579,7 +1515,6 @@
    * replaces vnode. Capture-phase delegation on document runs before framework bubble handlers,
    * so stopPropagation can prevent PeeringDB from intercepting our button clicks.
    * Guard: installed at most once per page lifetime via _pdbFpDelegationInstalled.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function ensureFpClickDelegation() {
     if (document._pdbFpDelegationInstalled) return;
@@ -1616,7 +1551,6 @@
    * Purpose: Standardized way to add custom links (Admin Console, BGP tools, etc.) to FP pages.
    * Necessity: Ensures consistent styling, idempotency (prevents duplicates), and event handling.
    * Marks buttons with data-pdb-fp-action attribute for later reordering and identification.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function createTopRightAction({
     actionId,
@@ -1690,7 +1624,6 @@
    * Closes a single FP dropdown wrapper and resets toggle accessibility state.
    * Purpose: Centralize close behavior for toolbar overflow menus.
    * Necessity: Shared close logic prevents duplicated per-menu dismissal handling.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function closeDropdownActionItem(wrapper) {
     if (!wrapper) return;
@@ -1715,7 +1648,6 @@
    * Closes all open FP dropdown wrappers except an optional exempt wrapper.
    * Purpose: Enforce single-open-dropdown behavior for FP toolbar overflow menus.
    * Necessity: Keeps UI state predictable when multiple dropdown-capable actions exist.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function closeAllDropdownActionItems(exemptWrapper = null) {
     Array.from(openDropdownActionItems).forEach((wrapper) => {
@@ -1728,7 +1660,6 @@
    * Registers one shared listener pair for FP dropdown close behavior.
    * Purpose: Replace per-menu document listeners with one shared close mechanism.
    * Necessity: Reduces global listener duplication and supports Escape-to-close.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function ensureDropdownGlobalCloseListener() {
     if (dropdownGlobalCloseListenerBound) return;
@@ -1756,7 +1687,6 @@
    * Purpose: Provide a compact menu for multiple related tools (RIPEstat, BGPView, CIDR Report, etc.).
    * Necessity: Prevents toolbar overcrowding by grouping secondary network analysis tools.
    * Manages menu open/close state and click-outside dismissal.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function createTopRightOverflowMenu({
     actionId,
@@ -1871,7 +1801,6 @@
 
     /**
      * Closes the currently open overflow menu wrapper.
-     * @ai Preserve selector contracts and idempotent DOM mutation behavior.
      */
     const closeMenu = () => {
       closeDropdownActionItem(wrapper);
@@ -1980,7 +1909,6 @@
    * Tests if a DOM element matches a given priority (CSS selector or function).
    * Purpose: Support flexible matching in reorderChildrenByPriority (handles strings and predicates).
    * Necessity: Enables both CSS-based matching and custom function-based matching in one API.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function isPriorityMatch(child, priority) {
     if (!child || !priority) return false;
@@ -2005,7 +1933,6 @@
    * Purpose: Establish deterministic button order (Admin Console before BGP tools, etc.).
    * Necessity: Ensures consistent UI layout across page variations and module load orders.
    * Unmatched children stay in original order at the end.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function reorderChildrenByPriority(container, priorities) {
     if (!container || !Array.isArray(priorities) || priorities.length === 0) return;
@@ -2034,7 +1961,6 @@
    * Identifies if a child element is PeeringDB's native Edit toggle button.
    * Purpose: Distinguish PeeringDB native structure from custom FP buttons.
    * Necessity: Route native Edit button to separate row position per PeeringDB layout conventions.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function isNativeEditToolbarButton(child) {
     if (!child) return false;
@@ -2061,7 +1987,6 @@
    * Applies flex layout to toolbar container for two-row button arrangement.
    * Purpose: Enable column-based layout with right alignment and gap spacing.
    * Necessity: Foundation for enforceTopRightButtonOrder two-row structure.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function applyTopRightToolbarFlexLayout(parent) {
     if (!parent) return;
@@ -2077,7 +2002,6 @@
    * Ensures a named row container exists in the toolbar.
    * Purpose: Create or reuse row div with data-pdb-fp-row attribute for button grouping.
    * Necessity: Routes buttons to two distinct visual rows (Edit/Admin/Copy-URL, then BGP tools).
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function ensureTopRightRowContainer(parent, rowName) {
     if (!parent || !rowName) return null;
@@ -2103,7 +2027,6 @@
    * Purpose: Implement the two-row layout convention (primary actions row 1, analysis tools row 2).
    * Necessity: Creates visual hierarchy and improves mobile UX by grouping related actions.
    * Hides empty rows to maintain clean toolbar appearance.
-   * @ai Preserve execution ordering, locks, and route/module boundaries.
    */
   function routeTopRightButtonsToTwoRows(parent) {
     if (!parent) return;
@@ -2139,7 +2062,6 @@
   /**
    * Ensures helper row containers exist for FP action buttons on UI-next pages.
    * Purpose: Keep FP-injected actions visually spaced/aligned without mutating native controls.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function ensureUiNextActionRows(parent) {
     if (!parent) return { host: null, row1: null, row2: null };
@@ -2160,7 +2082,6 @@
 
     /**
      * Ensures a named UI-next helper row exists under the FP action host.
-     * @ai Preserve selector contracts and idempotent DOM mutation behavior.
      */
     const ensureRow = (rowName) => {
       let row = qs(`:scope > div[data-pdb-fp-action-row="${rowName}"]`, host);
@@ -2188,7 +2109,6 @@
   /**
    * Routes only FP action buttons into two helper rows on UI-next pages.
    * Purpose: Restore visual spacing while leaving native Edit/theme controls untouched.
-   * @ai Preserve execution ordering, locks, and route/module boundaries.
    */
   function routeUiNextFpActionsToTwoRows(parent) {
     if (!parent) return;
@@ -2198,7 +2118,6 @@
 
     /**
      * Resolves the native edit control while tolerating host DOM reordering.
-     * @ai Preserve selector contracts and idempotent DOM mutation behavior.
      */
     const findNativeEditButton = () => {
       const directChildren = Array.from(parent.children);
@@ -2235,7 +2154,6 @@
    * Groups custom toolbar items by vertical pixel position (visual rows).
    * Purpose: Detect which buttons wrap to new lines due to narrow viewports.
    * Necessity: Understand natural wrapping behavior for spacing adjustments.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function groupCustomItemsByVisualRow(customItems, topTolerance = 3) {
     const rows = [];
@@ -2265,7 +2183,6 @@
    * Removes individual button margins to rely on container gap for spacing.
    * Purpose: Standardize spacing through flexbox gap instead of element margins.
    * Necessity: Prevents double-spacing and inconsistent gaps from mixed margin/gap sources.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function applyTopRightCustomSpacing(parent) {
     if (!parent) return;
@@ -2286,7 +2203,6 @@
    * Clears top margins on wrapped toolbar items.
    * Purpose: Clean spacing when buttons wrap to multiple rows.
    * Necessity: Prevents excessive vertical gaps when items wrap at narrow viewports.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function applyTopRightWrappedRowOffset(parent) {
     if (!parent) return;
@@ -2305,7 +2221,6 @@
   /**
    * Returns true when PeeringDB UI-next markup is active.
    * Purpose: Keep FP layout code from fighting native UI-next button logic.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function isUiNextPage() {
     const theme = String(document.documentElement?.getAttribute("data-theme") || "").toLowerCase();
@@ -2318,7 +2233,6 @@
   /**
    * Adds a minimal fallback .wrapper node on net pages when UI-next markup omits it.
    * Purpose: Prevent host inline reAdjust() from crashing on $('.wrapper')[0].scrollWidth.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function ensureNetPageWrapperFallback() {
     if (!/^\/net\/\d+/.test(window.location.pathname)) return;
@@ -2345,7 +2259,6 @@
    * Necessity: Main orchestrator for toolbar DOM changes; detects when PeeringDB has already
    * laid out buttons and skips processing to avoid interfering with native layout.
    * Version 1.0.20 adds detection for pre-existing data-pdb-fp-row containers.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function enforceTopRightButtonOrder() {
     const parent = getTopRightToolbarContainer();
@@ -2395,7 +2308,6 @@
    * Convenience wrapper for createTopRightAction with minimal arguments.
    * Purpose: Simplify button creation for module code.
    * Necessity: Reduces boilerplate in module run functions.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function addButton(label, onClick, parentSelector = "div.right.button-bar > div:first-child", actionId = "") {
     return createTopRightAction({
@@ -2409,7 +2321,6 @@
   /**
    * Strips a trailing slash (except for the root "/") so path matching in
    * STATIC_PAGE_TITLES doesn't need to special-case both forms per entry.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function normalizePathname(pathname) {
     const trimmed = String(pathname || "").replace(/\/+$/, "");
@@ -2419,7 +2330,6 @@
   /**
    * Trims and caps free-text (e.g. a search query) for use inside a tab title.
    * Purpose: Prevent an unbounded query string from producing an unreadable tab title.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function truncateForTitle(text, maxLen = 60) {
     const trimmed = String(text || "").trim();
@@ -2431,7 +2341,6 @@
    * Builds the /search and /search/v2 title, reflecting the "q" query params
    * PeeringDB's render_search_result()/extract_query() join into the original query.
    * Purpose: Surface what was actually searched for in the tab title.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function buildSearchPageTitle() {
     const params = new URLSearchParams(window.location.search || "");
@@ -2443,7 +2352,6 @@
    * Lookup table of non-entity FP pages worth a bespoke title, evaluated top-down.
    * Purpose: Give the highest-traffic static/account pages an informative,
    * consistent title without hand-maintaining every future PeeringDB route.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    */
   const STATIC_PAGE_TITLES = [
     { test: (p) => p === "/", title: () => `PDB${TITLE_SEP}Home` },
@@ -2479,7 +2387,6 @@
 
   /**
    * Resolves a STATIC_PAGE_TITLES entry for the current pathname, if any.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {string} The built title, or "" when no entry matches.
    */
   function buildStaticPageTitle() {
@@ -2493,7 +2400,6 @@
    * specific builder above (2FA/allauth pages, future new routes, error pages).
    * Purpose: Guarantee a consistent "PDB | ..." tab title everywhere without
    * hand-maintaining an exhaustive route table.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function applyGenericTitleFallback() {
     const current = String(document.title || "").trim();
@@ -2514,7 +2420,6 @@
    * Sends the resolve PUT for an IX-F discrepancy and updates the panel.
    * Do-not-touch parents block the write before anything is sent (see
    * getDoNotTouchNetixlanParentInfo).
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   async function resolveIxfDiscrepancy(panel, netixlanId, netixlanRow, diffEntries, resolveBtn) {
     const doNotTouchEntity = getDoNotTouchNetixlanParentInfo(netixlanRow);
@@ -2581,7 +2486,6 @@
    * second custom-UI button click.
    * Do-not-touch parents block the delete before the confirm() is even
    * shown (see getDoNotTouchNetixlanParentInfo).
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   async function removeNetixlanEntry(panel, netixlanId, netixlanRow, removeBtn) {
     const doNotTouchEntity = getDoNotTouchNetixlanParentInfo(netixlanRow);
@@ -2689,7 +2593,6 @@
    * returns "unreadable" rather than "none" when it could not interpret
    * the feed, precisely so this destructive path cannot be reached on a
    * false negative.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function renderNoIxfEntryResult(panel, netixlanId, netixlanRow) {
     panel.textContent = "";
@@ -2710,7 +2613,6 @@
   /**
    * Renders the IX-F diff result into the panel, with a "Resolve
    * discrepancy" button when at least one auto-fixable field differs.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function renderIxfDiffResult(panel, netixlanId, netixlanRow, diffEntries) {
     panel.textContent = "";
@@ -2745,7 +2647,6 @@
    * Runs the full IX-F verify check for one netixlan row: fetch the live
    * netixlan + its ixlan's IX-F feed URL, fetch and parse the IX-F export,
    * match this ASN/IP, and render the diff.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   async function runIxfVerifyCheck(netixlanId, row, button) {
     const PANEL_ATTR = "data-pdb-fp-ixf-verify-panel";
@@ -3992,7 +3893,6 @@
    * Purpose: Central dispatcher that activates modules for the current page.
    * Necessity: Implements modular architecture; checks both enabled status and page match
    * before running each module. Catches and logs errors to prevent cascade failures.
-   * @ai Preserve execution ordering, locks, and route/module boundaries.
    */
   function dispatchModules(ctx) {
     const disabledModules = getDisabledModules();
@@ -4036,7 +3936,6 @@
 
   /**
    * Registers a menu command and records its ID for future refresh.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function registerFpMenuCommand(label, handler) {
     const commandId = GM_registerMenuCommand(label, handler);
@@ -4047,7 +3946,6 @@
    * Registers one-time Tampermonkey menu commands for common FP actions.
    * Purpose: Provide quick action access via extension menu for frequent workflows.
    * Necessity: Supports keyboard-driven usage and declutters reliance on toolbar clicks.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function registerFpMenuCommands() {
     if (fpMenuCommandsRegistered && typeof GM_unregisterMenuCommand !== "function") return;
@@ -4219,7 +4117,6 @@
 
   /**
    * Runs lightweight precondition checks for key FP DOM landmarks.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function runSelfCheck(ctx) {
     if (selfCheckHasRun) return;
@@ -4266,7 +4163,6 @@
    * Purpose: Use a stable ancestor so the observer survives framework-triggered DOM replacement.
    * Necessity: Rooting at the toolbar container causes the observer to detach silently when
    * PeeringDB's framework replaces that element, making all subsequent mutations invisible.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function getObserverRootNode() {
     return (
@@ -4280,7 +4176,6 @@
    * Disconnects the shared MutationObserver and clears pending disconnect timers.
    * Purpose: Stop observation after page stabilizes to reduce long-lived callback overhead.
    * Necessity: Observer is only needed during dynamic render bursts and route transitions.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function disconnectConsolidatedObserver() {
     if (observerDisconnectTimer) {
@@ -4298,7 +4193,6 @@
    * Schedules observer shutdown after a short idle period.
    * Purpose: Keep observer active during render bursts, then detach automatically.
    * Necessity: Balances responsiveness with lower steady-state CPU usage.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function scheduleObserverDisconnect() {
     if (observerDisconnectTimer) {
@@ -4314,7 +4208,6 @@
    * Ensures a single shared MutationObserver is connected for dynamic page updates.
    * Purpose: Re-attach observer only when needed, using scoped root + filtered callback.
    * Necessity: SPA-like updates on FP pages require temporary observation for toolbar rebuild.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function ensureConsolidatedObserver() {
     if (consolidatedObserver || !document.body) return;
@@ -4351,7 +4244,6 @@
 
   /**
    * Runs the consolidated initialization sequence for the current route context.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function runConsolidatedInit() {
     const ctx = getRouteContext();
@@ -4387,7 +4279,6 @@
 
   /**
    * Schedules one animation-frame initialization run when not already queued/running.
-   * @ai Preserve execution ordering, locks, and route/module boundaries.
    */
   function scheduleConsolidatedInit() {
     // Prevent triggering while modules are actively running (to avoid duplicate DOM insertions)
@@ -4407,7 +4298,6 @@
    * and causes rapid DOM mutations. Firing init on every mutation creates a fight cycle where
    * we inject buttons that PeeringDB's reconciler immediately removes. The debounce ensures
    * we only run after the last mutation in a burst, when the framework is stable.
-   * @ai Preserve execution ordering, locks, and route/module boundaries.
    */
   function scheduleConsolidatedInitDebounced() {
     if (initDebouncedTimer) window.clearTimeout(initDebouncedTimer);
@@ -4422,7 +4312,6 @@
    * Purpose: Initialize the script on page load or immediately if DOM is ready.
    * Necessity: Entry point that hooks into DOMContentLoaded, popstate (SPA navigation),
    * and DOM mutations to detect when init should run. Sets up MutationObserver for AJAX/PJAX pages.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function bootstrapConsolidatedInit() {
     ensureNetPageWrapperFallback();
@@ -4456,7 +4345,6 @@
   // browser bootstrap (MutationObserver/requestAnimationFrame/event
   // listeners), which a minimal test DOM doesn't implement. Never set by
   // Tampermonkey in production, so real page behavior is unchanged.
-  // @ai Preserve execution ordering, locks, and route/module boundaries.
   if (typeof window !== "undefined" && window.__PDB_TEST__) {
     window.__pdbFpTestHooks__ = {
       SCRIPT_VERSION,

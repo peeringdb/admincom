@@ -63,7 +63,6 @@ const SAFE_TO_RETRY_METHODS = ['GET', 'HEAD'];
  * Purpose: Gate verbose console output behind an opt-in flag so normal
  * production use is silent.
  * Toggle with: localStorage.setItem('pdbAdmincom.debug', '1')
- * @ai Preserve shared storage/cache key contracts and TTL behavior.
  * @returns {boolean} True when debug mode is active.
  */
 function isDebugEnabled() {
@@ -75,7 +74,6 @@ function isDebugEnabled() {
  * Purpose: Shared flag-flip used by each script's own "Toggle Debug Mode"
  * GM_registerMenuCommand handler (menu registration/label/notification
  * stays per-script since it wires into script-specific UI).
- * @ai Preserve shared storage/cache key contracts and TTL behavior.
  * @returns {boolean} The new debug-enabled state.
  */
 function toggleDebugMode() {
@@ -96,7 +94,6 @@ function toggleDebugMode() {
  * Structured debug logger — no-ops unless debug mode is active.
  * Purpose: Provide consistent prefixed console output for module and bus
  * diagnostics without polluting normal page console output.
- * @ai Keep behavior stable and prefer minimal, localized edits.
  * @param {string} tag  - Short subsystem label shown in brackets.
  * @param {string} msg  - Human-readable message.
  * @param {...*}   rest - Optional extra values forwarded to console.debug.
@@ -290,7 +287,6 @@ const dataCacheInFlight = new Map();
 /**
  * Returns localStorage when available for domain-scoped cache persistence.
  * Purpose: Share cache entries across tabs and page reloads on the same origin.
- * @ai Preserve shared storage/cache key contracts and TTL behavior.
  * @returns {Storage|null} localStorage instance, or null when unavailable.
  */
 function getDomainCacheStorage() {
@@ -304,7 +300,6 @@ function getDomainCacheStorage() {
 
 /**
  * Builds localStorage key for cached API data (shared namespace).
- * @ai Preserve shared storage/cache key contracts and TTL behavior.
  * @param {string} type - Entity type (asn, org, net, ix, fac, carrier, user, ...).
  * @param {string|number} id - Entity identifier.
  * @returns {string} Namespaced cache key, or empty string when invalid.
@@ -318,7 +313,6 @@ function getSharedCacheStorageKey(type, id) {
 
 /**
  * Reads cached API data object from localStorage when valid.
- * @ai Preserve shared storage/cache key contracts and TTL behavior.
  * @param {string} type - Entity type (asn, org, net, ix, fac, carrier, user, ...).
  * @param {string|number} id - Entity identifier.
  * @returns {object|null} Cached data object, or null when absent/expired/invalid.
@@ -353,7 +347,6 @@ function getCachedDataFromStorage(type, id) {
 
 /**
  * Stores API data object into localStorage cache with TTL/schema metadata.
- * @ai Preserve shared storage/cache key contracts and TTL behavior.
  * @param {string} type - Entity type (asn, org, net, ix, fac, carrier, user, ...).
  * @param {string|number} id - Entity identifier.
  * @param {object} data - Data object to cache.
@@ -380,7 +373,6 @@ function setCachedDataInStorage(type, id, data, ttlMs = CACHE_DEFAULT_TTL_MS) {
 
 /**
  * Negative-cache a missing entity to avoid repeated failed lookups.
- * @ai Preserve shared storage/cache key contracts and TTL behavior.
  * @param {string} type - Entity type (asn, org, net, ix, fac, carrier, user, ...).
  * @param {string|number} id - Entity identifier.
  * @param {number} [ttlMs=1.5 hours] - Cache time-to-live.
@@ -391,7 +383,6 @@ function cacheNegativeLookup(type, id, ttlMs = 1.5 * 3600 * 1000) {
 
 /**
  * Checks if a cache entry represents a negative lookup (not found).
- * @ai Preserve shared storage/cache key contracts and TTL behavior.
  * @param {object} cached - Cached data object.
  * @returns {boolean} True if this is a cached "not found" result.
  */
