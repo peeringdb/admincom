@@ -112,12 +112,18 @@ function dbgWarn(tag, msg, ...rest) {
   if (!isDebugEnabled()) return;
   console.warn(`[${MODULE_PREFIX}:${tag}]`, msg, ...rest);
 }
-/** Open a console group tagged like dbg(), but only when debug mode is active. */
+/**
+ * Open a console group tagged like dbg(), but only when debug mode is active.
+ * @deprecated — documented logging API with no callers; being withdrawn — remove with the next CONVENTIONS.md doc cycle
+ */
 function dbgGroup(tag, label) {
   if (!isDebugEnabled()) return;
   console.group(`[${MODULE_PREFIX}:${tag}]`, label);
 }
-/** Close the current console group, but only when debug mode is active. */
+/**
+ * Close the current console group, but only when debug mode is active.
+ * @deprecated — documented logging API with no callers; being withdrawn — remove with the next CONVENTIONS.md doc cycle
+ */
 function dbgGroupEnd() {
   if (!isDebugEnabled()) return;
   console.groupEnd();
