@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name            PeeringDB DP - Consolidated Tools
 // @namespace       https://www.peeringdb.com/
-// @version         1.7.12
+// @version         1.7.13
 // @description     Consolidated DeskPro tools: linkifies/enriches PeeringDB links (ASN/IP/IX/NET/FAC/Carrier), adds an owning-org shortcut link beside each, copies mailto addresses, normalizes PeeringDB CP double-slash links, generates pihole whitelist commands for IX/NET/FAC/Carrier approval tickets
 // @author          <chriztoffer@peeringdb.com>
 // @match           https://peeringdb.deskpro.com/app*
@@ -495,12 +495,18 @@
     if (!isDebugEnabled()) return;
     console.warn(`[${MODULE_PREFIX}:${tag}]`, msg, ...rest);
   }
-  /** Open a console group tagged like dbg(), but only when debug mode is active. */
+  /**
+   * Open a console group tagged like dbg(), but only when debug mode is active.
+   * @deprecated — documented logging API with no callers; being withdrawn — remove with the next CONVENTIONS.md doc cycle
+   */
   function dbgGroup(tag, label) {
     if (!isDebugEnabled()) return;
     console.group(`[${MODULE_PREFIX}:${tag}]`, label);
   }
-  /** Close the current console group, but only when debug mode is active. */
+  /**
+   * Close the current console group, but only when debug mode is active.
+   * @deprecated — documented logging API with no callers; being withdrawn — remove with the next CONVENTIONS.md doc cycle
+   */
   function dbgGroupEnd() {
     if (!isDebugEnabled()) return;
     console.groupEnd();
@@ -2107,6 +2113,7 @@
   /**
    * Strips trailing link-emoji tokens from visible anchor text.
    * Purpose: Prevent re-decoration cycles from treating prior emoji icons as label content.
+   * @staged wip — anchor-label emoji cleanup for re-decoration; wire into hydrateExistingPeeringDbAnchor when anchor-label rewriting returns there.
    * @param {string} value - Raw anchor text.
    * @returns {string} Text without trailing link-emoji tokens.
    */

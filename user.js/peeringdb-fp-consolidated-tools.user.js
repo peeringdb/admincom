@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.1.42
+// @version      1.1.43
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
@@ -438,12 +438,18 @@
     if (!isDebugEnabled()) return;
     console.warn(`[${MODULE_PREFIX}:${tag}]`, msg, ...rest);
   }
-  /** Open a console group tagged like dbg(), but only when debug mode is active. */
+  /**
+   * Open a console group tagged like dbg(), but only when debug mode is active.
+   * @deprecated — documented logging API with no callers; being withdrawn — remove with the next CONVENTIONS.md doc cycle
+   */
   function dbgGroup(tag, label) {
     if (!isDebugEnabled()) return;
     console.group(`[${MODULE_PREFIX}:${tag}]`, label);
   }
-  /** Close the current console group, but only when debug mode is active. */
+  /**
+   * Close the current console group, but only when debug mode is active.
+   * @deprecated — documented logging API with no callers; being withdrawn — remove with the next CONVENTIONS.md doc cycle
+   */
   function dbgGroupEnd() {
     if (!isDebugEnabled()) return;
     console.groupEnd();
