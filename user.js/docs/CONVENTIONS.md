@@ -56,10 +56,15 @@ bundler/linter without discussing it first (see [AGENTS.md](../AGENTS.md) "Addit
   context. See the `networkixlan` toolbar lookup in `peeringdb-cp-consolidated-tools.src.js`.
 - **Sensitive-data redaction**: no secrets are logged or stored — there are no API tokens/credentials
   anywhere in the codebase (PeeringDB auth is same-origin session cookies).
-- **Documentation convention**: functions carry a JSDoc block with `Purpose:`, `Necessity:`, and an
-  `@ai Preserve ...` / `@ai Keep behavior stable and prefer minimal, localized edits.` tag flagging
-  behavior contracts — 900+ occurrences across the repo. This is a repo-specific convention for
-  guiding AI-assisted edits, documented in [AGENTS.md](../AGENTS.md).
+- **Documentation convention**: functions carry a JSDoc block with `Purpose:` and `Necessity:`
+  lines. An `@ai` tag, where present, states **one invariant specific to that function that a
+  plausible diff could silently violate**. Litmus test: *If the sentence could be pasted onto a
+  different function unchanged and still read true, it is not an @ai tag.* The repo-wide default —
+  keep behavior stable, prefer minimal localized edits — is stated once in
+  [AGENTS.md](../AGENTS.md) and applies to every function, tagged or not; do not restate it in
+  tags. Enforced by `tests/conventions-ai-tags.test.js`: the historical stock phrases are
+  denylisted, identical tag text may appear at most twice repo-wide, and tag prose must carry at
+  least 30 characters of substance.
 
 ## Testing
 
