@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name            PeeringDB DP - Consolidated Tools
 // @namespace       https://www.peeringdb.com/
-// @version         1.7.9
+// @version         1.7.10
 // @description     Consolidated DeskPro tools: linkifies/enriches PeeringDB links (ASN/IP/IX/NET/FAC/Carrier), adds an owning-org shortcut link beside each, copies mailto addresses, normalizes PeeringDB CP double-slash links, generates pihole whitelist commands for IX/NET/FAC/Carrier approval tickets
 // @author          <chriztoffer@peeringdb.com>
 // @match           https://peeringdb.deskpro.com/app*
@@ -63,7 +63,6 @@
     "::1",
     "localhost",
   ];
-  const DUMMY_ORG_ID = 20525;
   const FEATURE_FLAGS_STORAGE_KEY = `${MODULE_PREFIX}.featureFlags`;
   /**
    * Runtime feature flags for DP consolidated behavior.
@@ -415,6 +414,8 @@
   }
 
   /* @include admincom-common.js */
+
+  /* @include admincom-entity-exclusions.js */
 
   /**
    * Normalizes ASN value into a stable cache key suffix.

@@ -151,6 +151,18 @@ no new dependency beyond Node itself, which is already required for `node --chec
   `asn-404-cp-search-redirect`, the fetch/DOM/click-wiring orchestration itself is **not** unit tested —
   only the pure matching/diff/payload functions above are; see the module's header comment in the
   `.src.js`);
+- FP's do-not-touch write guard on that same IX-F flow (`fp-netixlan-do-not-touch-guard.test.js` —
+  `getDoNotTouchNetixlanParentInfo` (maps a netixlan row's `net_id`/`ix_id` — `ixlan_id` as ix
+  fallback — into `EXAMPLE_ORG_DO_NOT_TOUCH_ENTITY_IDS`, the subset holding org 25554 "PeeringDB
+  Example Organization" and its child records only, defined in `lib/admincom-entity-exclusions.js`;
+  the broader `UPDATE_NAME_EXCLUDED_ENTITY_IDS` there is the update-name tooling's exclusion list and
+  mostly names real third-party records, so several cases pin that it does NOT block these writes),
+  plus `resolveIxfDiscrepancy`/`removeNetixlanEntry`
+  driven for real through the shim's fake fetch, `cp-ixf-merge-apply.test.js`-style: the
+  load-bearing assertions are negative — no PUT/DELETE recorded, and no `confirm()` shown, when the
+  row's parent net or ix is do-not-touch protected — each paired with a non-excluded control that
+  proves the same call does issue the write, so a broken write path cannot masquerade as the guard
+  holding);
 - the shared cache namespace's remaining helpers (`dp-shared-cache-helpers.test.js` —
   `getSharedCacheStorageKey`'s type/id validation and normalization branch, and the negative-cache
   pair `cacheNegativeLookup`/`isNegativeCacheEntry` that DP's entity fetchers use to avoid repeated

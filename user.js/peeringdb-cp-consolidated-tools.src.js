@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.225
+// @version      2.0.226
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/*
@@ -82,7 +82,6 @@
     "::1",
     "localhost",
   ];
-  const DUMMY_ORG_ID = 20525;
   const FEATURE_FLAGS_STORAGE_KEY = `${MODULE_PREFIX}.featureFlags`;
   const FEATURE_FLAGS = Object.freeze({
     debugMode: true,
@@ -254,34 +253,7 @@
     campus: displayTypeMap.campus,
   };
 
-  /**
-   * Hard-excluded entity IDs for Example Organization records.
-   * Extend by appending IDs to the relevant Set.
-   */
-  const HARD_EXCLUDED_ENTITY_IDS = {
-    network: new Set(["32281", "666", "31754", "29032", "14185", "2858", "24084", "10664"]),
-    internetexchange: new Set(["4095"]),
-    organization: new Set(["25554", "34028", String(DUMMY_ORG_ID), "31503"]),
-    facility: new Set(["13346", "13399"]),
-    carrier: new Set(["66"]),
-    campus: new Set(["25"]),
-  };
-
-  /**
-   * Normalizes route aliases to canonical CP entity keys.
-   */
-  const HARD_EXCLUDED_ENTITY_ALIASES = {
-    fac: "facility",
-    net: "network",
-    org: "organization",
-    ix: "internetexchange",
-    carrier: "carrier",
-    campus: "campus",
-    facility: "facility",
-    network: "network",
-    organization: "organization",
-    internetexchange: "internetexchange",
-  };
+  /* @include admincom-entity-exclusions.js */
 
   /**
    * API resource mapping by CP entity type.
@@ -1342,30 +1314,20 @@
   }
 
   /**
-   * Resolves canonical entity key for hard-exclude checks.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
-   * @param {string} entity - Route entity segment.
-   * @returns {string} Canonical entity key, or empty string if unsupported.
-   */
-  function normalizeEntityTypeForHardExclude(entity) {
-    const normalized = String(entity || "").trim().toLowerCase();
-    return HARD_EXCLUDED_ENTITY_ALIASES[normalized] || "";
-  }
-
-  /**
-   * Returns exclusion metadata when current route is hard-excluded.
+   * Returns exclusion metadata when the current route's entity is excluded
+   * from the update-name tooling.
    * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ isEntityChangePage: boolean, entity: string, entityId: string }} ctx - Route context.
    * @returns {{ entityType: string, entityId: string }|null} Exclusion info or null.
    */
-  function getHardExcludedEntityInfo(ctx) {
+  function getUpdateNameExcludedEntityInfo(ctx) {
     if (!ctx?.isEntityChangePage) return null;
 
-    const entityType = normalizeEntityTypeForHardExclude(ctx.entity);
+    const entityType = normalizeExcludedEntityType(ctx.entity);
     const entityId = String(ctx.entityId || "").trim();
     if (!entityType || !entityId) return null;
 
-    const excludedIds = HARD_EXCLUDED_ENTITY_IDS[entityType];
+    const excludedIds = UPDATE_NAME_EXCLUDED_ENTITY_IDS[entityType];
     if (!excludedIds || !excludedIds.has(entityId)) return null;
 
     return { entityType, entityId };
@@ -1373,28 +1335,34 @@
 
   /**
    * Returns true when script-driven write/change actions must be blocked.
+   * Keys on the broad update-name exclusions
+   * (UPDATE_NAME_EXCLUDED_ENTITY_IDS), so it is only the right gate for
+   * flows that rewrite an entity's name; a guard for non-name destructive
+   * writes keys on the narrow EXAMPLE_ORG_DO_NOT_TOUCH_ENTITY_IDS instead
+   * (as FP's netixlan guard does).
    * @ai Preserve execution ordering, locks, and route/module boundaries.
    * @param {{ isEntityChangePage: boolean, entity: string, entityId: string }} ctx - Route context.
    * @returns {boolean} True when write/change actions are disallowed for this entity.
    */
-  function isWriteActionBlockedForHardExcludedEntity(ctx) {
-    return Boolean(getHardExcludedEntityInfo(ctx));
+  function isWriteActionBlockedForUpdateNameExcludedEntity(ctx) {
+    return Boolean(getUpdateNameExcludedEntityInfo(ctx));
   }
 
   /**
-   * Notifies user that write/change action is blocked for hard-excluded entities.
+   * Notifies user that a write/change action is blocked for an entity
+   * excluded from the update-name tooling.
    * @ai Preserve execution ordering, locks, and route/module boundaries.
    * @param {string} actionLabel - Human-readable action label.
    * @param {{ isEntityChangePage: boolean, entity: string, entityId: string }} ctx - Route context.
    */
-  function notifyWriteActionBlockedForHardExcludedEntity(actionLabel, ctx) {
-    const hardExcludedEntity = getHardExcludedEntityInfo(ctx);
-    const entityText = hardExcludedEntity
-      ? `${hardExcludedEntity.entityType}#${hardExcludedEntity.entityId}`
+  function notifyWriteActionBlockedForUpdateNameExcludedEntity(actionLabel, ctx) {
+    const excludedEntity = getUpdateNameExcludedEntityInfo(ctx);
+    const entityText = excludedEntity
+      ? `${excludedEntity.entityType}#${excludedEntity.entityId}`
       : `${String(ctx?.entity || "entity")}#${String(ctx?.entityId || "")}`;
     notifyUser({
       title: "PeeringDB CP",
-      text: `${String(actionLabel || "Write action")}: blocked for hard-excluded ${entityText}. Read/view actions remain allowed.`,
+      text: `${String(actionLabel || "Write action")}: blocked for update-name-excluded ${entityText}. Read/view actions remain allowed.`,
     });
   }
 
@@ -10024,7 +9992,7 @@
       match: (ctx) => ctx.isEntityChangePage && ctx.entity === "network",
       preconditions: () => Boolean(qs("#id_name") && qs("form")),
       run: (ctx) => {
-        if (isWriteActionBlockedForHardExcludedEntity(ctx)) {
+        if (isWriteActionBlockedForUpdateNameExcludedEntity(ctx)) {
           clearPendingNetworkUpdateNameRetry(ctx.entityId);
           return;
         }
@@ -10050,8 +10018,8 @@
           label: "Update Name",
           iconType: "submenu",
           onClick: async (event) => {
-            if (isWriteActionBlockedForHardExcludedEntity(ctx)) {
-              notifyWriteActionBlockedForHardExcludedEntity("Update Name", ctx);
+            if (isWriteActionBlockedForUpdateNameExcludedEntity(ctx)) {
+              notifyWriteActionBlockedForUpdateNameExcludedEntity("Update Name", ctx);
               return;
             }
             if (getSelectedStatus() === "pending") {
@@ -10427,8 +10395,8 @@
           label: "Reset Information",
           insertLeft: true,
           onClick: async (event) => {
-            if (isWriteActionBlockedForHardExcludedEntity(ctx)) {
-              notifyWriteActionBlockedForHardExcludedEntity("Reset Information", ctx);
+            if (isWriteActionBlockedForUpdateNameExcludedEntity(ctx)) {
+              notifyWriteActionBlockedForUpdateNameExcludedEntity("Reset Information", ctx);
               return;
             }
             const actionLockKey = `${MODULE_PREFIX}.resetNetworkInformation.${ctx.entityId}`;
@@ -11161,8 +11129,9 @@
    * Necessity: Opt-in (unset by default) and gated on at least one of
    * Ctrl/Alt/Meta by normalizeShortcutComboString(), so it can never collide
    * with ordinary typing in form fields. Clicking the real button (rather
-   * than re-implementing its handler) means every existing guard - hard-excluded
-   * entity check, pending-status check, action lock - still runs unchanged.
+   * than re-implementing its handler) means every existing guard -
+   * update-name-excluded entity check, pending-status check, action lock -
+   * still runs unchanged.
    * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function ensureUpdateNameShortcutListener() {
