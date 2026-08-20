@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.1.38
+// @version      1.1.40
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
@@ -53,7 +53,6 @@
     "::1",
     "localhost",
   ];
-  const DUMMY_ORG_ID = 20525;
   const FEATURE_FLAGS_STORAGE_KEY = `${MODULE_PREFIX}.featureFlags`;
   /**
    * Runtime feature flags for FP consolidated behavior.
@@ -101,27 +100,7 @@
   const LEGACY_API_PAYLOAD_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.apiPayloadCache.`;
   const LEGACY_API_PAYLOAD_TAB_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.apiPayloadTabCache.`;
 
-  /**
-   * Hard-excluded entity IDs for Example Organization records.
-   * Extend by appending IDs to the relevant Set.
-   */
-  const HARD_EXCLUDED_ENTITY_IDS = {
-    net: new Set(["32281", "666", "31754", "29032", "14185", "2858", "24084", "10664"]),
-    ix: new Set(["4095"]),
-    org: new Set(["25554", "34028", String(DUMMY_ORG_ID), "31503"]),
-    fac: new Set(["13346", "13399"]),
-    carrier: new Set(["66"]),
-    campus: new Set(["25"]),
-  };
-  const HARD_EXCLUDED_ENTITY_ALIASES = {
-    net: "net",
-    asn: "net",
-    ix: "ix",
-    org: "org",
-    fac: "fac",
-    carrier: "carrier",
-    campus: "campus",
-  };
+  /* @include admincom-entity-exclusions.js */
   const displayTypeMap = {
     fac: "fac",
     facility: "fac",
@@ -857,29 +836,72 @@
   }
 
   /**
-   * Normalizes frontend route entity aliases to canonical hard-exclude keys.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
+   * Returns exclusion metadata for one entity type/id pair, or null.
+   * Shared core of the route-based check below and the row-based netixlan
+   * check the IX-F write paths use -- those act on API rows, not on the
+   * routed entity page, so they cannot go through getCurrentEntityTypeAndId().
+   * The two callers deliberately consult different maps: the update-name
+   * exclusions are broad, the do-not-touch set is Example Organization
+   * records only.
+   * @param {string} type - Entity type or alias (see EXCLUDED_ENTITY_TYPE_ALIASES).
+   * @param {string|number} id - Entity ID.
+   * @param {object} excludedIdSets - Canonical type -> Set of excluded ID strings.
+   * @returns {{ type: string, id: string }|null} Exclusion info or null.
    */
-  function normalizeEntityTypeForHardExclude(type) {
-    const normalized = String(type || "").trim().toLowerCase();
-    return HARD_EXCLUDED_ENTITY_ALIASES[normalized] || "";
+  function getExcludedEntityInfoForTypeAndId(type, id, excludedIdSets) {
+    const canonicalType = normalizeExcludedEntityType(type);
+    const canonicalId = String(id ?? "").trim();
+    if (!canonicalType || !canonicalId) return null;
+
+    const excludedIds = excludedIdSets[canonicalType];
+    if (!excludedIds || !excludedIds.has(canonicalId)) return null;
+
+    return { type: canonicalType, id: canonicalId };
   }
 
   /**
-   * Returns hard-exclusion metadata for the current entity, or null.
+   * Returns update-name exclusion metadata for the current entity, or null.
    * @ai Keep behavior stable and prefer minimal, localized edits.
    */
-  function getHardExcludedEntityInfo(ctx = null) {
+  function getUpdateNameExcludedEntityInfo(ctx = null) {
     const { type, id } = getCurrentEntityTypeAndId(ctx);
-    if (!type || !id) return null;
+    return getExcludedEntityInfoForTypeAndId(type, id, UPDATE_NAME_EXCLUDED_ENTITY_IDS);
+  }
 
-    const canonicalType = normalizeEntityTypeForHardExclude(type);
-    if (!canonicalType) return null;
+  /**
+   * Maps a netixlan row to its strictly-protected parent net or ix, or null.
+   * Write guard for the IX-F verify flow's PUT/DELETE paths: a netixlan row
+   * is not itself in the protected sets, but modifying or deleting it edits
+   * a protected record's peering data, so the row's parent ids are what get
+   * checked. Keys on EXAMPLE_ORG_DO_NOT_TOUCH_ENTITY_IDS (Example
+   * Organization records only), NOT on the broader update-name
+   * exclusions -- a row at,
+   * say, AFNIC's net 2858 must stay writable. The /api/netixlan payload
+   * carries net_id and ix_id directly; ixlan_id doubles as an ix fallback
+   * because PeeringDB pins each ixlan's id to its parent ix's id.
+   * @param {object} netixlanRow - Live netixlan record from /api/netixlan/<id>.
+   * @returns {{ type: string, id: string }|null} Exclusion info for the parent, or null.
+   */
+  function getDoNotTouchNetixlanParentInfo(netixlanRow) {
+    return (
+      getExcludedEntityInfoForTypeAndId("net", netixlanRow?.net_id, EXAMPLE_ORG_DO_NOT_TOUCH_ENTITY_IDS) ||
+      getExcludedEntityInfoForTypeAndId("ix", netixlanRow?.ix_id ?? netixlanRow?.ixlan_id, EXAMPLE_ORG_DO_NOT_TOUCH_ENTITY_IDS)
+    );
+  }
 
-    const excludedIds = HARD_EXCLUDED_ENTITY_IDS[canonicalType];
-    if (!excludedIds || !excludedIds.has(String(id).trim())) return null;
-
-    return { type: canonicalType, id: String(id).trim() };
+  /**
+   * Notifies the admin that a netixlan write was blocked by the
+   * do-not-touch guard, mirroring CP's
+   * notifyWriteActionBlockedForUpdateNameExcludedEntity UX.
+   * @param {string} actionLabel - Human-readable action label.
+   * @param {string|number} netixlanId - The netixlan row the write targeted.
+   * @param {{ type: string, id: string }} doNotTouchEntity - The protected parent.
+   */
+  function notifyNetixlanWriteBlockedForDoNotTouchEntity(actionLabel, netixlanId, doNotTouchEntity) {
+    notifyUser({
+      title: "PeeringDB FP",
+      text: `${String(actionLabel || "Write action")}: blocked for netixlan #${netixlanId} -- it belongs to do-not-touch ${doNotTouchEntity.type}#${doNotTouchEntity.id}. Read/view actions remain allowed.`,
+    });
   }
 
   /**
@@ -2490,9 +2512,20 @@
 
   /**
    * Sends the resolve PUT for an IX-F discrepancy and updates the panel.
+   * Do-not-touch parents block the write before anything is sent (see
+   * getDoNotTouchNetixlanParentInfo).
    * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   async function resolveIxfDiscrepancy(panel, netixlanId, netixlanRow, diffEntries, resolveBtn) {
+    const doNotTouchEntity = getDoNotTouchNetixlanParentInfo(netixlanRow);
+    if (doNotTouchEntity) {
+      notifyNetixlanWriteBlockedForDoNotTouchEntity("Resolve discrepancy", netixlanId, doNotTouchEntity);
+      const status = document.createElement("div");
+      status.textContent = `Blocked: netixlan #${netixlanId} belongs to do-not-touch ${doNotTouchEntity.type}#${doNotTouchEntity.id}; not modified.`;
+      panel.appendChild(status);
+      return;
+    }
+
     resolveBtn.disabled = true;
     resolveBtn.textContent = "Resolving…";
 
@@ -2546,9 +2579,20 @@
    * record -- a meaningfully bigger action that deliberately gets the
    * browser's own unambiguous confirmation dialog rather than only a
    * second custom-UI button click.
+   * Do-not-touch parents block the delete before the confirm() is even
+   * shown (see getDoNotTouchNetixlanParentInfo).
    * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   async function removeNetixlanEntry(panel, netixlanId, netixlanRow, removeBtn) {
+    const doNotTouchEntity = getDoNotTouchNetixlanParentInfo(netixlanRow);
+    if (doNotTouchEntity) {
+      notifyNetixlanWriteBlockedForDoNotTouchEntity("Remove netixlan entry", netixlanId, doNotTouchEntity);
+      const status = document.createElement("div");
+      status.textContent = `Blocked: netixlan #${netixlanId} belongs to do-not-touch ${doNotTouchEntity.type}#${doNotTouchEntity.id}; not removed.`;
+      panel.appendChild(status);
+      return;
+    }
+
     const label = `AS${netixlanRow.asn} ${netixlanRow.ipaddr4 || netixlanRow.ipaddr6 || ""}`.trim();
     const confirmed = window.confirm(
       `Remove netixlan #${netixlanId} (${label})?\n\n` +
@@ -4437,6 +4481,11 @@
       extractIxfMatchForAsnIp,
       buildIxfDiff,
       buildNetixlanResolvePayload,
+      EXAMPLE_ORG_DO_NOT_TOUCH_ENTITY_IDS,
+      UPDATE_NAME_EXCLUDED_ENTITY_IDS,
+      getDoNotTouchNetixlanParentInfo,
+      resolveIxfDiscrepancy,
+      removeNetixlanEntry,
     };
     return;
   }
