@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.227
+// @version      2.0.228
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/*
@@ -258,6 +258,9 @@
   /**
    * API resource mapping by CP entity type.
    * Includes additional CP object types exposed by PeeringDB OpenAPI endpoints.
+   * Note: a real coverage self-check for this map needs an independent source
+   * of truth (e.g. a fetched OpenAPI spec); a check derived from this map
+   * itself is tautological and was removed for that reason.
    */
   const ENTITY_API_RESOURCE_MAP = {
     ...ENTITY_SLUG_MAP,
@@ -269,15 +272,6 @@
     ixlanprefix: "ixpfx",
     carrierfacility: "carrierfac",
   };
-  /**
-   * Derived from ENTITY_API_RESOURCE_MAP (single source of truth for CP
-   * entity -> reftag) rather than hand-duplicated, so a future reftag
-   * addition/typo there can't silently drift out of sync with this set.
-   */
-  const OPENAPI_KNOWN_RESOURCE_SLUGS = new Set([
-    ...Object.values(ENTITY_API_RESOURCE_MAP),
-  ]);
-
   /**
    * Django admin inline-set DOM ID prefixes for network child relations.
    * Used by markDeletedNetworkInlinesForDeletion to iterate all inline sets.
@@ -3988,7 +3982,6 @@
       baseOutcome.mergePlan = { ...liveMerge };
 
       // Phase 1 — Merge into keeper, if there is anything to absorb.
-      let keeperRowForDelete = freshKeeperRes.row;
       if (Object.keys(liveMerge).length > 0) {
         const mergedPayload = { ...buildNetixlanPutPayload(freshKeeperRes.row), ...liveMerge };
         const putUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${item.keeperRow.id}`;
@@ -4043,7 +4036,6 @@
           if (CONFLICT_RESOLVE_APPLY_DELAY_MS > 0) await new Promise((r) => setTimeout(r, CONFLICT_RESOLVE_APPLY_DELAY_MS));
           continue;
         }
-        keeperRowForDelete = verifyRes.row;
         baseOutcome.phase = "merge-then-delete";
       } else {
         baseOutcome.phase = "delete-only";
@@ -5037,30 +5029,6 @@
    */
   function shouldShowApiJsonAction(ctx) {
     return !getApiJsonActionBlockReason(ctx);
-  }
-
-  /**
-   * Debug-only OpenAPI coverage check for mapped CP API resources.
-   * Purpose: Catch accidental resource-slug typos or drift early in diagnostics mode.
-   * Necessity: ENTITY_API_RESOURCE_MAP is a critical integration point for API links/fetches.
-   */
-  function runApiResourceCoverageCheck() {
-    if (!isDebugEnabled()) return;
-
-    const mappedResources = Object.values(ENTITY_API_RESOURCE_MAP)
-      .map((slug) => String(slug || "").trim())
-      .filter(Boolean);
-
-    const unknownResources = mappedResources.filter((slug) => !OPENAPI_KNOWN_RESOURCE_SLUGS.has(slug));
-    if (unknownResources.length > 0) {
-      console.warn(
-        `[${MODULE_PREFIX}] self-check: unmapped OpenAPI resource slug(s) detected`,
-        unknownResources,
-      );
-      return;
-    }
-
-    dbg("self-check", "api resource coverage ok", { count: mappedResources.length });
   }
 
   /**
@@ -11183,8 +11151,6 @@
    * @param {{ entity: string, entityId: string, pathName: string }} ctx - Route context.
    */
   function runSelfCheck(ctx) {
-    runApiResourceCoverageCheck();
-
     const checks = [
       { id: "grp-content",       selector: "#grp-content",             critical: true },
       { id: "grp-content-title", selector: "#grp-content-title",       critical: true },
