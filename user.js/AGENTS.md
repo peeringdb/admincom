@@ -272,9 +272,11 @@ files above rather than waiting on a `lib/*.js` extraction first.
   [docs/CONVENTIONS.md](docs/CONVENTIONS.md) "Naming Rules".
 - Adding a module to CP or FP? Give it a stable ID, gate it through the existing `disabledModules`
   pattern like its neighbors, and add the ID to README's Module ID catalog so it stays in sync.
-- A function tagged `@ai Preserve ...` or `@ai Keep behavior stable and prefer minimal, localized
-  edits.` encodes a contract something else depends on — read the annotation before refactoring past
-  it. Full convention: [docs/CONVENTIONS.md](docs/CONVENTIONS.md) "Documentation convention".
+- Default posture for every function in this repo — keep behavior stable and prefer minimal,
+  localized edits — applies globally, whether or not the function carries an `@ai` tag; `@ai` is
+  reserved for function-specific invariants. A function tagged `@ai ...` encodes a contract
+  something else depends on — read the annotation before refactoring past it. Full convention:
+  [docs/CONVENTIONS.md](docs/CONVENTIONS.md) "Documentation convention".
 - A script listed under README's "Legacy scripts" section is a deprecation stub — don't add real
   logic to it, point users at the consolidated replacement instead.
 
