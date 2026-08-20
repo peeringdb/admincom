@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name            PeeringDB DP - Consolidated Tools
 // @namespace       https://www.peeringdb.com/
-// @version         1.7.11
+// @version         1.7.12
 // @description     Consolidated DeskPro tools: linkifies/enriches PeeringDB links (ASN/IP/IX/NET/FAC/Carrier), adds an owning-org shortcut link beside each, copies mailto addresses, normalizes PeeringDB CP double-slash links, generates pihole whitelist commands for IX/NET/FAC/Carrier approval tickets
 // @author          <chriztoffer@peeringdb.com>
 // @match           https://peeringdb.deskpro.com/app*
@@ -94,17 +94,13 @@
   const FP_LINK_ICON_URL = "https://icons.duckduckgo.com/ip2/peeringdb.com.ico";
   const FP_LINK_ICON_SIZE_PX = 12;
   const ACTION_EMOJI_COPY = "📋";
-  const ACTION_EMOJI_IX = "🏢";
   const ACTION_EMOJI_ORG = "🏛";
-  const ACTION_LINK_ICON_ATTR = "data-pdb-action-link-icon";
   const ACTION_LINK_TEXT_ATTR = "data-pdb-action-link-text";
-  const IX_SHORTCUT_ATTR = "data-pdb-ix-shortcut";
   const ORG_SHORTCUT_ATTR = "data-pdb-org-shortcut";
   const EXISTING_PDB_LINK_DECORATED_ATTR = "data-pdb-existing-link-decorated";
-  const EXISTING_PDB_LINK_ICON_ATTR = "data-pdb-existing-link-icon";
-  const EXISTING_PDB_LINK_TEXT_ATTR = "data-pdb-existing-link-text";
   const PDB_LINK_CANDIDATE_SELECTOR = 'a[href*="peeringdb.com"]';
-  const EDITABLE_CONTAINER_SELECTOR = '[contenteditable="true"]';
+  // EDITABLE_CONTAINER_SELECTOR and isNodeInsideEditableRegion now come from
+  // lib/admincom-shared-helpers.js (see the @include marker below).
   const TARGET_ACTION_LINK_LABELS = new Set([
     "review affiliation/ownership request",
     "approve ownership request and notify user",
@@ -123,18 +119,14 @@
   const ASN_NAME_CACHE_MISS_TTL_MS = 15 * 60 * 1000;
   const ASN_NAME_CACHE_TTL_MS = CACHE_TTL_MS;
   const ORG_CACHE_TTL_MS = CACHE_TTL_MS;
-  const USER_CACHE_TTL_MS = CACHE_TTL_MS;
   const FACILITY_CACHE_TTL_MS = CACHE_TTL_MS;
   const NETIXLAN_CACHE_TTL_MS = 3 * 60 * 60 * 1000; // 3 hours — separate from general TTL
 
-  // IPv4: matches a.b.c.d, requires word boundary, rejects CIDR suffix /N and additional octet.
-  const IPV4_TOKEN_REGEX = /\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}(?!\/\d)(?!\.\d)\b/g;
-  const IPV4_TEST_REGEX = /\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}(?!\/\d)(?!\.\d)\b/;
-  // IPv6: colon-hex compressed notation, rejects CIDR suffix /N.
-  const IPV6_TOKEN_REGEX = /\b(?=[0-9a-fA-F:]*:[0-9a-fA-F:]*)(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}(?!:)(?!\/\d)\b/g;
-  const IPV6_TEST_REGEX = /\b(?=[0-9a-fA-F:]*:[0-9a-fA-F:]*)(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}(?!:)(?!\/\d)\b/;
+  // IPV4_TEST_REGEX/IPV6_TEST_REGEX now come from
+  // lib/admincom-shared-helpers.js (see the @include marker below).
 
   const ENTITY_EXISTENCE_CACHE_TTL_MS = 60 * 60 * 1000;
+  // @staged wip — batch ASN-name enrichment for multi-ASN tickets has no caller yet; wire into linkifyText's ASN hydration path when the batch flow lands.
   const BATCH_FETCH_MAX_ASNS = 100; // Per-request limit for asn__in queries
   const RATE_LIMIT_MIN_REMAINING = 10; // Backoff threshold
 
@@ -178,7 +170,6 @@
   // "->" plus Unicode "→" and the word "to" as separators.
   const RN_PREFIX_PAIR_REGEX =
     /(\b(?:\d{1,3}\.){3}\d{1,3}\/\d{1,2}|\b[0-9A-Fa-f:]+\/\d{1,3})\s*(?:->|=>|→|to|TO|To)\s*((?:\d{1,3}\.){3}\d{1,3}\/\d{1,2}|[0-9A-Fa-f:]+\/\d{1,3})/g;
-  const RN_SUBJECT_HINT_REGEX = /\b(?:renumber|prefix change|new prefix|migrate)\b/i;
   const RN_BACKDROP_ID = "pdb-dp-rn-backdrop";
   const RN_MODAL_ID = "pdb-dp-rn-modal";
   // DOM ids for modal nodes (scoped namespace).
@@ -186,22 +177,7 @@
   const WL_MODAL_ID = "pdb-dp-wl-modal";
   const WL_STYLES_INJECTED_ATTR = "data-pdb-dp-wl-styles-injected";
 
-  const asnNameCache = new Map();
-  const asnNameInFlight = new Map();
   const rateLimitState = { limit: null, remaining: null, resetTime: null }; // Track rate-limit quotas
-
-  /**
-   * Returns storage for tab-scoped transient values.
-   * @returns {Storage|null} sessionStorage instance, or null when unavailable.
-   */
-  function getTabSessionStorage() {
-    try {
-      if (window.sessionStorage) return window.sessionStorage;
-    } catch (_error) {
-      // Ignore; session storage may be unavailable.
-    }
-    return null;
-  }
 
   /**
    * Generates or retrieves a persistent session UUID for the browser session.
@@ -406,46 +382,7 @@
 
   /* @include admincom-entity-exclusions.js */
 
-  /**
-   * Normalizes ASN value into a stable cache key suffix.
-   * @param {string|number} asn - Raw ASN value.
-   * @returns {string} Trimmed ASN string.
-   */
-  function normalizeAsnForCache(asn) {
-    return String(asn || "").trim();
-  }
-
-  /**
-   * Builds localStorage key for ASN-name cache entries (backward compat wrapper).
-   * @param {string|number} asn - ASN value.
-   * @returns {string} Namespaced cache key, or empty string when invalid.
-   */
-  function getAsnNameCacheStorageKey(asn) {
-    const normalizedAsn = normalizeAsnForCache(asn);
-    if (!normalizedAsn || !/^\d+$/.test(normalizedAsn)) return "";
-    return getSharedCacheStorageKey("asn", normalizedAsn);
-  }
-
-  /**
-   * Reads ASN name from localStorage cache when valid (backward compat).
-   * @param {string|number} asn - ASN value.
-   * @returns {string|null} Cached ASN name, or null when absent/expired/invalid.
-   */
-  function getCachedAsnNameFromStorage(asn) {
-    const data = getCachedDataFromStorage("asn", asn);
-    return data ? String(data.name || "").trim() || null : null;
-  }
-
-  /**
-   * Stores ASN name into localStorage cache with TTL/schema metadata (backward compat).
-   * @param {string|number} asn - ASN value.
-   * @param {string} name - Resolved network name.
-   */
-  function setCachedAsnNameInStorage(asn, name) {
-    const normalizedName = String(name || "").trim();
-    if (!normalizedName) return;
-    setCachedDataInStorage("asn", asn, { name: normalizedName }, ASN_NAME_CACHE_TTL_MS);
-  }
+  /* @include admincom-shared-helpers.js */
 
   /**
    * Constructs request headers for script-driven HTTP requests.
@@ -765,103 +702,8 @@
     return buildCpChangeUrl(cpModel, id);
   }
 
-  /**
-   * Selects the best network item for ASN lookups from list-style API payloads.
-   * Purpose: Prefer exact ASN and active status from `/api/net` responses.
-   * @param {*} payload - Parsed API response.
-   * @param {string} expectedAsn - ASN value used in the query.
-   * @returns {object|null} Matching network entry, or null when unavailable.
-   */
-  function getBestApiNetDataItem(payload, expectedAsn) {
-    if (!payload || typeof payload !== "object") return null;
-    const data = payload.data;
-    if (!Array.isArray(data) || data.length === 0) return null;
-
-    const expectedAsnNumber = Number(expectedAsn);
-    const exactOk = data.find(
-      (item) => Number(item?.asn) === expectedAsnNumber && String(item?.status || "").toLowerCase() === "ok",
-    );
-    if (exactOk) return exactOk;
-
-    const exact = data.find((item) => Number(item?.asn) === expectedAsnNumber);
-    if (exact) return exact;
-
-    return data[0] || null;
-  }
-
-  /**
-   * Resolves the authoritative legal display name for an entity payload.
-   * Prefers long legal name when available, then falls back to short name.
-   * @param {object|null|undefined} entity - API entity payload.
-   * @returns {string} Resolved legal-preferred name.
-   */
-  function resolveEntityLegalName(entity) {
-    return String(entity?.name_long || entity?.name || "").trim();
-  }
-
-  /**
-   * Resolves network name for an ASN via PeeringDB API with cache and in-flight dedupe.
-   * Purpose: Enrich ASN link labels with authoritative network names.
-   * Necessity: Limits duplicate API calls when the same ASN appears repeatedly in one ticket.
-   * @param {string|number} asn - ASN number to resolve.
-   * @returns {Promise<string>} Resolved network name, or empty string when unavailable.
-   */
-  async function fetchAsnNetworkName(asn) {
-    const normalizedAsn = normalizeAsnForCache(asn);
-    if (!/^\d+$/.test(normalizedAsn)) return "";
-
-    const cached = asnNameCache.get(normalizedAsn);
-    if (cached && cached.expiresAt > Date.now()) {
-      return String(cached.name || "");
-    }
-
-    if (cached && cached.expiresAt <= Date.now()) {
-      asnNameCache.delete(normalizedAsn);
-    }
-
-    const persistedName = getCachedAsnNameFromStorage(normalizedAsn);
-    if (persistedName) {
-      asnNameCache.set(normalizedAsn, {
-        name: persistedName,
-        expiresAt: Date.now() + ASN_NAME_CACHE_TTL_MS,
-      });
-      return persistedName;
-    }
-
-    if (asnNameInFlight.has(normalizedAsn)) {
-      return asnNameInFlight.get(normalizedAsn);
-    }
-
-    const requestPromise = (async () => {
-      const params = new URLSearchParams({
-        asn: normalizedAsn,
-        depth: "0",
-        status: "ok",
-        limit: "1",
-      });
-      const url = `https://www.peeringdb.com/api/net?${params.toString()}`;
-      const payload = await pdbFetch(url);
-      const net = getBestApiNetDataItem(payload, normalizedAsn);
-      const resolved = resolveEntityLegalName(net);
-      const ttl = resolved ? ASN_NAME_CACHE_TTL_MS : ASN_NAME_CACHE_MISS_TTL_MS;
-
-      asnNameCache.set(normalizedAsn, {
-        name: resolved,
-        expiresAt: Date.now() + ttl,
-      });
-      if (resolved) setCachedAsnNameInStorage(normalizedAsn, resolved);
-
-      return resolved;
-    })();
-
-    asnNameInFlight.set(normalizedAsn, requestPromise);
-
-    try {
-      return await requestPromise;
-    } finally {
-      asnNameInFlight.delete(normalizedAsn);
-    }
-  }
+  // getBestApiNetDataItem and resolveEntityLegalName now come from
+  // lib/admincom-shared-helpers.js (see the @include marker above).
 
   /**
    * Fetches organization details including nested user/POC information.
@@ -1023,6 +865,7 @@
    * @param {array} arr - Array to chunk.
    * @param {number} chunkSize - Maximum size per chunk.
    * @returns {array} Array of chunks.
+   * @staged wip — batch ASN-name enrichment for multi-ASN tickets has no caller yet; wire into linkifyText's ASN hydration path when the batch flow lands.
    */
   function chunkArray(arr, chunkSize) {
     if (!Array.isArray(arr) || chunkSize < 1) return [];
@@ -1039,6 +882,7 @@
    * Reduces latency vs. serial requests: 5 ASNs typically <2s vs. ~5s serial.
    * @param {array} asnList - Array of ASN numbers to fetch.
    * @returns {Promise<array>} Flattened array of network objects form all chunks.
+   * @staged wip — batch ASN-name enrichment for multi-ASN tickets has no caller yet; wire into linkifyText's ASN hydration path when the batch flow lands.
    */
   async function batchFetchNetworks(asnList) {
     if (!Array.isArray(asnList) || asnList.length === 0) return [];
@@ -1183,16 +1027,19 @@
   /**
    * Classifies an API error into categories for retry/abort decisions.
    * Purpose: Distinguish transient (retry-able) from fatal (abort) errors.
+   * Every branch returns the same shape: `backoffMs` is null when no retry
+   * delay applies; `ttl` is null unless the result should be negative-cached.
+   * @staged wip — error-classification for pdbFetch retry/negative-cache decisions; not yet consulted by pdbFetch/pdbFetchStatus.
    * @param {number} [status] - HTTP status code, or null/undefined for network error.
-   * @param {Error} [error] - Optional error object.
-   * @returns {object} Classification with type, retryable flag, and guidance.
+   * @returns {{type:string,retryable:boolean,backoffMs:number|null,ttl:number|null,label:string}} Classification.
    */
-  function classifyError(status, error) {
+  function classifyError(status) {
     if (status === 429 || status === 503) {
       return {
         type: "transient",
         retryable: true,
         backoffMs: 5000,
+        ttl: null,
         label: "Rate-limited or temporarily unavailable",
       };
     }
@@ -1200,6 +1047,7 @@
       return {
         type: "not_found",
         retryable: false,
+        backoffMs: null,
         ttl: 1.5 * 3600 * 1000, // Cache negative result for 1.5 hours
         label: "Resource not found (404)",
       };
@@ -1208,6 +1056,8 @@
       return {
         type: "auth",
         retryable: false,
+        backoffMs: null,
+        ttl: null,
         label: "Authentication failed or access denied",
       };
     }
@@ -1216,6 +1066,7 @@
         type: "server",
         retryable: true,
         backoffMs: 10000,
+        ttl: null,
         label: "Server error (5xx)",
       };
     }
@@ -1224,12 +1075,15 @@
         type: "network",
         retryable: true,
         backoffMs: 3000,
+        ttl: null,
         label: "Network error or timeout",
       };
     }
     return {
       type: "unknown",
       retryable: false,
+      backoffMs: null,
+      ttl: null,
       label: `Unknown error (HTTP ${status})`,
     };
   }
@@ -1458,51 +1312,35 @@
 
   /**
    * Fetches the best netixlan record for an IPv4 address.
+   * Uses the shared (type, id) cache primitives with the sibling fetchers'
+   * null-means-miss contract and negative-caches empty lookups.
+   * @staged wip — IP-tooltip enrichment module not yet built; wire into hydrateExistingPeeringDbAnchor / linkifyText when it lands.
    * @param {string} ip - IPv4 address.
    * @returns {Promise<object|null>} Netixlan record, or null when not found.
    */
   async function fetchNetixlanByIp(ip) {
     const normalizedIp = String(ip || "").trim();
     if (!normalizedIp) return null;
-    const cacheKey = `netixlan_ip_${normalizedIp}`;
-    const cached = getCachedDataFromStorage(cacheKey);
-    if (cached !== undefined) return cached;
-    const url = `${PEERINGDB_API_BASE_URL}/netixlan?ipaddr4=${encodeURIComponent(normalizedIp)}&depth=2`;
+    const cached = getCachedDataFromStorage("netixlan_ip", normalizedIp);
+    if (cached) {
+      if (isNegativeCacheEntry(cached)) return null;
+      return cached;
+    }
+    const url = `https://www.peeringdb.com/api/netixlan?ipaddr4=${encodeURIComponent(normalizedIp)}&depth=2`;
     try {
       const data = await pdbFetch(url);
       const items = Array.isArray(data?.data) ? data.data : [];
       const best = getBestNetixlanDataItem(items);
-      setCachedDataInStorage(cacheKey, best, NETIXLAN_CACHE_TTL_MS);
+      if (!best) {
+        cacheNegativeLookup("netixlan_ip", normalizedIp, NETIXLAN_CACHE_TTL_MS);
+        return null;
+      }
+      setCachedDataInStorage("netixlan_ip", normalizedIp, best, NETIXLAN_CACHE_TTL_MS);
       return best;
     } catch {
-      setCachedDataInStorage(cacheKey, null, NETIXLAN_CACHE_TTL_MS);
+      cacheNegativeLookup("netixlan_ip", normalizedIp, NETIXLAN_CACHE_TTL_MS);
       return null;
     }
-  }
-
-  /**
-   * Adds a compact IX shortcut icon next to an enriched link.
-   * @param {HTMLAnchorElement} anchor - Primary anchor.
-   * @param {string|number} ixId - Exchange id.
-   * @param {string} [ixName=""] - Optional exchange name for tooltip.
-   */
-  function ensureIxShortcut(anchor, ixId, ixName = "") {
-    if (!anchor?.isConnected) return;
-    if (!/^\d+$/.test(String(ixId || "").trim())) return;
-    if (anchor.nextElementSibling?.getAttribute?.(IX_SHORTCUT_ATTR) === "true") return;
-
-    const ixLink = document.createElement("a");
-    ixLink.href = `https://www.peeringdb.com/ix/${ixId}`;
-    ixLink.target = "_blank";
-    ixLink.rel = "noopener noreferrer";
-    ixLink.setAttribute(IX_SHORTCUT_ATTR, "true");
-    ixLink.style.marginLeft = "3px";
-    ixLink.style.textDecoration = "none";
-    ixLink.title = ixName ? `Open IX ${ixName} in PeeringDB` : `Open IX ${ixId} in PeeringDB`;
-    ixLink.textContent = ACTION_EMOJI_IX;
-    ixLink.setAttribute("aria-label", ixLink.title);
-
-    anchor.insertAdjacentElement("afterend", ixLink);
   }
 
   /**
@@ -1534,19 +1372,6 @@
   }
 
   /**
-   * Formats a speed integer into a compact human-readable label.
-   * @param {string|number} speed - Speed value from API.
-   * @returns {string} Speed label.
-   */
-  function formatSpeedLabel(speed) {
-    const numericSpeed = Number(speed);
-    if (!Number.isFinite(numericSpeed) || numericSpeed <= 0) return "speed n/a";
-    if (numericSpeed >= 1000000) return `${Math.round(numericSpeed / 1000000)}T`;
-    if (numericSpeed >= 1000) return `${Math.round(numericSpeed / 1000)}G`;
-    return `${numericSpeed}M`;
-  }
-
-  /**
    * Builds organization search anchor with link emoji styling.
    * Purpose: Link affiliation organization names to PeeringDB search results.
    * @param {string} orgName - Organization search query value.
@@ -1558,6 +1383,7 @@
    * Used as a secondary gate after the IPv6 regex to reject false positives.
    * @param {string} text - Candidate string.
    * @returns {boolean}
+   * @staged wip — IP-tooltip enrichment module not yet built; wire into hydrateExistingPeeringDbAnchor / linkifyText when it lands.
    */
   function isLikelyIpv6Address(text) {
     if (!text.includes(":")) return false;
@@ -1577,6 +1403,7 @@
    * Purpose: Link bare IP addresses to PeeringDB search results.
    * @param {string} ip - IP address to linkify.
    * @returns {HTMLAnchorElement} Configured IP-search anchor.
+   * @staged wip — IP-tooltip enrichment module not yet built; wire into hydrateExistingPeeringDbAnchor / linkifyText when it lands.
    */
   function makeIpLink(ip) {
     const query = String(ip || "").trim();
@@ -1602,6 +1429,7 @@
    * @param {HTMLAnchorElement} anchor - Anchor to update.
    * @param {string} ip - IPv4 address used for lookup.
    * @returns {Promise<void>}
+   * @staged wip — IP-tooltip enrichment module not yet built; wire into hydrateExistingPeeringDbAnchor / linkifyText when it lands.
    */
   async function hydrateIpLinkLabel(anchor, ip) {
     try {
@@ -1787,29 +1615,8 @@
     return previous.querySelector?.("a[href]") || null;
   }
 
-  /**
-   * Determines whether a node is inside (or is) a live contenteditable region.
-   * Purpose: Avoid modifying DeskPro editor content (message composer, or a
-   * single message opened for in-place editing) while snippets are
-   * inserted/managed. Mutating text nodes/anchors under an active rich-text
-   * editor's selection can desync the editor and hang the tab.
-   * @param {Node} node - Element or text node to evaluate.
-   * @returns {boolean} True when inside a contenteditable ancestor.
-   */
-  function isNodeInsideEditableRegion(node) {
-    const el = node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
-    return Boolean(el?.closest?.(EDITABLE_CONTAINER_SELECTOR));
-  }
-
-  /**
-   * Determines whether an anchor is inside an editable composer region.
-   * Purpose: Avoid modifying DeskPro editor content while snippets are inserted/managed.
-   * @param {HTMLAnchorElement} anchor - Anchor to evaluate.
-   * @returns {boolean} True when inside a contenteditable ancestor.
-   */
-  function isAnchorInsideEditableRegion(anchor) {
-    return isNodeInsideEditableRegion(anchor);
-  }
+  // isNodeInsideEditableRegion now comes from
+  // lib/admincom-shared-helpers.js (see the @include marker above).
 
   /**
    * Ensures an existing PeeringDB anchor is marked as visited by the script.
@@ -2345,9 +2152,7 @@
       const windowText = lines.slice(windowStart, windowEnd).join("\n");
       const prevLine = String(lines[i - 1] || "").toLowerCase();
 
-      const ipv4Re = /\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}\b/;
-      const ipv6Re = /\b(?=[0-9a-fA-F:]*:[0-9a-fA-F:]*)(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}\b/;
-      const hasIpPair = ipv4Re.test(windowText) && ipv6Re.test(windowText);
+      const hasIpPair = IPV4_TEST_REGEX.test(windowText) && IPV6_TEST_REGEX.test(windowText);
       const hasMemberBlock =
         /\b(speed|policy)\b/i.test(windowText) && /\b(ipv4|ipaddr4)\b/i.test(windowText) && /\b(ipv6|ipaddr6)\b/i.test(windowText);
       const precededByLabel = /\b(member\s+asn|network\s+asn|asn|as)\b/.test(prevLine);
@@ -3218,7 +3023,7 @@
    * Necessity: Operators routinely paste the prefix change directly into the
    * ticket; detecting it removes a copy/paste step and reduces typos.
    * @param {{ticketSubject: string, ticketBodyText: string}} ctx - Ticket context.
-   * @returns {{ pairs: Array<{family:4|6, old:string, new:string}>, subjectHinted: boolean }}
+   * @returns {{ pairs: Array<{family:4|6, old:string, new:string}> }}
    */
   function collectRenumberCandidates(ctx) {
     const pairs = [];
@@ -3237,7 +3042,7 @@
       seen.add(key);
       pairs.push({ family, old: oldCidr, new: newCidr });
     }
-    return { pairs, subjectHinted: RN_SUBJECT_HINT_REGEX.test(String(ctx?.ticketSubject || "")) };
+    return { pairs };
   }
 
   /**
@@ -3653,10 +3458,19 @@
       extractMailtoAddress,
       buildCpEmailSearchUrl,
       classifyError,
+      fetchNetixlanByIp,
       getSharedCacheStorageKey,
       cacheNegativeLookup,
       isNegativeCacheEntry,
       getCachedDataFromStorage,
+      setCachedDataInStorage,
+      // From lib/admincom-shared-helpers.js, inlined identically into all
+      // three scripts; DP is simply the host for their tests.
+      formatSpeedLabel,
+      getTabSessionStorage,
+      isNodeInsideEditableRegion,
+      isAnchorInsideEditableRegion,
+      fetchAsnNetworkName,
     };
   } else if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);
