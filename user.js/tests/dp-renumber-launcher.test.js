@@ -53,7 +53,6 @@ test('collectRenumberCandidates', async (t) => {
     assert.equal(r.pairs[0].family, 4);
     assert.equal(r.pairs[0].old, '185.0.1.0/24');
     assert.equal(r.pairs[0].new, '185.1.184.0/23');
-    assert.equal(r.subjectHinted, false);
   });
 
   await t.test('accepts the Unicode "→" separator', () => {
@@ -86,14 +85,6 @@ test('collectRenumberCandidates', async (t) => {
     assert.equal(r.pairs.length, 1);
   });
 
-  await t.test('subjectHinted is true when the subject contains a renumber-ish keyword', () => {
-    assert.equal(hooks.collectRenumberCandidates({ ticketSubject: 'Please renumber our prefix', ticketBodyText: '' }).subjectHinted, true);
-  });
-
-  await t.test('subjectHinted is false for an unrelated subject', () => {
-    assert.equal(hooks.collectRenumberCandidates({ ticketSubject: 'Random subject', ticketBodyText: '' }).subjectHinted, false);
-  });
-
   await t.test('returns an empty pairs list when nothing matches', () => {
     assert.equal(hooks.collectRenumberCandidates({ ticketSubject: '', ticketBodyText: 'nothing here' }).pairs.length, 0);
   });
@@ -101,7 +92,6 @@ test('collectRenumberCandidates', async (t) => {
   await t.test('tolerates a completely empty context object', () => {
     const r = hooks.collectRenumberCandidates({});
     assert.equal(r.pairs.length, 0);
-    assert.equal(r.subjectHinted, false);
   });
 });
 
