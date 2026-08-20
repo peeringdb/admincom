@@ -15,7 +15,13 @@ most modules.
   when editing a script here" below before touching one).
 - `*.src.js` — editable sources for the three consolidated scripts (CP, FP, DeskPro).
 - `lib/admincom-common.js` — shared fragment (gated debug logging + retry/backoff request wrapper)
-  inlined into every `.user.js` by the build script.
+  inlined into every `.user.js` by the build script. Two sibling fragments ride the same mechanism:
+  `lib/admincom-entity-exclusions.js` (the two-tier entity-exclusion data, inlined into all three
+  scripts) and `lib/admincom-shared-helpers.js` (formatting/DOM/IP helpers plus the ASN →
+  network-name resolver `fetchAsnNetworkName`, whose transport is injectable because CP/FP are
+  same-origin to the API while DeskPro must pass its own GM_xmlhttpRequest-backed transport —
+  inlined only into the DeskPro script for now; CP/FP inclusion is deliberately deferred until a
+  concrete caller lands there).
 - `scripts/build_userscripts.py` — regenerates `.user.js` from `.src.js` + the lib.
 - `*.meta.js` — lightweight update-check manifests, one per script, hand-maintained (not generated).
 - `README.md` — human-facing docs: installation, module catalog, feature-flag console recipes,
@@ -163,6 +169,13 @@ no new dependency beyond Node itself, which is already required for `node --chec
   row's parent net or ix is do-not-touch protected — each paired with a non-excluded control that
   proves the same call does issue the write, so a broken write path cannot masquerade as the guard
   holding);
+- the shared helper fragment (`lib-shared-helpers.test.js` — `lib/admincom-shared-helpers.js`'s
+  `formatSpeedLabel`, `getTabSessionStorage`, the editable-region predicates
+  `isNodeInsideEditableRegion`/`isAnchorInsideEditableRegion`, and the ASN → network-name resolver
+  `fetchAsnNetworkName`: memory/persisted-cache hits, miss caching, in-flight dedupe, best-item
+  selection, `name_long` preference, and the transport-failure-is-not-cached rule — all through the
+  resolver's injectable `fetchJson` transport, which is the cross-script contract itself. Loaded
+  through DP's hooks per the `dp-shared-cache-helpers.test.js` precedent);
 - the shared cache namespace's remaining helpers (`dp-shared-cache-helpers.test.js` —
   `getSharedCacheStorageKey`'s type/id validation and normalization branch, and the negative-cache
   pair `cacheNegativeLookup`/`isNegativeCacheEntry` that DP's entity fetchers use to avoid repeated

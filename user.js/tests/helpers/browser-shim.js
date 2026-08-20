@@ -220,6 +220,11 @@ function loadScript(scriptPath, opts) {
     requestAnimationFrame: (cb) => setTimeout(cb, 0),
     addEventListener() {},
     removeEventListener() {},
+    // Just the node-type constants the scripts compare against; a vm context
+    // has its own JS intrinsics but no DOM globals, so code reading
+    // Node.ELEMENT_NODE (e.g. the shared isNodeInsideEditableRegion helper)
+    // would otherwise throw ReferenceError on first call.
+    Node: { ELEMENT_NODE: 1, TEXT_NODE: 3 },
     // Tampermonkey always injects GM_info regardless of @grant; the scripts read
     // GM_info.script.version rather than hard-coding their own version string, so
     // the sandbox must provide it or the IIFE throws before exporting its hooks.
