@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.228
+// @version      2.0.229
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/*
@@ -130,6 +130,7 @@
     "ipaddr4", "ipaddr6", "speed", "operational", "is_rs_peer", "bfd_support", "notes",
   ];
   const AUTO_MERGE_FIELDS = PRESERVED_NETIXLAN_FIELDS.slice();
+  // @staged wip — gate-count constant for data-driven conflict-resolver gate reporting; verifyConflictGates and its modal copy hardcode "8 safety gates" in prose today, so wire this in when that reporting goes data-driven.
   const CONFLICT_RESOLVE_GATE_COUNT = 8;
   // Recent IP changes report: window length in minutes for the audit view.
   const RECENT_IP_CHANGES_WINDOW_MIN = 60;
@@ -641,12 +642,18 @@
     if (!isDebugEnabled()) return;
     console.warn(`[${MODULE_PREFIX}:${tag}]`, msg, ...rest);
   }
-  /** Open a console group tagged like dbg(), but only when debug mode is active. */
+  /**
+   * Open a console group tagged like dbg(), but only when debug mode is active.
+   * @deprecated — documented logging API with no callers; being withdrawn — remove with the next CONVENTIONS.md doc cycle
+   */
   function dbgGroup(tag, label) {
     if (!isDebugEnabled()) return;
     console.group(`[${MODULE_PREFIX}:${tag}]`, label);
   }
-  /** Close the current console group, but only when debug mode is active. */
+  /**
+   * Close the current console group, but only when debug mode is active.
+   * @deprecated — documented logging API with no callers; being withdrawn — remove with the next CONVENTIONS.md doc cycle
+   */
   function dbgGroupEnd() {
     if (!isDebugEnabled()) return;
     console.groupEnd();
@@ -3977,7 +3984,7 @@
 
     /**
      * Removes the modal from the DOM and cancels any apply loop in flight.
-     * @ai Preserve the cancelSignal write and the resolveClosed() call.
+     * @ai Set cancelSignal.cancelled before resolveClosed() so a backdrop dismissal of the renumber modal aborts applyRenumberRows' PUT loop mid-flight and only then releases the opener's action lock via closed.
      */
     function close() {
       // Dismissing the UI must stop the work, not just hide it. This was
@@ -4799,7 +4806,7 @@
 
     /**
      * Removes the modal and cancels any merge loop in flight.
-     * @ai Preserve the cancelSignal write and the resolveClosed() call.
+     * @ai Keep the cancelSignal.cancelled write and the resolveClosed() call: dismissing the IX-F member-audit modal must stop applyIxfMerges' PUT/DELETE merge loop, not merely hide its progress display.
      */
     function close() {
       // Dismissing the UI must stop the work, not just hide it. This was
@@ -5740,7 +5747,7 @@
 
     /**
      * Removes the modal and cancels any delete loop in flight.
-     * @ai Preserve the cancelSignal write and the resolveClosed() call.
+     * @ai Closing the conflict resolver must halt applyConflictDeletes before its next DELETE — keep the cancelSignal.cancelled write ahead of backdrop.remove() and resolveClosed().
      */
     function close() {
       // Dismissing the UI must stop the work, not just hide it -- this modal
@@ -6968,6 +6975,7 @@
    * Purpose: Add multi-item expandable menus (e.g., Maps) to the main toolbar UL.
    * Necessity: Toolbar insertion semantics differ from the secondary row; wrapping
    * createDropdownActionListItem ensures correct placement and data-pdb-cp-action tagging.
+   * @staged wip — no multi-item toolbar dropdown (e.g. a Maps menu) is built yet; wire this in when the first dropdown toolbar action lands on the primary toolbar.
    * @param {{ id: string, label: string, items: Array<{label: string, href: string}>,
    *           insertLeft?: boolean }} opts
    * @returns {HTMLAnchorElement|null} The dropdown toggle anchor element, or null on failure.
@@ -9303,6 +9311,7 @@
    * Determines the frontend URL path for a CP entity (network, carrier, ix).
    * Purpose: Generate correct copy-to-clipboard URL for the current entity type.
    * Necessity: Different entity types map to different URL paths.
+   * @staged wip — per-entity frontend copy-URL helper (carrier/ix/net paths ready); wire it in when the copy-link toolbar action expands beyond network pages.
    * @param {{ entity: string, entityId: string }} ctx - Route context from getRouteContext().
    * @returns {string} Root-relative frontend path (e.g., "/net/42").
    */
