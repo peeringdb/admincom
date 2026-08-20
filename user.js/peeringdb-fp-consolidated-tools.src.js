@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB FP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/
-// @version      1.1.41
+// @version      1.1.42
 // @description  Consolidated FP userscript for PeeringDB frontend (Net/Org/Fac/IX/Carrier)
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/*
@@ -95,9 +95,13 @@
   // mechanism so re-verifying a row, or verifying a second row at the same
   // exchange, doesn't re-fetch it.
   const IXF_EXPORT_CACHE_TTL_MS = 15 * 60 * 1000;
-  // Legacy per-script cache key prefixes -- no longer written to; kept only
-  // so migrateLegacyApiPayloadCacheKeys() can sweep and remove old entries once.
+  // @deprecated — legacy per-script cache key prefixes, no longer written to; kept only so
+  // migrateLegacyApiPayloadCacheKeys() can sweep and remove old entries once; delete after the
+  // sweep has shipped long enough that no installs still hold pre-migration entries.
   const LEGACY_API_PAYLOAD_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.apiPayloadCache.`;
+  // @deprecated — legacy per-script cache key prefixes, no longer written to; kept only so
+  // migrateLegacyApiPayloadCacheKeys() can sweep and remove old entries once; delete after the
+  // sweep has shipped long enough that no installs still hold pre-migration entries.
   const LEGACY_API_PAYLOAD_TAB_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.apiPayloadTabCache.`;
 
   /* @include admincom-entity-exclusions.js */
@@ -534,25 +538,6 @@
     const key = String(url || "").trim();
     if (!key) return;
     lastFetchFailureByUrl.delete(key);
-  }
-
-  /**
-   * Constructs HTTP headers for Tampermonkey requests with User-Agent.
-   * Purpose: Centralize header building for all script-initiated requests.
-   * Necessity: Ensures consistent User-Agent and other important headers across all API calls.
-   */
-  function buildTampermonkeyRequestHeaders(baseHeaders = {}) {
-    const headers = { ...baseHeaders };
-    const userAgent = getCustomRequestUserAgent();
-
-    if (userAgent) {
-      headers["User-Agent"] = userAgent;
-      if (!headers["X-PDB-Request-UA"] && !headers["x-pdb-request-ua"]) {
-        headers["X-PDB-Request-UA"] = userAgent;
-      }
-    }
-
-    return headers;
   }
 
   /**
@@ -2151,35 +2136,6 @@
   }
 
   /**
-   * Groups custom toolbar items by vertical pixel position (visual rows).
-   * Purpose: Detect which buttons wrap to new lines due to narrow viewports.
-   * Necessity: Understand natural wrapping behavior for spacing adjustments.
-   */
-  function groupCustomItemsByVisualRow(customItems, topTolerance = 3) {
-    const rows = [];
-
-    customItems.forEach((item) => {
-      const top = item.offsetTop;
-      let row = rows.find((entry) => Math.abs(entry.top - top) <= topTolerance);
-
-      if (!row) {
-        row = { top, items: [] };
-        rows.push(row);
-      }
-
-      row.items.push(item);
-      row.top = Math.min(row.top, top);
-    });
-
-    rows.sort((a, b) => a.top - b.top);
-    rows.forEach((row) => {
-      row.items.sort((a, b) => a.offsetLeft - b.offsetLeft);
-    });
-
-    return rows;
-  }
-
-  /**
    * Removes individual button margins to rely on container gap for spacing.
    * Purpose: Standardize spacing through flexbox gap instead of element margins.
    * Necessity: Prevents double-spacing and inconsistent gaps from mixed margin/gap sources.
@@ -3768,7 +3724,6 @@
         btn.addEventListener("click", () => {
           void withActionLock("copy-user-roles", async () => {
             const admins = [];
-            const members = [];
 
             const currentUsers = qsa(
               '#org-user-manager > div[data-edit-template="user-item"] > .editable'
@@ -3792,7 +3747,6 @@
                 ?.getAttribute("data-edit-value");
 
               if (role === "admin") admins.push(email);
-              if (role === "member") members.push(email);
             });
 
             // Legacy script only returned admins joined by newline
