@@ -72,6 +72,15 @@ function stripCompanyTypeSuffix(name) {
     // Sociedad por Acciones Cerrada Simplificada (Peru: Decreto Legislativo 1409), the
     // spelled-out S.A.C.S.
     "Sociedad\\s+por\\s+Acciones\\s+Cerrada\\s+Simplificada",
+    // Sociedad por Acciones (Chile: Ley 20.190 - simplified corporation), the spelled-out SpA.
+    "Sociedad\\s+por\\s+Acciones",
+    // "y Cía. Ltda." (Chile: "and Company, Limited", common on sociedades de responsabilidad
+    // limitada). Without it only the trailing "Ltda." strips, leaving "Foo y Cia" behind.
+    // [ií] accepts the name with or without the accent.
+    "y\\s+C[ií]a\\.?\\s*L\\.?\\s*t\\.?\\s*d\\.?\\s*a\\.?",
+    // Compañía Limitada / y Compañía Limitada (Chile), spelled out. Without it only the bare
+    // "Limitada" strips, leaving "Foo Compañía" behind. [ñn] and [ií] accept it unaccented.
+    "(?:y\\s+)?Compa[ñn][ií]a\\s+Limitada",
     "Limitada", // Limitada (Spanish/Portuguese "Limited" - Latin America, Spain, Portugal, Brazil)
     "L\\.?\\s*T\\.?\\s*D\\.?\\s*A\\.?\\s*-?\\s*E\\.?\\s*P\\.?\\s*P\\.?", // LTDA-EPP (Brazil: Sociedade Limitada - Empresa de Pequeno Porte, small-business tax regime)
     "L\\.?\\s*T\\.?\\s*D\\.?\\s*A\\.?\\s*-?\\s*M\\.?\\s*E\\.?", // LTDA-ME (Brazil: Sociedade Limitada - Microempresa, micro-business tax regime)
