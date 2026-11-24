@@ -2210,6 +2210,10 @@
       "Foundation", // Foundation (generic non-profit/foundation legal form, many jurisdictions)
       "Private\\s+Limited", // Private Limited (UK/Commonwealth: India, Singapore, Hong Kong, etc.)
       "Limited", // Limited (UK/Commonwealth)
+      // Sociedad (Comercial) de Responsabilidad Limitada (Peru: Ley 26887; also Spanish-speaking
+      // Latin America generally), spelled out. Without it only the bare "Limitada" below strips,
+      // leaving "Foo Sociedad Comercial de Responsabilidad" as the short Name.
+      "Sociedad\\s+(?:Comercial\\s+)?de\\s+Responsabilidad\\s+Limitada",
       "Limitada", // Limitada (Spanish/Portuguese "Limited" - Latin America, Spain, Portugal, Brazil)
       "L\\.?\\s*T\\.?\\s*D\\.?\\s*A\\.?\\s*-?\\s*E\\.?\\s*P\\.?\\s*P\\.?", // LTDA-EPP (Brazil: Sociedade Limitada - Empresa de Pequeno Porte, small-business tax regime)
       "L\\.?\\s*T\\.?\\s*D\\.?\\s*A\\.?\\s*-?\\s*M\\.?\\s*E\\.?", // LTDA-ME (Brazil: Sociedade Limitada - Microempresa, micro-business tax regime)
@@ -2252,6 +2256,10 @@
       "S\\.?\\s*A\\.?\\s*A\\.?", // SAA (Peru: Sociedad Anónima Abierta - publicly held corporation, Ley 26887)
       "S\\.?\\s*P\\.?\\s*R\\.?\\s*L\\.?", // SPRL (Belgium, French: Société Privée à Responsabilité Limitée)
       "S\\.?\\s*P\\.?\\s*A\\.?", // SPA (Italy: Società per Azioni - joint-stock company)
+      "S\\.?\\s*C\\.?\\s*R\\.?\\s*L\\.?", // SCRL (Peru: Sociedad Comercial de Responsabilidad Limitada - common variant of S.R.L.)
+      // S.R.Ltda. (Peru: Sociedad Comercial de Responsabilidad Limitada, written with the "Ltda"
+      // abbreviation). Without it only the trailing "Ltda" strips, leaving "Foo S.R" behind.
+      "S\\.?\\s*R\\.?\\s*L\\.?\\s*t\\.?\\s*d\\.?\\s*a\\.?",
       "S\\.?\\s*R\\.?\\s*L\\.?", // SRL (Italy: Società a Responsabilità Limitata; also Latin America: Sociedad de Responsabilidad Limitada)
       "S\\.?\\s*R\\.?\\s*O\\.?", // SRO (Czech Republic/Slovakia: Společnost s ručením omezeným - LLC)
       "S\\.?\\s*C\\.?\\s*A\\.?", // SCA (France/Belgium/Luxembourg: Société en Commandite par Actions - partnership limited by shares)
