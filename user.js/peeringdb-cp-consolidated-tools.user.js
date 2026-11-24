@@ -2244,6 +2244,10 @@
       "E\\.?\\s*U\\.?\\s*R\\.?\\s*L\\.?", // EURL (France: Entreprise Unipersonnelle à Responsabilité Limitée - single-member LLC)
       "S\\.?\\s*A\\.?\\s*R\\.?\\s*L\\.?", // SARL (France and Francophone countries: Société à Responsabilité Limitée)
       "S\\.?\\s*A\\.?\\s*S\\.?", // SAS (France: Société par Actions Simplifiée; Colombia: Sociedad por Acciones Simplificada)
+      // SACS (Peru: Sociedad por Acciones Cerrada Simplificada - simplified closely held
+      // corporation, Decreto Legislativo 1409). Listed before the shorter SAC below so the
+      // full 4-letter form strips as one unit.
+      "S\\.?\\s*A\\.?\\s*C\\.?\\s*S\\.?", // SACS (Peru: Sociedad por Acciones Cerrada Simplificada)
       "S\\.?\\s*A\\.?\\s*C\\.?", // SAC (Peru: Sociedad Anónima Cerrada - closely held corporation, Ley 26887)
       "S\\.?\\s*A\\.?\\s*A\\.?", // SAA (Peru: Sociedad Anónima Abierta - publicly held corporation, Ley 26887)
       "S\\.?\\s*P\\.?\\s*R\\.?\\s*L\\.?", // SPRL (Belgium, French: Société Privée à Responsabilité Limitée)
