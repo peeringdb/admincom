@@ -276,6 +276,11 @@ function stripCompanyTypeSuffix(name) {
     // "Name Ltd Sirketi, NAME" alias pair into one clean name.
     "LIMITED\\s+SIRKETI", // Limited Sirketi (Turkey: fully ASCII spelling of Limited Şirketi)
     "A\\.?\\s*Ş\\.?", // A.Ş. (Turkey: Anonim Şirket - Joint Stock Company)
+    // Companhia (Brazil: Lei 6.404/1976 art. 3 - an S.A. must carry "companhia" or "sociedade
+    // anônima" in its name, and "companhia" may not come last, so it leads the name, e.g.
+    // "Companhia de Processamento de Dados da Paraiba", AS264338). The connector after it
+    // (de/da/do/das/dos) is stripped with it so the short Name doesn't start with "de".
+    "Companhia(?:\\s+d(?:e|a|o|as|os))?",
   ];
 
   const suffixRegex = new RegExp(
