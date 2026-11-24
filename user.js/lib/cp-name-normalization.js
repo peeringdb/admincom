@@ -62,6 +62,16 @@ function stripCompanyTypeSuffix(name) {
     // Latin America generally), spelled out. Without it only the bare "Limitada" below strips,
     // leaving "Foo Sociedad Comercial de Responsabilidad" as the short Name.
     "Sociedad\\s+(?:Comercial\\s+)?de\\s+Responsabilidad\\s+Limitada",
+    // Empresa Individual de Responsabilidad Limitada (Peru/Chile), the spelled-out E.I.R.L.
+    // Listed before the bare "Limitada" for the same reason as the entry above.
+    "Empresa\\s+Individual\\s+de\\s+Responsabilidad\\s+Limitada",
+    // Sociedad Anónima, optionally Cerrada/Abierta (Peru: Ley 26887 - spelled-out S.A., S.A.C.
+    // and S.A.A.; plain Sociedad Anónima is used across Spanish-speaking countries). [oó]
+    // accepts the name with or without the accent.
+    "Sociedad\\s+An[oó]nima(?:\\s+(?:Cerrada|Abierta))?",
+    // Sociedad por Acciones Cerrada Simplificada (Peru: Decreto Legislativo 1409), the
+    // spelled-out S.A.C.S.
+    "Sociedad\\s+por\\s+Acciones\\s+Cerrada\\s+Simplificada",
     "Limitada", // Limitada (Spanish/Portuguese "Limited" - Latin America, Spain, Portugal, Brazil)
     "L\\.?\\s*T\\.?\\s*D\\.?\\s*A\\.?\\s*-?\\s*E\\.?\\s*P\\.?\\s*P\\.?", // LTDA-EPP (Brazil: Sociedade Limitada - Empresa de Pequeno Porte, small-business tax regime)
     "L\\.?\\s*T\\.?\\s*D\\.?\\s*A\\.?\\s*-?\\s*M\\.?\\s*E\\.?", // LTDA-ME (Brazil: Sociedade Limitada - Microempresa, micro-business tax regime)
