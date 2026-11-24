@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.221
+// @version      2.0.222
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
@@ -64,7 +64,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.221";
+  const SCRIPT_VERSION = "2.0.222";
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
   const SHARED_USER_AGENT_STORAGE_KEY = "pdbAdmincom.userAgent";
@@ -2236,6 +2236,11 @@
       "J\\.?\\s*S\\.?\\s*C\\.?", // JSC (Joint Stock Company - Russia and other post-Soviet states, generic)
       "L\\.?\\s*T\\.?\\s*D\\.?\\s*A\\.?", // LTDA (Brazil/Latin America: Sociedade/Sociedad Limitada)
       "E\\.?\\s*I\\.?\\s*R\\.?\\s*E\\.?\\s*L\\.?\\s*I\\.?", // EIRELI (Brazil: Empresa Individual de Responsabilidade Limitada - single-owner LLC)
+      // E.I.R.L. / EIRL (Peru: Decreto Ley 21621; Chile: Ley 19.857 - Empresa Individual de
+      // Responsabilidad Limitada, single-owner limited-liability company), e.g. "FIBERLINK
+      // E.I.R.L." (AS274087, LACNIC, PE). Spanish-language sibling of Brazil's EIRELI above;
+      // the two never overlap because EIRELI requires the extra "E...I" letters.
+      "E\\.?\\s*I\\.?\\s*R\\.?\\s*L\\.?", // EIRL (Peru/Chile: Empresa Individual de Responsabilidad Limitada)
       "E\\.?\\s*U\\.?\\s*R\\.?\\s*L\\.?", // EURL (France: Entreprise Unipersonnelle à Responsabilité Limitée - single-member LLC)
       "S\\.?\\s*A\\.?\\s*R\\.?\\s*L\\.?", // SARL (France and Francophone countries: Société à Responsabilité Limitée)
       "S\\.?\\s*A\\.?\\s*S\\.?", // SAS (France: Société par Actions Simplifiée; Colombia: Sociedad por Acciones Simplificada)

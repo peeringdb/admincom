@@ -84,6 +84,11 @@ function stripCompanyTypeSuffix(name) {
     "J\\.?\\s*S\\.?\\s*C\\.?", // JSC (Joint Stock Company - Russia and other post-Soviet states, generic)
     "L\\.?\\s*T\\.?\\s*D\\.?\\s*A\\.?", // LTDA (Brazil/Latin America: Sociedade/Sociedad Limitada)
     "E\\.?\\s*I\\.?\\s*R\\.?\\s*E\\.?\\s*L\\.?\\s*I\\.?", // EIRELI (Brazil: Empresa Individual de Responsabilidade Limitada - single-owner LLC)
+    // E.I.R.L. / EIRL (Peru: Decreto Ley 21621; Chile: Ley 19.857 - Empresa Individual de
+    // Responsabilidad Limitada, single-owner limited-liability company), e.g. "FIBERLINK
+    // E.I.R.L." (AS274087, LACNIC, PE). Spanish-language sibling of Brazil's EIRELI above;
+    // the two never overlap because EIRELI requires the extra "E...I" letters.
+    "E\\.?\\s*I\\.?\\s*R\\.?\\s*L\\.?", // EIRL (Peru/Chile: Empresa Individual de Responsabilidad Limitada)
     "E\\.?\\s*U\\.?\\s*R\\.?\\s*L\\.?", // EURL (France: Entreprise Unipersonnelle à Responsabilité Limitée - single-member LLC)
     "S\\.?\\s*A\\.?\\s*R\\.?\\s*L\\.?", // SARL (France and Francophone countries: Société à Responsabilité Limitée)
     "S\\.?\\s*A\\.?\\s*S\\.?", // SAS (France: Société par Actions Simplifiée; Colombia: Sociedad por Acciones Simplificada)
