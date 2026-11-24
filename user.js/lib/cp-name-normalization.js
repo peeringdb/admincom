@@ -679,6 +679,26 @@ function containsAsnLikeToken(value) {
 }
 
 /**
+ * Checks whether an AKA value already appears, as whole words, inside any of the given names.
+ * Purpose: Let Update Name clear a redundant AKA that only repeats part of Name or Long Name,
+ * e.g. AKA "IPSCAPE" with Name "IPSCAPE PROVEDOR DE INTERNET" (AS274593, net 43737).
+ * Necessity: The exact-equality check alone misses an AKA that is a substring of the name.
+ * Matching is case-insensitive and needs a non-letter/digit boundary on both sides, so AKA
+ * "IP" is not treated as contained in "IPSCAPE".
+ * @param {string} knownAs - Current AKA value.
+ * @param {...string} names - Name values to search (e.g. next Name and effective Long Name).
+ * @returns {boolean} True when the AKA occurs as a whole-word run inside at least one name.
+ */
+function isKnownAsContainedInNames(knownAs, ...names) {
+  const needle = String(knownAs || "").trim().replace(/\s+/g, " ");
+  if (!needle) return false;
+
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const wholeWordRegex = new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "iu");
+  return names.some((name) => wholeWordRegex.test(String(name || "").trim().replace(/\s+/g, " ")));
+}
+
+/**
  * Detects names that look like generated maintainer/registry handles.
  * Purpose: Avoid setting network short Name to opaque handle-like values.
  * @ai Keep behavior stable and prefer minimal, localized edits.

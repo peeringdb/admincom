@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.224
+// @version      2.0.225
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
@@ -64,7 +64,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.224";
+  const SCRIPT_VERSION = "2.0.225";
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
   const SHARED_USER_AGENT_STORAGE_KEY = "pdbAdmincom.userAgent";
@@ -9986,6 +9986,8 @@
                 (
                   normalizedCurrentNetworkKnownAsForCompare === normalizedNextNameForCompare ||
                   (effectiveNetworkLongName && normalizedCurrentNetworkKnownAsForCompare === effectiveNetworkLongName.trim().toLowerCase()) ||
+                  // AKA only repeats part of Name/Long Name (e.g. "IPSCAPE" in "IPSCAPE PROVEDOR DE INTERNET").
+                  isKnownAsContainedInNames(currentNetworkKnownAs, nextName, effectiveNetworkLongName) ||
                   containsAsnLikeToken(currentNetworkKnownAs)
                 );
               const shouldUpdateNetworkKnownAs =

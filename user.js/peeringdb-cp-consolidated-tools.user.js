@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.224
+// @version      2.0.225
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
@@ -64,7 +64,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.224";
+  const SCRIPT_VERSION = "2.0.225";
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
   const SHARED_USER_AGENT_STORAGE_KEY = "pdbAdmincom.userAgent";
@@ -2828,6 +2828,26 @@
 
     // Optional AS/ASN prefix + 4-10 digit ASN-like number.
     return /\b(?:AS|ASN)?\s*[-:]?\s*\d{4,10}\b/i.test(text);
+  }
+
+  /**
+   * Checks whether an AKA value already appears, as whole words, inside any of the given names.
+   * Purpose: Let Update Name clear a redundant AKA that only repeats part of Name or Long Name,
+   * e.g. AKA "IPSCAPE" with Name "IPSCAPE PROVEDOR DE INTERNET" (AS274593, net 43737).
+   * Necessity: The exact-equality check alone misses an AKA that is a substring of the name.
+   * Matching is case-insensitive and needs a non-letter/digit boundary on both sides, so AKA
+   * "IP" is not treated as contained in "IPSCAPE".
+   * @param {string} knownAs - Current AKA value.
+   * @param {...string} names - Name values to search (e.g. next Name and effective Long Name).
+   * @returns {boolean} True when the AKA occurs as a whole-word run inside at least one name.
+   */
+  function isKnownAsContainedInNames(knownAs, ...names) {
+    const needle = String(knownAs || "").trim().replace(/\s+/g, " ");
+    if (!needle) return false;
+
+    const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const wholeWordRegex = new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "iu");
+    return names.some((name) => wholeWordRegex.test(String(name || "").trim().replace(/\s+/g, " ")));
   }
 
   /**
@@ -11214,6 +11234,8 @@
                 (
                   normalizedCurrentNetworkKnownAsForCompare === normalizedNextNameForCompare ||
                   (effectiveNetworkLongName && normalizedCurrentNetworkKnownAsForCompare === effectiveNetworkLongName.trim().toLowerCase()) ||
+                  // AKA only repeats part of Name/Long Name (e.g. "IPSCAPE" in "IPSCAPE PROVEDOR DE INTERNET").
+                  isKnownAsContainedInNames(currentNetworkKnownAs, nextName, effectiveNetworkLongName) ||
                   containsAsnLikeToken(currentNetworkKnownAs)
                 );
               const shouldUpdateNetworkKnownAs =
