@@ -93,6 +93,7 @@ function stripCompanyTypeSuffix(name) {
     "S\\.?\\s*A\\.?\\s*R\\.?\\s*L\\.?", // SARL (France and Francophone countries: Société à Responsabilité Limitée)
     "S\\.?\\s*A\\.?\\s*S\\.?", // SAS (France: Société par Actions Simplifiée; Colombia: Sociedad por Acciones Simplificada)
     "S\\.?\\s*A\\.?\\s*C\\.?", // SAC (Peru: Sociedad Anónima Cerrada - closely held corporation, Ley 26887)
+    "S\\.?\\s*A\\.?\\s*A\\.?", // SAA (Peru: Sociedad Anónima Abierta - publicly held corporation, Ley 26887)
     "S\\.?\\s*P\\.?\\s*R\\.?\\s*L\\.?", // SPRL (Belgium, French: Société Privée à Responsabilité Limitée)
     "S\\.?\\s*P\\.?\\s*A\\.?", // SPA (Italy: Società per Azioni - joint-stock company)
     "S\\.?\\s*R\\.?\\s*L\\.?", // SRL (Italy: Società a Responsabilità Limitata; also Latin America: Sociedad de Responsabilidad Limitada)
