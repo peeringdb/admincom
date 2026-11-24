@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.223
+// @version      2.0.224
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
@@ -64,7 +64,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.223";
+  const SCRIPT_VERSION = "2.0.224";
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
   const SHARED_USER_AGENT_STORAGE_KEY = "pdbAdmincom.userAgent";
@@ -2230,6 +2230,10 @@
       // limitada). Without it only the trailing "Ltda." strips, leaving "Foo y Cia" behind.
       // [ií] accepts the name with or without the accent.
       "y\\s+C[ií]a\\.?\\s*L\\.?\\s*t\\.?\\s*d\\.?\\s*a\\.?",
+      // Trailing "y Cía." / "e Cia." ("and Company", Spanish/Portuguese) without "Ltda.". Needed
+      // because the leading "Cia." prefix pattern is also matched at the end of a name, which
+      // would otherwise strip only "Cia." and leave a dangling "y"/"e" ("Foo y Cia." -> "Foo y").
+      "[ye]\\s+C[ií]a\\.?",
       // Compañía Limitada / y Compañía Limitada (Chile), spelled out. Without it only the bare
       // "Limitada" strips, leaving "Foo Compañía" behind. [ñn] and [ií] accept it unaccented.
       "(?:y\\s+)?Compa[ñn][ií]a\\s+Limitada",
@@ -2433,6 +2437,10 @@
       // "Companhia de Processamento de Dados da Paraiba", AS264338). The connector after it
       // (de/da/do/das/dos) is stripped with it so the short Name doesn't start with "de".
       "Companhia(?:\\s+d(?:e|a|o|as|os))?",
+      // Cia. (Brazil: abbreviation of the leading "Companhia" above, e.g. "Cia. de Processamento
+      // de Dados"). Requires the dot or a following connector, so a bare "Cia" word as in
+      // "Cia Networks" is left alone. [ií] also accepts the Spanish "Cía.".
+      "C[ií]a(?:\\.(?:\\s*d(?:e|a|o|as|os)(?=\\s))?|\\s+d(?:e|a|o|as|os)(?=\\s))",
     ];
 
     const suffixRegex = new RegExp(

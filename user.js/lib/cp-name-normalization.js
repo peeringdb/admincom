@@ -78,6 +78,10 @@ function stripCompanyTypeSuffix(name) {
     // limitada). Without it only the trailing "Ltda." strips, leaving "Foo y Cia" behind.
     // [ií] accepts the name with or without the accent.
     "y\\s+C[ií]a\\.?\\s*L\\.?\\s*t\\.?\\s*d\\.?\\s*a\\.?",
+    // Trailing "y Cía." / "e Cia." ("and Company", Spanish/Portuguese) without "Ltda.". Needed
+    // because the leading "Cia." prefix pattern is also matched at the end of a name, which
+    // would otherwise strip only "Cia." and leave a dangling "y"/"e" ("Foo y Cia." -> "Foo y").
+    "[ye]\\s+C[ií]a\\.?",
     // Compañía Limitada / y Compañía Limitada (Chile), spelled out. Without it only the bare
     // "Limitada" strips, leaving "Foo Compañía" behind. [ñn] and [ií] accept it unaccented.
     "(?:y\\s+)?Compa[ñn][ií]a\\s+Limitada",
@@ -281,6 +285,10 @@ function stripCompanyTypeSuffix(name) {
     // "Companhia de Processamento de Dados da Paraiba", AS264338). The connector after it
     // (de/da/do/das/dos) is stripped with it so the short Name doesn't start with "de".
     "Companhia(?:\\s+d(?:e|a|o|as|os))?",
+    // Cia. (Brazil: abbreviation of the leading "Companhia" above, e.g. "Cia. de Processamento
+    // de Dados"). Requires the dot or a following connector, so a bare "Cia" word as in
+    // "Cia Networks" is left alone. [ií] also accepts the Spanish "Cía.".
+    "C[ií]a(?:\\.(?:\\s*d(?:e|a|o|as|os)(?=\\s))?|\\s+d(?:e|a|o|as|os)(?=\\s))",
   ];
 
   const suffixRegex = new RegExp(
