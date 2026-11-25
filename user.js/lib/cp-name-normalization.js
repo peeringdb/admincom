@@ -289,6 +289,12 @@ function stripCompanyTypeSuffix(name) {
     // de Dados"). Requires the dot or a following connector, so a bare "Cia" word as in
     // "Cia Networks" is left alone. [ií] also accepts the Spanish "Cía.".
     "C[ií]a(?:\\.(?:\\s*d(?:e|a|o|as|os)(?=\\s))?|\\s+d(?:e|a|o|as|os)(?=\\s))",
+    // MChJ (Uzbekistan: Mas'uliyati cheklangan jamiyat - LLC). Registered both as a
+    // leading form ("MChJ \"Foo\"") and trailing ("\"LILI CLOUD\" MCHJ", net 43067), so it
+    // lives in the prefix list, which is also matched at the end of the name.
+    "M\\.?\\s*C\\.?\\s*h\\.?\\s*J\\.?",
+    // XK (Uzbekistan: xususiy korxona - private enterprise), same placement as MChJ.
+    "X\\.?\\s*K\\.?",
   ];
 
   const suffixRegex = new RegExp(
@@ -399,7 +405,8 @@ function stripCompanyTypeSuffix(name) {
   }
 
   // Remove wrapping quotes after legal prefix/suffix stripping.
-  candidate = candidate.replace(/^["'\u201c\u201d\u2018\u2019]+|["'\u201c\u201d\u2018\u2019]+$/g, "").trim();
+  // \u00ab/\u00bb are the guillemets used by Uzbek/Russian registrations ("\u00abLILI CLOUD\u00bb MChJ").
+  candidate = candidate.replace(/^["'\u201c\u201d\u2018\u2019\u00ab\u00bb]+|["'\u201c\u201d\u2018\u2019\u00ab\u00bb]+$/g, "").trim();
 
   // Keep quote behavior consistent for short-name normalization.
   // If ASCII double-quotes are unbalanced (odd count), drop all of them.
@@ -650,8 +657,8 @@ function collapseExactCommaDuplicateName(name) {
 
   // 2-part case: direct comparison.
   if (parts.length === 2) {
-    const left = parts[0].replace(/^['""\u201c\u201d\u2018\u2019]+|['""\u201c\u201d\u2018\u2019]+$/g, "").trim();
-    const right = parts[1].replace(/^['""\u201c\u201d\u2018\u2019]+|['""\u201c\u201d\u2018\u2019]+$/g, "").trim();
+    const left = parts[0].replace(/^['""\u201c\u201d\u2018\u2019\u00ab\u00bb]+|['""\u201c\u201d\u2018\u2019\u00ab\u00bb]+$/g, "").trim();
+    const right = parts[1].replace(/^['""\u201c\u201d\u2018\u2019\u00ab\u00bb]+|['""\u201c\u201d\u2018\u2019\u00ab\u00bb]+$/g, "").trim();
     if (!left || !right) return original;
     return left.toLowerCase() === right.toLowerCase() ? left : original;
   }
