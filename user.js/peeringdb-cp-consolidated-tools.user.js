@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.234
+// @version      2.0.235
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/*
@@ -2865,6 +2865,9 @@
    *   - ", Abuse contact for '" (RIPE's abuse-contact notice)
    *   - "Abuse-mailbox validation failed" (RIPE's validation notice, with or without
    *     a preceding comma or line break)
+   *   - ", " followed by a banner run of 2+ "=", "-", "#", "*", "~", "_" or "+": a
+   *     remark section header such as "==== IPv4 ====" that the RDAP import appended
+   *     ("<GIVEN_NAME> <SURNAME>, ==== IPv4 ====", net 44122 / org 45850, AS207858)
    * @param {string} name - Organization name possibly carrying notice text.
    * @returns {string} Name before the first notice marker, or the original name when
    *   no marker is found or nothing would be left.
@@ -2873,7 +2876,7 @@
     const original = String(name || "").trim();
     if (!original) return original;
     const match = original.match(
-      /^([\s\S]+?)(?:\s*,\s*remarks\s*:|\s*,\s*abuse\s+contact\s+for\s+'|[\s,;]*abuse-mailbox\s+validation\s+failed)/i,
+      /^([\s\S]+?)(?:\s*,\s*remarks\s*:|\s*,\s*abuse\s+contact\s+for\s+'|[\s,;]*abuse-mailbox\s+validation\s+failed|\s*,\s*[=\-#*~_+]{2,})/i,
     );
     if (!match) return original;
     const kept = match[1].replace(/[\s,;:]+$/, "").trim();

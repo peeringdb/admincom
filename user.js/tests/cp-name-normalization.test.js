@@ -235,10 +235,16 @@ test('stripRirNoticeText cuts RIPE abuse notices and remarks', () => {
     'Foo Ltd',
   );
   assert.equal(lib.stripRirNoticeText('Name, remarks: GARBAGE'), 'Name');
+  // net 44122 / org 45850 (AS207858): first RIPE remark line is a section banner.
+  assert.equal(lib.stripRirNoticeText('Given Surname, ==== IPv4 ===='), 'Given Surname');
+  assert.equal(lib.stripRirNoticeText('Foo Ltd, -- AS35320 ETT--'), 'Foo Ltd');
+  assert.equal(lib.stripRirNoticeText('Foo Ltd, ####'), 'Foo Ltd');
 });
 
 test('stripRirNoticeText leaves real names alone', () => {
   assert.equal(lib.stripRirNoticeText('Abuse Networks Ltd'), 'Abuse Networks Ltd');
+  assert.equal(lib.stripRirNoticeText('Foo-Bar Ltd, Berlin'), 'Foo-Bar Ltd, Berlin');
+  assert.equal(lib.stripRirNoticeText('A+ Networks, -'), 'A+ Networks, -'); // single dash
   assert.equal(lib.stripRirNoticeText('Anti-Abuse Contact Ltd'), 'Anti-Abuse Contact Ltd');
   // Nothing would be left before the marker, so the input is kept.
   assert.equal(lib.stripRirNoticeText("Abuse contact for 'AS1' is 'x'"), "Abuse contact for 'AS1' is 'x'");
