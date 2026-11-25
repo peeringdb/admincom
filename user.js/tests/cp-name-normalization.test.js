@@ -31,6 +31,7 @@ const lib = loadPureLib(
     'containsAsnLikeToken',
     'isLikelyGeneratedHandleName',
     'sanitizeRdapOrgName',
+    'stripRirNoticeText',
     'parseRdapTradingAsIdentity',
     'parsePolishScPartnerIdentity',
     'looksLikePersonalNameShape',
@@ -210,6 +211,43 @@ test('isLikelyGeneratedHandleName', () => {
 
 test('sanitizeRdapOrgName strips appended remarks', () => {
   assert.equal(lib.sanitizeRdapOrgName('Name, remarks: GARBAGE'), 'Name');
+});
+
+// RIPE emits whois notices as RDAP remarks, and PeeringDB's org creation appended
+// them to the registrant name (org 44990 / net 43269, org 45297).
+const TAHA_NOTICE = "Taha Yasin Arkadas, Abuse contact for 'AS218983' is 'abuse@jetguard.co'"
+  + 'Abuse-mailbox validation failed. Please refer to ORG-LCTL2-RIPE for further information';
+const NERDPITCH_NOTICE = "Lorenzo Karel trading as Nerdpitch, Abuse contact for 'AS209131' is "
+  + "'abuse@nerdpitch.cloud'\nAbuse-mailbox validation failed. Please refer to ORG-IG165-RIPE "
+  + 'for further information.';
+
+test('stripRirNoticeText cuts RIPE abuse notices and remarks', () => {
+  assert.equal(lib.stripRirNoticeText(TAHA_NOTICE), 'Taha Yasin Arkadas');
+  assert.equal(lib.stripRirNoticeText(NERDPITCH_NOTICE), 'Lorenzo Karel trading as Nerdpitch');
+  assert.equal(
+    lib.stripRirNoticeText('Foo Ltd\nAbuse-mailbox validation failed. Please refer to ORG-X'),
+    'Foo Ltd',
+  );
+  assert.equal(lib.stripRirNoticeText('Name, remarks: GARBAGE'), 'Name');
+});
+
+test('stripRirNoticeText leaves real names alone', () => {
+  assert.equal(lib.stripRirNoticeText('Abuse Networks Ltd'), 'Abuse Networks Ltd');
+  assert.equal(lib.stripRirNoticeText('Anti-Abuse Contact Ltd'), 'Anti-Abuse Contact Ltd');
+  // Nothing would be left before the marker, so the input is kept.
+  assert.equal(lib.stripRirNoticeText("Abuse contact for 'AS1' is 'x'"), "Abuse contact for 'AS1' is 'x'");
+});
+
+test('RIR notice text never reaches Name or Long Name', () => {
+  assert.deepStrictEqual(
+    lib.compactEntityNameWithLongNameFallback(TAHA_NOTICE),
+    { shortName: 'Taha Yasin Arkadas', longName: '' },
+  );
+  assert.equal(lib.sanitizeRdapOrgName(TAHA_NOTICE), 'Taha Yasin Arkadas');
+  assert.deepStrictEqual(
+    lib.parseOrganizationNameIdentity(NERDPITCH_NOTICE, 'NL'),
+    { name: 'Nerdpitch', knownAs: 'Lorenzo Karel', fullName: 'Lorenzo Karel trading as Nerdpitch' },
+  );
 });
 
 test('parseRdapTradingAsIdentity splits person/company', () => {

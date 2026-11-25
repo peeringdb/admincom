@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.228
+// @version      2.0.229
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/*
@@ -2822,12 +2822,41 @@
   }
 
   /**
+   * Cuts RIR notice text that RDAP lookups appended to an organization name.
+   * Purpose: PeeringDB's RDAP-based org creation joins the registrant name with the
+   * first RIPE remark, and RIPE emits whois notices as remarks. When an abuse mailbox
+   * fails validation that yields names like "Taha Yasin Arkadas, Abuse contact for
+   * 'AS218983' is 'abuse@jetguard.co'Abuse-mailbox validation failed. Please refer to
+   * ORG-LCTL2-RIPE ..." (org 44990, net 43269; also org 45297).
+   * Necessity: None of that tail is part of the name, and every Name/Long Name
+   * derivation must see the clean registrant name instead.
+   * Patterns cut (case-insensitive, everything from the marker on):
+   *   - ", remarks:"
+   *   - ", Abuse contact for '" (RIPE's abuse-contact notice)
+   *   - "Abuse-mailbox validation failed" (RIPE's validation notice, with or without
+   *     a preceding comma or line break)
+   * @param {string} name - Organization name possibly carrying notice text.
+   * @returns {string} Name before the first notice marker, or the original name when
+   *   no marker is found or nothing would be left.
+   */
+  function stripRirNoticeText(name) {
+    const original = String(name || "").trim();
+    if (!original) return original;
+    const match = original.match(
+      /^([\s\S]+?)(?:\s*,\s*remarks\s*:|\s*,\s*abuse\s+contact\s+for\s+'|[\s,;]*abuse-mailbox\s+validation\s+failed)/i,
+    );
+    if (!match) return original;
+    const kept = match[1].replace(/[\s,;:]+$/, "").trim();
+    return kept.length >= 2 ? kept : original;
+  }
+
+  /**
    * Compacts an entity name for short Name field while preserving legal/full form in Long Name.
    * @param {string} name - Source full name.
    * @returns {{ shortName: string, longName: string }} Compacted short name and optional long name.
    */
   function compactEntityNameWithLongNameFallback(name) {
-    const fullName = String(name || "").trim().replace(/\s+/g, " ");
+    const fullName = stripRirNoticeText(name).replace(/\s+/g, " ");
     if (!fullName) return { shortName: "", longName: "" };
 
     // Strip trailing "AS<digits>" patterns (e.g., "Cogeco Connexion Inc. AS27168" -> "Cogeco Connexion Inc.")
@@ -3015,11 +3044,8 @@
 
     let candidate = original;
 
-    // Split at ", remarks:" and take the first part (removes appended remarks/garbage)
-    const remarksMatch = candidate.match(/^(.+?)\s*,\s*remarks\s*:/i);
-    if (remarksMatch) {
-      candidate = remarksMatch[1].trim();
-    }
+    // Cut appended ", remarks:" and RIR notice text (see stripRirNoticeText).
+    candidate = stripRirNoticeText(candidate);
 
     // Collapse exact duplicate form "Name, Name".
     candidate = collapseExactCommaDuplicateName(candidate);
@@ -3065,8 +3091,8 @@
     const original = String(name || "").trim();
     if (!original) return { name: "", knownAs: "" };
 
-    // Remove trailing remarks noise before parsing trading-as pattern.
-    const base = original.replace(/^(.+?)\s*,\s*remarks\s*:.*/i, "$1").trim();
+    // Remove trailing remarks and RIR notice noise before parsing trading-as pattern.
+    const base = stripRirNoticeText(original);
     const match = base.match(/^(.+?)\s+(?:trading\s+as|t\s*\/\s*a|d\s*\/?\s*b\s*\/?\s*a|dba)\s+(.+)$/i);
     if (!match) {
       return { name: sanitizeRdapOrgName(original), knownAs: "" };
@@ -3211,14 +3237,16 @@
   /**
    * Resolves canonical name + AKA identity from known malformed/alias patterns.
    * Purpose: Keep all AKA extraction rules in one place.
-   * @param {string} name - Raw organization name.
+   * @param {string} rawName - Raw organization name; RIR notice text is cut first.
    * @param {string} [countryCode=""] - ISO country code, used by country-gated rules
    *   (currently only parseParenthesizedTradeNameIdentity).
    * @returns {{ name: string, knownAs: string, fullName: string }} Parsed identity values.
-   *   fullName is the original untouched input, populated only when a split occurred
+   *   fullName is the input with RIR notice text cut, populated only when a split occurred
    *   (knownAs non-empty), so callers can preserve it as Long Name.
    */
-  function parseOrganizationNameIdentity(name, countryCode = "") {
+  function parseOrganizationNameIdentity(rawName, countryCode = "") {
+    // Cut RIR notice text first, so fullName (used as Long Name) never carries it.
+    const name = stripRirNoticeText(rawName);
     const tradingAsIdentity = parseRdapTradingAsIdentity(name);
     if (String(tradingAsIdentity?.knownAs || "").trim()) {
       return { ...tradingAsIdentity, fullName: String(name || "").trim() };
@@ -7772,6 +7800,7 @@
     return (
       text.includes(", remarks:") ||
       text.includes(",remarks:") ||
+      stripRirNoticeText(text) !== text ||
       hasExactCommaDuplicate ||
       hasCommaLegalAliasDuplicate ||
       /\b(?:trad(?:ing)?\s+as|t\s*\/\s*a|d\s*\/?\s*b\s*\/?\s*a|dba)\s+/i.test(text) ||

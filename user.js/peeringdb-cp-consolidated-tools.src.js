@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.228
+// @version      2.0.229
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/*
@@ -6228,6 +6228,7 @@
     return (
       text.includes(", remarks:") ||
       text.includes(",remarks:") ||
+      stripRirNoticeText(text) !== text ||
       hasExactCommaDuplicate ||
       hasCommaLegalAliasDuplicate ||
       /\b(?:trad(?:ing)?\s+as|t\s*\/\s*a|d\s*\/?\s*b\s*\/?\s*a|dba)\s+/i.test(text) ||
