@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.229
+// @version      2.0.230
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/*
@@ -10051,6 +10051,8 @@
                   (effectiveNetworkLongName && normalizedCurrentNetworkKnownAsForCompare === effectiveNetworkLongName.trim().toLowerCase()) ||
                   // AKA only repeats part of Name/Long Name (e.g. "IPSCAPE" in "IPSCAPE PROVEDOR DE INTERNET").
                   isKnownAsContainedInNames(currentNetworkKnownAs, nextName, effectiveNetworkLongName) ||
+                  // AKA is the Name plus a legal form (e.g. 'ООО "Digital-Tel Net"' for "Digital-Tel Net").
+                  isKnownAsLegalFormOfNames(currentNetworkKnownAs, nextName, effectiveNetworkLongName) ||
                   containsAsnLikeToken(currentNetworkKnownAs)
                 );
               const shouldUpdateNetworkKnownAs =
@@ -10059,6 +10061,19 @@
                 orgKnownAs !== currentNetworkKnownAs;
               const shouldUpdateOrganizationKnownAs =
                 ctx.entity === "organization" && orgKnownAs && orgKnownAs !== currentKnownAs;
+              // Organization AKA that only repeats the Name or Long Name, or the Name plus a
+              // legal form (org 45008: AKA 'OOO "Digital-Tel Net"' = its Long Name).
+              const shouldClearOrganizationKnownAs =
+                ctx.entity === "organization" &&
+                currentKnownAs &&
+                !shouldUpdateOrganizationKnownAs &&
+                (
+                  currentKnownAs.trim().toLowerCase() === normalizedNextNameForCompare ||
+                  (currentLongName && currentKnownAs.trim().toLowerCase() === String(currentLongName).trim().toLowerCase()) ||
+                  (nextLongName && currentKnownAs.trim().toLowerCase() === String(nextLongName).trim().toLowerCase()) ||
+                  isKnownAsContainedInNames(currentKnownAs, nextName, nextLongName || currentLongName) ||
+                  isKnownAsLegalFormOfNames(currentKnownAs, nextName, nextLongName, currentLongName)
+                );
               const shouldAttemptOrgUpdate = Boolean((wasMalformedOrgName || hasMalformedCurrentLongName) && orgIdToUpdate);
 
               if (
@@ -10068,6 +10083,7 @@
                 !shouldClearNetworkKnownAs &&
                 !shouldUpdateNetworkKnownAs &&
                 !shouldUpdateOrganizationKnownAs &&
+                !shouldClearOrganizationKnownAs &&
                 !shouldAttemptOrgUpdate
               ) {
                 pulseToolbarButton(event?.target, "No-op");
@@ -10127,7 +10143,7 @@
                 }
               }
 
-              if (nextName === currentName && !shouldUpdateLongName && !shouldClearNetworkLongName && !shouldClearNetworkKnownAs && !shouldUpdateNetworkKnownAs && !shouldUpdateOrganizationKnownAs) {
+              if (nextName === currentName && !shouldUpdateLongName && !shouldClearNetworkLongName && !shouldClearNetworkKnownAs && !shouldUpdateNetworkKnownAs && !shouldUpdateOrganizationKnownAs && !shouldClearOrganizationKnownAs) {
                 pulseToolbarButton(event?.target, "Updated");
                 notifyUser({
                   title: "PeeringDB CP",
@@ -10154,6 +10170,9 @@
               }
               if (ctx.entity === "organization" && shouldUpdateOrganizationKnownAs) {
                 setInputValue("#id_aka", orgKnownAs);
+              }
+              if (shouldClearOrganizationKnownAs) {
+                setInputValue("#id_aka", "");
               }
               // "Floor" is deprecated; clear it on save if it has a value.
               if (getInputValue("#id_floor")) {

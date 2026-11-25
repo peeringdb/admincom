@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.229
+// @version      2.0.230
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/*
@@ -2489,9 +2489,19 @@
       "C\\.?\\s*V\\.?", // CV / C.V. (Indonesia)
       "U\\.?\\s*D\\.?", // UD / U.D. (Indonesia)
       "P\\.?\\s*D\\.?", // PD / P.D. (Indonesia)
-      "T\\.?\\s*O\\.?\\s*O\\.?", // TOO / T.O.O. (Kazakhstan)
-      "O\\.?\\s*O\\.?\\s*O\\.?", // OOO / O.O.O. (Russia)
-      "O\\.?\\s*A\\.?\\s*O\\.?", // OAO / O.A.O. (Russia)
+      // The Russian/Kazakh forms below also accept the Cyrillic look-alike letters
+      // (О U+041E, А U+0410, Т U+0422), alone or mixed with Latin ones, because
+      // registrations write them in either script: net 43285 has AKA
+      // 'ООО "Digital-Tel Net"' in Cyrillic, its org 'OOO "Digital-Tel Net"' in Latin.
+      "[TТ]\\.?\\s*[OО]\\.?\\s*[OО]\\.?", // TOO / ТОО (Kazakhstan: tovarishchestvo s ogranichennoy otvetstvennostyu - LLP)
+      "[OО]\\.?\\s*[OО]\\.?\\s*[OО]\\.?", // OOO / ООО (Russia: LLC)
+      "[OО]\\.?\\s*[AА]\\.?\\s*[OО]\\.?", // OAO / ОАО (Russia: open joint stock company)
+      "З\\.?\\s*[AА]\\.?\\s*[OО]\\.?", // ЗАО (Russia: closed joint stock company; Latin ZAO is in the suffix list)
+      "П\\.?\\s*[AА]\\.?\\s*[OО]\\.?", // ПАО (Russia: public joint stock company; Latin PAO is in the suffix list)
+      "И\\.?\\s*П\\.?", // ИП (Russia/Kazakhstan/Uzbekistan: individualny predprinimatel - sole proprietor)
+      "Ч\\.?\\s*П\\.?", // ЧП (Ukraine/Belarus: chastnoye predpriyatiye - private enterprise)
+      "М\\.?\\s*Ч\\.?\\s*Ж\\.?", // МЧЖ (Uzbekistan: Cyrillic spelling of MChJ - LLC)
+      "Х\\.?\\s*К\\.?", // ХК (Uzbekistan: Cyrillic spelling of XK - private enterprise)
       "E\\.?\\s*O\\.?\\s*O\\.?\\s*D\\.?", // EOOD / E.O.O.D. (Bulgaria)
       "O\\.?\\s*O\\.?\\s*D\\.?", // OOD / O.O.D. (Bulgaria)
       "SPOLKA\\s+JAWNA", // Spolka Jawna (Polish general partnership)
@@ -2970,6 +2980,33 @@
 
     // Optional AS/ASN prefix + 4-10 digit ASN-like number.
     return /\b(?:AS|ASN)?\s*[-:]?\s*\d{4,10}\b/i.test(text);
+  }
+
+  /**
+   * Checks whether an AKA value is one of the given names with only a legal form or quotes added.
+   * Purpose: Let Update Name clear an AKA that repeats the Name in its registered legal form,
+   * e.g. AKA 'ООО "Digital-Tel Net"' with Name "Digital-Tel Net" (AS39231, net 43285).
+   * Necessity: isKnownAsContainedInNames only finds an AKA inside a name, not a name inside
+   * an AKA that adds a legal form.
+   * Both sides have their legal form stripped (stripCompanyTypeSuffix) and quotes removed,
+   * then are compared case-insensitively.
+   * @param {string} knownAs - Current AKA value.
+   * @param {...string} names - Name values to compare against (e.g. next Name and Long Name).
+   * @returns {boolean} True when the AKA reduces to the same core name as one of the names.
+   */
+  function isKnownAsLegalFormOfNames(knownAs, ...names) {
+    const toCore = (value) => {
+      const text = String(value || "").trim().replace(/\s+/g, " ");
+      if (!text) return "";
+      return String(stripCompanyTypeSuffix(text) || text)
+        .replace(/["'\u201c\u201d\u2018\u2019\u00ab\u00bb]/g, "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+    };
+    const needle = toCore(knownAs);
+    if (!needle) return false;
+    return names.some((name) => toCore(name) === needle);
   }
 
   /**
@@ -11623,6 +11660,8 @@
                   (effectiveNetworkLongName && normalizedCurrentNetworkKnownAsForCompare === effectiveNetworkLongName.trim().toLowerCase()) ||
                   // AKA only repeats part of Name/Long Name (e.g. "IPSCAPE" in "IPSCAPE PROVEDOR DE INTERNET").
                   isKnownAsContainedInNames(currentNetworkKnownAs, nextName, effectiveNetworkLongName) ||
+                  // AKA is the Name plus a legal form (e.g. 'ООО "Digital-Tel Net"' for "Digital-Tel Net").
+                  isKnownAsLegalFormOfNames(currentNetworkKnownAs, nextName, effectiveNetworkLongName) ||
                   containsAsnLikeToken(currentNetworkKnownAs)
                 );
               const shouldUpdateNetworkKnownAs =
@@ -11631,6 +11670,19 @@
                 orgKnownAs !== currentNetworkKnownAs;
               const shouldUpdateOrganizationKnownAs =
                 ctx.entity === "organization" && orgKnownAs && orgKnownAs !== currentKnownAs;
+              // Organization AKA that only repeats the Name or Long Name, or the Name plus a
+              // legal form (org 45008: AKA 'OOO "Digital-Tel Net"' = its Long Name).
+              const shouldClearOrganizationKnownAs =
+                ctx.entity === "organization" &&
+                currentKnownAs &&
+                !shouldUpdateOrganizationKnownAs &&
+                (
+                  currentKnownAs.trim().toLowerCase() === normalizedNextNameForCompare ||
+                  (currentLongName && currentKnownAs.trim().toLowerCase() === String(currentLongName).trim().toLowerCase()) ||
+                  (nextLongName && currentKnownAs.trim().toLowerCase() === String(nextLongName).trim().toLowerCase()) ||
+                  isKnownAsContainedInNames(currentKnownAs, nextName, nextLongName || currentLongName) ||
+                  isKnownAsLegalFormOfNames(currentKnownAs, nextName, nextLongName, currentLongName)
+                );
               const shouldAttemptOrgUpdate = Boolean((wasMalformedOrgName || hasMalformedCurrentLongName) && orgIdToUpdate);
 
               if (
@@ -11640,6 +11692,7 @@
                 !shouldClearNetworkKnownAs &&
                 !shouldUpdateNetworkKnownAs &&
                 !shouldUpdateOrganizationKnownAs &&
+                !shouldClearOrganizationKnownAs &&
                 !shouldAttemptOrgUpdate
               ) {
                 pulseToolbarButton(event?.target, "No-op");
@@ -11699,7 +11752,7 @@
                 }
               }
 
-              if (nextName === currentName && !shouldUpdateLongName && !shouldClearNetworkLongName && !shouldClearNetworkKnownAs && !shouldUpdateNetworkKnownAs && !shouldUpdateOrganizationKnownAs) {
+              if (nextName === currentName && !shouldUpdateLongName && !shouldClearNetworkLongName && !shouldClearNetworkKnownAs && !shouldUpdateNetworkKnownAs && !shouldUpdateOrganizationKnownAs && !shouldClearOrganizationKnownAs) {
                 pulseToolbarButton(event?.target, "Updated");
                 notifyUser({
                   title: "PeeringDB CP",
@@ -11726,6 +11779,9 @@
               }
               if (ctx.entity === "organization" && shouldUpdateOrganizationKnownAs) {
                 setInputValue("#id_aka", orgKnownAs);
+              }
+              if (shouldClearOrganizationKnownAs) {
+                setInputValue("#id_aka", "");
               }
               // "Floor" is deprecated; clear it on save if it has a value.
               if (getInputValue("#id_floor")) {

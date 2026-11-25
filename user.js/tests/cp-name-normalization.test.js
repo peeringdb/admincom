@@ -30,6 +30,8 @@ const lib = loadPureLib(
     'collapseExactCommaDuplicateName',
     'containsAsnLikeToken',
     'isLikelyGeneratedHandleName',
+    'isKnownAsContainedInNames',
+    'isKnownAsLegalFormOfNames',
     'sanitizeRdapOrgName',
     'stripRirNoticeText',
     'parseRdapTradingAsIdentity',
@@ -248,6 +250,40 @@ test('RIR notice text never reaches Name or Long Name', () => {
     lib.parseOrganizationNameIdentity(NERDPITCH_NOTICE, 'NL'),
     { name: 'Nerdpitch', knownAs: 'Lorenzo Karel', fullName: 'Lorenzo Karel trading as Nerdpitch' },
   );
+});
+
+// Russian/Kazakh/Uzbek legal forms written in Cyrillic, or with Cyrillic look-alike
+// letters mixed in (net 43285, AS39231: AKA 'ООО "Digital-Tel Net"').
+test('Cyrillic legal forms are stripped from the short Name', () => {
+  const cases = [
+    ['ООО "Digital-Tel Net"', 'Digital-Tel Net'],
+    ['OОO "Mixed"', 'Mixed'],
+    ['ТОО "Kazakh Net"', 'Kazakh Net'],
+    ['ЗАО "Foo"', 'Foo'],
+    ['ПАО "Ростелеком"', 'Ростелеком'],
+    ['ИП Иванов Иван', 'Иванов Иван'],
+    ['ЧП Петренко', 'Петренко'],
+    ['"Uz Net" МЧЖ', 'Uz Net'],
+    ['"Uz Net" ХК', 'Uz Net'],
+  ];
+  for (const [input, shortName] of cases) {
+    assert.equal(lib.compactEntityNameWithLongNameFallback(input).shortName, shortName, input);
+  }
+});
+
+test('Cyrillic names without a legal form are unchanged', () => {
+  for (const name of ['Ташкент', 'Ромашка', 'Озон', 'Опора Телеком', 'Хакасия Net', 'Ипотека Банк']) {
+    assert.deepStrictEqual(lib.compactEntityNameWithLongNameFallback(name), { shortName: name, longName: '' }, name);
+  }
+});
+
+test('isKnownAsLegalFormOfNames detects an AKA that only adds a legal form', () => {
+  assert.equal(lib.isKnownAsLegalFormOfNames('ООО "Digital-Tel Net"', 'Digital-Tel Net', '"Digital-Tel Net" Ltd'), true);
+  assert.equal(lib.isKnownAsLegalFormOfNames('OOO "Digital-Tel Net"', 'Digital-Tel Net', ''), true);
+  assert.equal(lib.isKnownAsLegalFormOfNames('OOO "Other"', 'Digital-Tel Net', ''), false);
+  assert.equal(lib.isKnownAsLegalFormOfNames('Jet Guard', 'Taha Yasin Arkadas', ''), false);
+  assert.equal(lib.isKnownAsLegalFormOfNames('Foo Group', 'Foo', 'Foo Ltd'), false);
+  assert.equal(lib.isKnownAsLegalFormOfNames('', 'Foo'), false);
 });
 
 test('parseRdapTradingAsIdentity splits person/company', () => {
