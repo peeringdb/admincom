@@ -39,7 +39,10 @@ const lib = loadPureLib(
     'parsePolishScPartnerIdentity',
     'looksLikePersonalNameShape',
     'parseParenthesizedTradeNameIdentity',
+    'looksLikeShortPersonalName',
+    'parseCommaPersonTradeNameIdentity',
     'parseOrganizationNameIdentity',
+    'isKnownAsFromLongNameIdentity',
     'getDeterministicNetworkFallbackName',
     'pickPreferredNetworkNameCandidate',
   ],
@@ -389,12 +392,74 @@ test('parseParenthesizedTradeNameIdentity', async (t) => {
   });
 });
 
+test('looksLikeShortPersonalName', () => {
+  assert.equal(lib.looksLikeShortPersonalName('Given Surname'), true);
+  assert.equal(lib.looksLikeShortPersonalName("Jean-Luc O'Brien"), true);
+  assert.equal(lib.looksLikeShortPersonalName('GIVEN SURNAME'), true);
+  assert.equal(lib.looksLikeShortPersonalName('Given'), false); // one word
+  assert.equal(lib.looksLikeShortPersonalName('Acme Networks'), false); // business word
+  assert.equal(lib.looksLikeShortPersonalName('Smith Family'), false); // business word
+  assert.equal(lib.looksLikeShortPersonalName('Foo Ltd'), false); // legal form
+  assert.equal(lib.looksLikeShortPersonalName('John Smith 2'), false); // digit
+  assert.equal(lib.looksLikeShortPersonalName('john smith'), false); // not capitalized
+});
+
+test('parseCommaPersonTradeNameIdentity', async (t) => {
+  await t.test('person, then trade name sharing the surname (net 43561 / org 45283 shape)', () => {
+    assert.deepEqual(
+      lib.parseCommaPersonTradeNameIdentity('Given Surname, Súrname Digital Solutions'),
+      { name: 'Súrname Digital Solutions', knownAs: 'Given Surname' },
+    );
+  });
+
+  await t.test('splits when the trade name has a legal form or business word', () => {
+    assert.deepEqual(
+      lib.parseCommaPersonTradeNameIdentity('Given Surname, Example IT AB'),
+      { name: 'Example IT AB', knownAs: 'Given Surname' },
+    );
+  });
+
+  for (const name of [
+    'Acme Networks, Berlin', // company, city
+    'Foo Ltd, Bar', // legal form on the left
+    'John Smith, Jane Doe', // two people
+    'Given Surname, Berlin', // person, city
+    'John Smith, iFog', // person, unrelated remark
+    'Given Surname, Súrname Digital, Berlin', // three parts
+  ]) {
+    await t.test(`does not split ${JSON.stringify(name)}`, () => {
+      assert.equal(lib.parseCommaPersonTradeNameIdentity(name).knownAs, '');
+    });
+  }
+});
+
+test('isKnownAsFromLongNameIdentity', () => {
+  assert.equal(
+    lib.isKnownAsFromLongNameIdentity('Given Surname', 'Given Surname, Súrname Digital Solutions'),
+    true,
+  );
+  assert.equal(
+    lib.isKnownAsFromLongNameIdentity('remzi toker', 'Remzi Toker trading as VENTURESDC'),
+    true,
+  );
+  assert.equal(lib.isKnownAsFromLongNameIdentity('IPSCAPE', 'IPSCAPE PROVEDOR DE INTERNET'), false);
+  assert.equal(lib.isKnownAsFromLongNameIdentity('', 'Remzi Toker trading as VENTURESDC'), false);
+  assert.equal(lib.isKnownAsFromLongNameIdentity('Remzi Toker', ''), false);
+});
+
 test('parseOrganizationNameIdentity', async (t) => {
   await t.test('threads a trading-as split through with fullName preserved', () => {
     const result = lib.parseOrganizationNameIdentity('Remzi Toker trading as VENTURESDC');
     assert.equal(result.name, 'VENTURESDC');
     assert.equal(result.knownAs, 'Remzi Toker');
     assert.equal(result.fullName, 'Remzi Toker trading as VENTURESDC');
+  });
+
+  await t.test('threads a comma person/trade-name split through with fullName preserved', () => {
+    const result = lib.parseOrganizationNameIdentity('Given Surname, Súrname Digital Solutions', 'DE');
+    assert.equal(result.name, 'Súrname Digital Solutions');
+    assert.equal(result.knownAs, 'Given Surname');
+    assert.equal(result.fullName, 'Given Surname, Súrname Digital Solutions');
   });
 
   await t.test('a plain name with no split has empty knownAs/fullName', () => {

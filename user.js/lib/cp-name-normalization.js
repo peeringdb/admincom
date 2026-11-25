@@ -1081,11 +1081,101 @@ function parseParenthesizedTradeNameIdentity(name, countryCode = "") {
 }
 
 /**
+ * Words that mark the trade-name half of "<Person>, <Trade name>" as a business name.
+ * Extends PARENTHESIZED_TRADE_NAME_DISQUALIFYING_WORDS (checked as well) with common
+ * one-person-business vocabulary.
+ */
+const COMMA_TRADE_NAME_BUSINESS_WORDS = new Set([
+  "digital", "media", "hosting", "cloud", "tech", "technology", "technologies",
+  "it", "data", "consulting", "networking", "net", "web", "online", "software",
+  "communications", "connect", "labs", "studio", "computing", "infrastructure",
+  "family", "holding", "holdings", "trust", "foundation",
+]);
+
+/**
+ * Lowercases text and removes diacritics, so "Súrname" and "Surname" compare equal.
+ * @param {string} text - Text to fold.
+ * @returns {string} Folded text.
+ */
+function foldNameText(text) {
+  return String(text || "").normalize("NFD").replace(/\p{M}+/gu, "").toLowerCase();
+}
+
+/**
+ * Checks whether text has the shape of a short personal name: 2 to 4 capitalized
+ * words, no digits, no corporate vocabulary and no legal form.
+ * Purpose: Person guard for parseCommaPersonTradeNameIdentity(). Kept apart from
+ * looksLikePersonalNameShape(), whose 3-word minimum suits the GT parenthesis rule.
+ * @param {string} text - Candidate text before the comma.
+ * @returns {boolean} True when the text looks like a personal name.
+ */
+function looksLikeShortPersonalName(text) {
+  const trimmed = String(text || "").trim().replace(/\s+/g, " ");
+  if (!trimmed || /\d/.test(trimmed)) return false;
+  if (stripCompanyTypeSuffix(trimmed).trim() !== trimmed) return false;
+
+  const words = trimmed.split(" ");
+  if (words.length < 2 || words.length > 4) return false;
+
+  const isBusinessWord = (word) => {
+    const lower = word.toLowerCase();
+    return PARENTHESIZED_TRADE_NAME_DISQUALIFYING_WORDS.has(lower)
+      || COMMA_TRADE_NAME_BUSINESS_WORDS.has(lower);
+  };
+  if (words.some(isBusinessWord)) return false;
+
+  // "Jean-Luc", "O'Brien" and all-caps "SURNAME" count as name words.
+  const wordShapeRegex = /^\p{Lu}\p{Ll}*(?:['\u2019-]\p{Lu}?\p{Ll}*)*$|^\p{Lu}+$/u;
+  return words.every((word) => wordShapeRegex.test(word));
+}
+
+/**
+ * Extracts identity from "<Person Name>, <Trade Name>" org names.
+ * Purpose: PeeringDB's RDAP import appends the first RIPE remark line to the
+ * registrant name with ", ". For a sole trader that line is often the trade name,
+ * which gives "<GIVEN_NAME> <SURNAME>, <SURNAME> Digital Solutions" (AS218766) for
+ * what the RIPE org itself describes as "<GIVEN_NAME> <SURNAME> trading as <SURNAME>
+ * Digital Solutions".
+ * Necessity: Comma-joined names are common ("Company, City", "Company, Alias"), so the
+ * split needs exactly two parts, a person-shaped left part, and a right part that
+ * either shares a surname with the person (accents ignored) or carries business
+ * vocabulary or a legal form.
+ * Example: "Given Surname, Súrname Digital Solutions"
+ * -> { name: "Súrname Digital Solutions", knownAs: "Given Surname" }
+ * @param {string} name - Raw organization name.
+ * @returns {{ name: string, knownAs: string }} Parsed identity values.
+ */
+function parseCommaPersonTradeNameIdentity(name) {
+  const original = String(name || "").trim();
+  if (!original) return { name: "", knownAs: "" };
+  const noSplit = { name: sanitizeRdapOrgName(original), knownAs: "" };
+
+  const parts = original.split(",").map((part) => part.trim());
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return noSplit;
+
+  const [personCandidate, tradeNameCandidate] = parts;
+  if (!looksLikeShortPersonalName(personCandidate)) return noSplit;
+
+  const tradeWords = foldNameText(tradeNameCandidate).split(/[\s.&/-]+/).filter(Boolean);
+  const personWords = foldNameText(personCandidate).split(/[\s-]+/).filter((word) => word.length >= 3);
+  const sharesSurname = personWords.some((word) => tradeWords.includes(word));
+  const hasBusinessWord = tradeWords.some((word) => COMMA_TRADE_NAME_BUSINESS_WORDS.has(word)
+    || PARENTHESIZED_TRADE_NAME_DISQUALIFYING_WORDS.has(word));
+  const hasLegalForm = stripCompanyTypeSuffix(tradeNameCandidate).trim() !== tradeNameCandidate;
+  if (!sharesSurname && !hasBusinessWord && !hasLegalForm) return noSplit;
+
+  return {
+    name: sanitizeRdapOrgName(tradeNameCandidate),
+    knownAs: personCandidate,
+  };
+}
+
+/**
  * Resolves canonical name + AKA identity from known malformed/alias patterns.
  * Purpose: Keep all AKA extraction rules in one place.
  * @param {string} rawName - Raw organization name; RIR notice text is cut first.
  * @param {string} [countryCode=""] - ISO country code, used by country-gated rules
- *   (currently only parseParenthesizedTradeNameIdentity).
+ *   (currently only parseParenthesizedTradeNameIdentity; the comma rule is ungated).
  * @returns {{ name: string, knownAs: string, fullName: string }} Parsed identity values.
  *   fullName is the input with RIR notice text cut, populated only when a split occurred
  *   (knownAs non-empty), so callers can preserve it as Long Name.
@@ -1108,7 +1198,29 @@ function parseOrganizationNameIdentity(rawName, countryCode = "") {
     return { ...parenIdentity, fullName: String(name || "").trim() };
   }
 
+  const commaIdentity = parseCommaPersonTradeNameIdentity(name);
+  if (String(commaIdentity?.knownAs || "").trim()) {
+    return { ...commaIdentity, fullName: String(name || "").trim() };
+  }
+
   return { ...tradingAsIdentity, fullName: "" };
+}
+
+/**
+ * Checks whether an AKA is the person part that a Long Name splits off.
+ * Purpose: After a split, Long Name keeps the full original ("Remzi Toker trading as
+ * VENTURESDC", "Given Surname, Súrname Digital Solutions") and so contains the AKA.
+ * The AKA-repeats-Long-Name cleanup must not clear an AKA the Long Name itself yields.
+ * @param {string} knownAs - Current AKA value.
+ * @param {string} longName - Long Name to parse.
+ * @param {string} [countryCode=""] - ISO country code for country-gated rules.
+ * @returns {boolean} True when parsing the Long Name gives this AKA.
+ */
+function isKnownAsFromLongNameIdentity(knownAs, longName, countryCode = "") {
+  const needle = String(knownAs || "").trim().replace(/\s+/g, " ").toLowerCase();
+  if (!needle || !String(longName || "").trim()) return false;
+  const identity = parseOrganizationNameIdentity(longName, countryCode);
+  return String(identity.knownAs || "").trim().replace(/\s+/g, " ").toLowerCase() === needle;
 }
 
 /**

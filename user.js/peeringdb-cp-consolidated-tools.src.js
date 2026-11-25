@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.233
+// @version      2.0.234
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/*
@@ -10017,6 +10017,8 @@
               const shouldClearNetworkKnownAs =
                 ctx.entity === "network" &&
                 currentNetworkKnownAs &&
+                // Keep an AKA that the Long Name's own trading-as / person split yields.
+                !isKnownAsFromLongNameIdentity(currentNetworkKnownAs, effectiveNetworkLongName) &&
                 (
                   normalizedCurrentNetworkKnownAsForCompare === normalizedNextNameForCompare ||
                   (effectiveNetworkLongName && normalizedCurrentNetworkKnownAsForCompare === effectiveNetworkLongName.trim().toLowerCase()) ||
@@ -10038,6 +10040,11 @@
                 ctx.entity === "organization" &&
                 currentKnownAs &&
                 !shouldUpdateOrganizationKnownAs &&
+                !isKnownAsFromLongNameIdentity(
+                  currentKnownAs,
+                  nextLongName || currentLongName,
+                  getSelectedOptionValue("#id_country"),
+                ) &&
                 (
                   currentKnownAs.trim().toLowerCase() === normalizedNextNameForCompare ||
                   (currentLongName && currentKnownAs.trim().toLowerCase() === String(currentLongName).trim().toLowerCase()) ||
