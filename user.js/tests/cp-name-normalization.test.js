@@ -43,6 +43,9 @@ const lib = loadPureLib(
     'parseCommaPersonTradeNameIdentity',
     'parseOrganizationNameIdentity',
     'isKnownAsFromLongNameIdentity',
+    'extractRdapImportedOrgNameParts',
+    'parseRdapRemarkJoinedIdentity',
+    'stripTurkishSectorDescriptorTail',
     'getDeterministicNetworkFallbackName',
     'pickPreferredNetworkNameCandidate',
   ],
@@ -405,6 +408,8 @@ test('looksLikeShortPersonalName', () => {
   assert.equal(lib.looksLikeShortPersonalName('Given'), false); // one word
   assert.equal(lib.looksLikeShortPersonalName('Acme Networks'), false); // business word
   assert.equal(lib.looksLikeShortPersonalName('Smith Family'), false); // business word
+  assert.equal(lib.looksLikeShortPersonalName('EXAMPLE BILISIM TEKNOLOJILERI'), false); // Turkish sector words
+  assert.equal(lib.looksLikeShortPersonalName('Example Telekom'), false);
   assert.equal(lib.looksLikeShortPersonalName('Foo Ltd'), false); // legal form
   assert.equal(lib.looksLikeShortPersonalName('John Smith 2'), false); // digit
   assert.equal(lib.looksLikeShortPersonalName('john smith'), false); // not capitalized
@@ -432,6 +437,7 @@ test('parseCommaPersonTradeNameIdentity', async (t) => {
     'Given Surname, Berlin', // person, city
     'John Smith, iFog', // person, unrelated remark
     'Given Surname, Súrname Digital, Berlin', // three parts
+    'EXAMPLE BILISIM TEKNOLOJILERI, Brand NET Telekomunikasyon', // Turkish company, not a person
   ]) {
     await t.test(`does not split ${JSON.stringify(name)}`, () => {
       assert.equal(lib.parseCommaPersonTradeNameIdentity(name).knownAs, '');
@@ -473,6 +479,129 @@ test('parseOrganizationNameIdentity', async (t) => {
     assert.equal(result.name, 'Acme Networks GmbH');
     assert.equal(result.knownAs, '');
     assert.equal(result.fullName, '');
+  });
+});
+
+// Shape of net 44210 / org 45929 (AS50019), with placeholder names.
+const REMARK_JOINED_REGISTRANT = 'EXAMPLE TELEKOM VE BILISIM TEKNOLOJILERI';
+const REMARK_JOINED_BRAND = 'Brand NET Telekomunikasyon';
+const REMARK_JOINED_NAME = `${REMARK_JOINED_REGISTRANT}, ${REMARK_JOINED_BRAND}`;
+const vcard = (fn, kind) => ['vcard', [['version', {}, 'text', '4.0'], ['fn', {}, 'text', fn], ['kind', {}, 'text', kind]]];
+const REMARK_JOINED_PAYLOAD = {
+  port43: 'whois.ripe.net',
+  entities: [
+    { handle: 'mnt-xx-example-1', roles: ['registrant'], vcardArray: vcard('mnt-xx-example-1', 'individual') },
+    { handle: 'ORG-EX1-RIPE', roles: ['registrant'], vcardArray: vcard(REMARK_JOINED_REGISTRANT, 'org') },
+    { handle: 'RIPE-NCC-END-MNT', roles: ['registrant'], vcardArray: vcard('RIPE-NCC-END-MNT', 'individual') },
+    { handle: 'EX1-RIPE', roles: ['administrative'], vcardArray: vcard('Example NOC', 'group') },
+  ],
+  remarks: [{ description: [REMARK_JOINED_BRAND] }],
+};
+
+test('extractRdapImportedOrgNameParts', async (t) => {
+  await t.test('RIPE: org-kind registrant fn and the first remark line', () => {
+    assert.deepEqual(lib.extractRdapImportedOrgNameParts(REMARK_JOINED_PAYLOAD), {
+      registrantName: REMARK_JOINED_REGISTRANT,
+      remarkLine: REMARK_JOINED_BRAND,
+    });
+  });
+
+  await t.test('APNIC: only the remark titled "description"', () => {
+    const payload = {
+      port43: 'whois.apnic.net',
+      entities: REMARK_JOINED_PAYLOAD.entities,
+      remarks: [{ title: 'remarks', description: ['Other'] }, { title: 'description', description: [REMARK_JOINED_BRAND] }],
+    };
+    assert.equal(lib.extractRdapImportedOrgNameParts(payload).remarkLine, REMARK_JOINED_BRAND);
+  });
+
+  await t.test('other RIRs get no remark line', () => {
+    const payload = { ...REMARK_JOINED_PAYLOAD, port43: 'whois.arin.net' };
+    assert.equal(lib.extractRdapImportedOrgNameParts(payload).remarkLine, '');
+  });
+
+  await t.test('missing payload gives empty parts', () => {
+    assert.deepEqual(lib.extractRdapImportedOrgNameParts(null), { registrantName: '', remarkLine: '' });
+  });
+});
+
+test('parseRdapRemarkJoinedIdentity', async (t) => {
+  const parts = { registrantName: REMARK_JOINED_REGISTRANT, remarkLine: REMARK_JOINED_BRAND };
+
+  await t.test('splits the exact joined string into registrant and brand', () => {
+    assert.deepEqual(lib.parseRdapRemarkJoinedIdentity(REMARK_JOINED_NAME, parts), {
+      name: REMARK_JOINED_REGISTRANT,
+      knownAs: REMARK_JOINED_BRAND,
+      fullName: '',
+    });
+  });
+
+  await t.test('matches a stored name already through sanitizeRdapOrgName', () => {
+    const dotted = { registrantName: REMARK_JOINED_REGISTRANT, remarkLine: 'Brand Net Ltd.' };
+    const result = lib.parseRdapRemarkJoinedIdentity(`${REMARK_JOINED_REGISTRANT}, Brand Net Ltd`, dotted);
+    assert.equal(result.knownAs, 'Brand Net Ltd.');
+  });
+
+  await t.test('matches across case and whitespace differences', () => {
+    const name = `  ${REMARK_JOINED_REGISTRANT.toLowerCase()},   ${REMARK_JOINED_BRAND}`;
+    assert.equal(lib.parseRdapRemarkJoinedIdentity(name, parts).knownAs, REMARK_JOINED_BRAND);
+  });
+
+  for (const [label, name, remarkLine] of [
+    ['a name RDAP did not build', 'Example Networks, Berlin', REMARK_JOINED_BRAND],
+    ['an empty remark line', `${REMARK_JOINED_REGISTRANT}, `, ''],
+    ['a banner remark', `${REMARK_JOINED_REGISTRANT}, ==== IPv4 ====`, '==== IPv4 ===='],
+    ['a legal-alias remark', 'Example Ltd, EXAMPLE', 'EXAMPLE'],
+    ['a remark with a URL', `${REMARK_JOINED_REGISTRANT}, see https://example.net`, 'see https://example.net'],
+    ['a remark with an ASN', `${REMARK_JOINED_REGISTRANT}, AS65550 upstream`, 'AS65550 upstream'],
+    ['a handle-like remark', `${REMARK_JOINED_REGISTRANT}, EXAMPLE-MNT`, 'EXAMPLE-MNT'],
+    ['a remark repeating the short Name', `${REMARK_JOINED_REGISTRANT}, EXAMPLE`, 'EXAMPLE'],
+    ['a remark contained in the registrant', `${REMARK_JOINED_REGISTRANT}, Example Telekom`, 'Example Telekom'],
+  ]) {
+    await t.test(`does not split ${label}`, () => {
+      const registrantName = name.startsWith('Example Ltd') ? 'Example Ltd'
+        : name.startsWith('Example Networks') ? 'Example Networks' : REMARK_JOINED_REGISTRANT;
+      const result = lib.parseRdapRemarkJoinedIdentity(name, { registrantName, remarkLine });
+      assert.equal(result.knownAs, '');
+    });
+  }
+});
+
+test('stripTurkishSectorDescriptorTail', async (t) => {
+  await t.test('trims "ve"/"san"/"tic" only next to a Turkish-only word', () => {
+    assert.equal(lib.stripTurkishSectorDescriptorTail('Example Bilisim San Tic'), 'Example');
+  });
+
+  await t.test('trims a Turkish sector tail', () => {
+    assert.equal(lib.stripTurkishSectorDescriptorTail(REMARK_JOINED_REGISTRANT), 'EXAMPLE');
+    assert.equal(lib.stripTurkishSectorDescriptorTail('Örnek Bilişim Hizmetleri'), 'Örnek');
+    assert.equal(lib.stripTurkishSectorDescriptorTail('Brand NET Telekomunikasyon'), 'Brand NET');
+  });
+
+  await t.test('keeps names without a Turkish-only tail word', () => {
+    assert.equal(lib.stripTurkishSectorDescriptorTail('Example Telekom'), 'Example Telekom');
+    assert.equal(lib.stripTurkishSectorDescriptorTail('Soluciones TIC'), 'Soluciones TIC');
+    assert.equal(lib.stripTurkishSectorDescriptorTail('Example Internet VE'), 'Example Internet VE');
+    assert.equal(lib.stripTurkishSectorDescriptorTail('Example San'), 'Example San');
+    assert.equal(lib.stripTurkishSectorDescriptorTail('Example Internet'), 'Example Internet');
+  });
+
+  await t.test('keeps names that would be all descriptor', () => {
+    assert.equal(lib.stripTurkishSectorDescriptorTail('Internet Ve Telekom'), 'Internet Ve Telekom');
+  });
+
+  await t.test('compact: short Name is trimmed, Long Name keeps the full name', () => {
+    assert.deepEqual(lib.compactEntityNameWithLongNameFallback(REMARK_JOINED_REGISTRANT), {
+      shortName: 'EXAMPLE',
+      longName: REMARK_JOINED_REGISTRANT,
+    });
+  });
+
+  await t.test('compact: names with a legal form are not trimmed', () => {
+    assert.equal(
+      lib.compactEntityNameWithLongNameFallback('Example Bilisim Teknolojileri AS').shortName,
+      'Example Bilisim Teknolojileri',
+    );
   });
 });
 

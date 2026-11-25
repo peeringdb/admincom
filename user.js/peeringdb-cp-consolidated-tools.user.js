@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.235
+// @version      2.0.236
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/*
@@ -2884,6 +2884,61 @@
   }
 
   /**
+   * Turkish sector words that trail a company's distinctive name ("<COMPANY> Telekom ve
+   * Bilisim Teknolojileri"). Folded: lowercase, no diacritics, dotless i as "i".
+   * TURKISH_SECTOR_DESCRIPTOR_WORDS_SPECIFIC are the ones that only occur in Turkish, so
+   * "Deutsche Telekom" or "Foo Internet" never count as a Turkish descriptor tail.
+   */
+  const TURKISH_SECTOR_DESCRIPTOR_WORDS_SPECIFIC = new Set([
+    "bilisim", "bilgi", "teknoloji", "teknolojileri", "hizmet", "hizmetleri",
+    "iletisim", "telekomunikasyon", "yazilim", "sanayi", "ticaret",
+  ]);
+  // "ve", "san" and "tic" also end non-Turkish names ("Soluciones TIC", a "VE" country
+  // code), so they are trimmed only next to a Turkish-only word.
+  const TURKISH_SECTOR_DESCRIPTOR_WORDS = new Set([
+    ...TURKISH_SECTOR_DESCRIPTOR_WORDS_SPECIFIC, "telekom", "internet", "ve", "san", "tic",
+  ]);
+
+  /**
+   * Folds a word for TURKISH_SECTOR_DESCRIPTOR_WORDS lookups.
+   * @param {string} word - Word to fold.
+   * @returns {string} Lowercase word without diacritics or a trailing period.
+   */
+  function foldTurkishWord(word) {
+    return String(word || "")
+      .replace(/[ıİ]/g, "i")
+      .normalize("NFD")
+      .replace(/\p{M}+/gu, "")
+      .toLowerCase()
+      .replace(/\.$/, "");
+  }
+
+  /**
+   * Trims a trailing Turkish sector descriptor from a name without a legal form.
+   * Purpose: Give Turkish company names a short Name, the shape existing TR orgs use
+   * (org 20558, 29104, 29427: Name is the distinctive word, Long Name the full name).
+   * Example: "<COMPANY> TELEKOM VE BILISIM TEKNOLOJILERI" -> "<COMPANY>"
+   * Necessity: Only trims when the tail has a Turkish-only word and at least one
+   * non-descriptor word is left, so "Deutsche Telekom" and "Internet Ve Telekom" stay.
+   * @param {string} name - Name without a legal form.
+   * @returns {string} Trimmed name, or the input when the rule does not apply.
+   */
+  function stripTurkishSectorDescriptorTail(name) {
+    const original = String(name || "").trim().replace(/\s+/g, " ");
+    const words = original.split(" ").filter(Boolean);
+    let keep = words.length;
+    while (keep > 0 && TURKISH_SECTOR_DESCRIPTOR_WORDS.has(foldTurkishWord(words[keep - 1]))) {
+      keep -= 1;
+    }
+    if (keep === 0 || keep === words.length) return original;
+
+    const tail = words.slice(keep).map(foldTurkishWord);
+    if (!tail.some((word) => TURKISH_SECTOR_DESCRIPTOR_WORDS_SPECIFIC.has(word))) return original;
+
+    return words.slice(0, keep).join(" ");
+  }
+
+  /**
    * Compacts an entity name for short Name field while preserving legal/full form in Long Name.
    * @param {string} name - Source full name.
    * @returns {{ shortName: string, longName: string }} Compacted short name and optional long name.
@@ -2926,7 +2981,12 @@
     }
 
     const withoutUnit = stripOrganizationalUnitDescriptor(fromLegalAliases || effectiveFullName) || (fromLegalAliases || effectiveFullName);
-    const withoutLegalType = stripCompanyTypeSuffix(withoutUnit) || withoutUnit;
+    const strippedLegalType = stripCompanyTypeSuffix(withoutUnit) || withoutUnit;
+    // A Turkish name without a legal form keeps its sector words as its only suffix
+    // ("<COMPANY> TELEKOM VE BILISIM TEKNOLOJILERI"); trim them for the short Name.
+    const withoutLegalType = strippedLegalType === withoutUnit
+      ? stripTurkishSectorDescriptorTail(withoutUnit)
+      : strippedLegalType;
     let compactBaseShortName = withoutLegalType || effectiveFullName;
     compactBaseShortName = normalizeSimpleSingleDashAlphabeticName(compactBaseShortName);
 
@@ -3351,6 +3411,11 @@
         || COMMA_TRADE_NAME_BUSINESS_WORDS.has(lower);
     };
     if (words.some(isBusinessWord)) return false;
+    // Turkish company names often carry no legal form ("<COMPANY> BILISIM TEKNOLOJILERI").
+    if (words.some((word) => {
+      const folded = foldTurkishWord(word);
+      return TURKISH_SECTOR_DESCRIPTOR_WORDS_SPECIFIC.has(folded) || folded === "telekom";
+    })) return false;
 
     // "Jean-Luc", "O'Brien" and all-caps "SURNAME" count as name words.
     const wordShapeRegex = /^\p{Lu}\p{Ll}*(?:['\u2019-]\p{Lu}?\p{Ll}*)*$|^\p{Lu}+$/u;
@@ -3449,6 +3514,117 @@
     if (!needle || !String(longName || "").trim()) return false;
     const identity = parseOrganizationNameIdentity(longName, countryCode);
     return String(identity.knownAs || "").trim().replace(/\s+/g, " ").toLowerCase() === needle;
+  }
+
+  /**
+   * Rebuilds the registrant name and remark line that PeeringDB's RDAP import joins.
+   * Purpose: PeeringDB creates orgs with 20c/rdap, whose RdapObject._parse() takes the
+   * registrant vCard "fn" (it reassigns on every registrant until one of kind "org"
+   * fixes it, so: the first org-kind one, else the last) and, for RIPE and APNIC,
+   * appends ", " plus the first line of a remark. This repeats that logic, so
+   * a stored name can be checked against the exact string the import built.
+   * @ai Keep this in step with 20c/rdap objects.py: top-level entities only, RIPE takes
+   * the first remark with any description, APNIC the remark titled "description".
+   * @param {object|null} payload - RDAP autnum payload.
+   * @returns {{ registrantName: string, remarkLine: string }} Both parts, empty when absent.
+   */
+  function extractRdapImportedOrgNameParts(payload) {
+    const empty = { registrantName: "", remarkLine: "" };
+    if (!payload || typeof payload !== "object") return empty;
+
+    let registrantName = "";
+    let registrantFinal = false;
+    for (const entity of Array.isArray(payload.entities) ? payload.entities : []) {
+      const roles = Array.isArray(entity?.roles) ? entity.roles.map((role) => String(role).toLowerCase()) : [];
+      if (!roles.includes("registrant") || registrantFinal) continue;
+      const cards = Array.isArray(entity?.vcardArray?.[1]) ? entity.vcardArray[1] : [];
+      const readCard = (key) => {
+        const card = cards.find((item) => Array.isArray(item) && String(item[0] || "").toLowerCase() === key);
+        return card ? String(card[3] || "").trim() : "";
+      };
+      const fn = readCard("fn");
+      if (!fn) continue;
+      registrantName = fn;
+      if (readCard("kind").toLowerCase().includes("org")) registrantFinal = true;
+    }
+
+    const port43 = String(payload.port43 || "").toLowerCase();
+    const remarks = Array.isArray(payload.remarks) ? payload.remarks : [];
+    let remark = null;
+    if (port43.includes("apnic")) {
+      remark = remarks.find((item) => item?.title === "description");
+    } else if (port43.includes("ripe")) {
+      remark = remarks.find((item) => Array.isArray(item?.description) && item.description.length);
+    }
+    const remarkLine = String(remark?.description?.[0] || "").trim();
+
+    return { registrantName, remarkLine };
+  }
+
+  /**
+   * Splits an org name that PeeringDB's RDAP import built from "<registrant>, <remark>".
+   * Purpose: When the first RIPE/APNIC remark line is a brand, the import stores two
+   * names in one ("<COMPANY> TELEKOM VE BILISIM TEKNOLOJILERI, <BRAND> NET
+   * Telekomunikasyon", net 44210 / org 45929, AS50019). The registrant part is the legal
+   * name and the remark part is the brand, so they belong in Name/Long Name and AKA.
+   * Necessity: A comma alone cannot tell this from "Company, City" or "Company, Alias",
+   * so the split needs the RDAP parts and fires only on an exact match of the joined
+   * string. Remark lines that are notices, banners, handles or long free text are kept
+   * out of AKA.
+   * @param {string} rawName - Stored organization name.
+   * @param {{ registrantName: string, remarkLine: string }} parts - From
+   *   extractRdapImportedOrgNameParts().
+   * @returns {{ name: string, knownAs: string, fullName: string }} Split identity, or
+   *   empty knownAs when the name was not built this way. fullName is always empty.
+   */
+  function parseRdapRemarkJoinedIdentity(rawName, parts) {
+    const original = String(rawName || "").trim();
+    const noSplit = { name: sanitizeRdapOrgName(original), knownAs: "", fullName: "" };
+    const registrantName = String(parts?.registrantName || "").trim();
+    const remarkLine = String(parts?.remarkLine || "").trim();
+    if (!original || !registrantName || !remarkLine) return noSplit;
+
+    const normalize = (value) => String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+    const joined = `${registrantName}, ${remarkLine}`;
+    // Callers may pass the stored name raw or already through sanitizeRdapOrgName(),
+    // which drops trailing punctuation ("..., Brand Ltd." -> "..., Brand Ltd").
+    const matchesJoined = normalize(original) === normalize(joined)
+      || normalize(original) === normalize(sanitizeRdapOrgName(joined));
+    if (!matchesJoined) return noSplit;
+
+    // Notices and banners are cut by stripRirNoticeText(), not moved to AKA.
+    if (stripRirNoticeText(joined) !== joined) return noSplit;
+    // The same name twice ("Foo Ltd, FOO") is a legal-alias pair, handled elsewhere.
+    if (resolveCompactNameFromCommaLegalAliases(joined)) return noSplit;
+    if (normalize(stripCompanyTypeSuffix(registrantName)) === normalize(stripCompanyTypeSuffix(remarkLine))) {
+      return noSplit;
+    }
+    // A remark that only repeats the registrant or its short Name is no second name;
+    // as AKA the next Update Name run would clear it again.
+    const registrantShortName = compactEntityNameWithLongNameFallback(registrantName).shortName;
+    if (
+      normalize(remarkLine) === normalize(registrantShortName)
+      || isKnownAsContainedInNames(remarkLine, registrantName, registrantShortName)
+      || isKnownAsLegalFormOfNames(remarkLine, registrantName, registrantShortName)
+    ) {
+      return noSplit;
+    }
+
+    const looksLikeBrand = /\p{L}/u.test(remarkLine)
+      && remarkLine.length <= 64
+      && !/[:@]|https?:\/\/|www\./i.test(remarkLine)
+      && !isLikelyGeneratedHandleName(remarkLine)
+      && !containsAsnLikeToken(remarkLine);
+    if (!looksLikeBrand) return noSplit;
+
+    // fullName stays empty: compactEntityNameWithLongNameFallback(registrantName) already
+    // gives a Long Name when one differs from the Name, and a fallback equal to the
+    // Name would clear or duplicate Long Name.
+    return {
+      name: sanitizeRdapOrgName(registrantName),
+      knownAs: remarkLine,
+      fullName: "",
+    };
   }
 
   /**
@@ -8017,6 +8193,51 @@
   }
 
   /**
+   * Splits an org name that PeeringDB's RDAP import built as "<registrant>, <remark>".
+   * Purpose: Confirm the comma form against the RDAP record of one of the org's ASNs,
+   * so only names the import really joined are split (net 44210 / org 45929).
+   * Necessity: Runs only when no other identity rule matched and the name has a comma.
+   * @param {string} rawName - Stored organization name.
+   * @param {Array<string|number>} asns - Candidate ASNs; the first three are tried.
+   * @returns {Promise<{ name: string, knownAs: string, fullName: string }>} Split
+   *   identity, or empty knownAs when no ASN confirms it.
+   */
+  async function resolveRdapRemarkJoinedIdentity(rawName, asns) {
+    const noSplit = { name: "", knownAs: "", fullName: "" };
+    const name = String(rawName || "").trim();
+    if (!name.includes(",")) return noSplit;
+
+    for (const asn of (Array.isArray(asns) ? asns : []).filter(Boolean).slice(0, 3)) {
+      const parts = await rdapAutnumClient.resolveImportedOrgNamePartsByAsn(asn);
+      const identity = parseRdapRemarkJoinedIdentity(name, parts);
+      if (identity.knownAs) {
+        dbg("update-name", `RDAP remark-joined name confirmed via AS${asn}`, identity);
+        return identity;
+      }
+    }
+    return noSplit;
+  }
+
+  /**
+   * Lists the ASNs of an organization's networks.
+   * Purpose: Give the organization page an ASN to check RDAP remark-joined names with.
+   * @param {string|number} orgId - Organization ID.
+   * @returns {Promise<number[]>} ASNs, empty on failure.
+   */
+  async function getOrganizationNetworkAsns(orgId) {
+    const normalizedOrgId = normalizeOrgIdForCache(orgId);
+    if (!normalizedOrgId) return [];
+    try {
+      const endpoint = `${PEERINGDB_API_BASE_URL}/net?org_id=${encodeURIComponent(normalizedOrgId)}&fields=asn`;
+      const payload = await pdbFetch(endpoint);
+      const rows = Array.isArray(payload?.data) ? payload.data : [];
+      return rows.map((row) => Number(row?.asn)).filter((asn) => Number.isInteger(asn) && asn > 0);
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  /**
    * Fetches and caches organization name by organization ID.
    * Purpose: Provide a simple org-name resolver for flows that do not require malformation metadata.
    * @param {string|number} orgId - Organization ID to resolve.
@@ -10609,8 +10830,32 @@
       resolvedOrgNameCacheByAsn.clear();
     }
 
+    /**
+     * Public API: Rebuilds the registrant name and remark line PeeringDB's RDAP import
+     * joined into an org name, for the ASN.
+     * Purpose: Lets Update Name confirm a "<registrant>, <remark>" name against RDAP
+     * before splitting it (parseRdapRemarkJoinedIdentity).
+     * @ai Keep the null-free, empty-parts-on-failure contract: callers treat a lookup
+     *   failure as "no split", never as an error.
+     * @param {string|number} asnInput - Raw ASN value.
+     * @returns {Promise<{ registrantName: string, remarkLine: string }>} Parts, empty on failure.
+     */
+    async function resolveImportedOrgNamePartsByAsn(asnInput) {
+      const empty = { registrantName: "", remarkLine: "" };
+      const asn = parseAsn(asnInput);
+      if (!asn) return empty;
+      try {
+        const payload = await fetchAutnumRecord(asn);
+        return payload ? extractRdapImportedOrgNameParts(payload) : empty;
+      } catch (_error) {
+        dbgWarn("rdap", `Error reading imported name parts for AS${asn}`, _error);
+        return empty;
+      }
+    }
+
     return {
       resolveOrganizationNameByAsn,
+      resolveImportedOrgNamePartsByAsn,
       clearCache,
     };
   })();
@@ -11587,7 +11832,17 @@
 
                 // On organization pages, split "trading as" into canonical name + AKA.
                 if (ctx.entity === "organization") {
-                  const identity = parseOrganizationNameIdentity(baseName, getSelectedOptionValue("#id_country"));
+                  let identity = parseOrganizationNameIdentity(baseName, getSelectedOptionValue("#id_country"));
+                  // Match on the cleaned name, as the network page does.
+                  const identityName = String(identity?.name || baseName);
+                  if (!String(identity?.knownAs || "").trim() && identityName.includes(",")) {
+                    // "<registrant>, <remark>" from the RDAP import, confirmed against RDAP.
+                    const rdapIdentity = await resolveRdapRemarkJoinedIdentity(
+                      identityName,
+                      await getOrganizationNetworkAsns(ctx.entityId),
+                    );
+                    if (rdapIdentity.knownAs) identity = rdapIdentity;
+                  }
                   if (identity?.name) {
                     baseName = identity.name;
                   }
@@ -11612,6 +11867,19 @@
                     wasMalformedOrgName = result.wasMalformed;
                     orgKnownAs = String(result.knownAs || "").trim();
                     identityFullName = String(result.fullName || "").trim();
+                    if (!orgKnownAs && String(baseName || "").includes(",")) {
+                      // "<registrant>, <remark>" from the RDAP import, confirmed against RDAP.
+                      const rdapIdentity = await resolveRdapRemarkJoinedIdentity(baseName, [getInputValue("#id_asn")]);
+                      if (rdapIdentity.knownAs) {
+                        baseName = rdapIdentity.name;
+                        orgKnownAs = rdapIdentity.knownAs;
+                        identityFullName = rdapIdentity.fullName;
+                        wasMalformedOrgName = true;
+                        // getOrganizationNameWithMalformationDetection() cached the joined
+                        // name; the org PUT's read-back must compare with the split one.
+                        setCachedOrganizationName(orgIdToUpdate, rdapIdentity.name);
+                      }
+                    }
                   } else {
                     baseName = await getOrganizationName(orgIdToUpdate);
                   }

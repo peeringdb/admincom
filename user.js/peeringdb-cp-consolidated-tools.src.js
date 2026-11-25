@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.235
+// @version      2.0.236
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/*
@@ -6254,6 +6254,51 @@
   }
 
   /**
+   * Splits an org name that PeeringDB's RDAP import built as "<registrant>, <remark>".
+   * Purpose: Confirm the comma form against the RDAP record of one of the org's ASNs,
+   * so only names the import really joined are split (net 44210 / org 45929).
+   * Necessity: Runs only when no other identity rule matched and the name has a comma.
+   * @param {string} rawName - Stored organization name.
+   * @param {Array<string|number>} asns - Candidate ASNs; the first three are tried.
+   * @returns {Promise<{ name: string, knownAs: string, fullName: string }>} Split
+   *   identity, or empty knownAs when no ASN confirms it.
+   */
+  async function resolveRdapRemarkJoinedIdentity(rawName, asns) {
+    const noSplit = { name: "", knownAs: "", fullName: "" };
+    const name = String(rawName || "").trim();
+    if (!name.includes(",")) return noSplit;
+
+    for (const asn of (Array.isArray(asns) ? asns : []).filter(Boolean).slice(0, 3)) {
+      const parts = await rdapAutnumClient.resolveImportedOrgNamePartsByAsn(asn);
+      const identity = parseRdapRemarkJoinedIdentity(name, parts);
+      if (identity.knownAs) {
+        dbg("update-name", `RDAP remark-joined name confirmed via AS${asn}`, identity);
+        return identity;
+      }
+    }
+    return noSplit;
+  }
+
+  /**
+   * Lists the ASNs of an organization's networks.
+   * Purpose: Give the organization page an ASN to check RDAP remark-joined names with.
+   * @param {string|number} orgId - Organization ID.
+   * @returns {Promise<number[]>} ASNs, empty on failure.
+   */
+  async function getOrganizationNetworkAsns(orgId) {
+    const normalizedOrgId = normalizeOrgIdForCache(orgId);
+    if (!normalizedOrgId) return [];
+    try {
+      const endpoint = `${PEERINGDB_API_BASE_URL}/net?org_id=${encodeURIComponent(normalizedOrgId)}&fields=asn`;
+      const payload = await pdbFetch(endpoint);
+      const rows = Array.isArray(payload?.data) ? payload.data : [];
+      return rows.map((row) => Number(row?.asn)).filter((asn) => Number.isInteger(asn) && asn > 0);
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  /**
    * Fetches and caches organization name by organization ID.
    * Purpose: Provide a simple org-name resolver for flows that do not require malformation metadata.
    * @param {string|number} orgId - Organization ID to resolve.
@@ -8846,8 +8891,32 @@
       resolvedOrgNameCacheByAsn.clear();
     }
 
+    /**
+     * Public API: Rebuilds the registrant name and remark line PeeringDB's RDAP import
+     * joined into an org name, for the ASN.
+     * Purpose: Lets Update Name confirm a "<registrant>, <remark>" name against RDAP
+     * before splitting it (parseRdapRemarkJoinedIdentity).
+     * @ai Keep the null-free, empty-parts-on-failure contract: callers treat a lookup
+     *   failure as "no split", never as an error.
+     * @param {string|number} asnInput - Raw ASN value.
+     * @returns {Promise<{ registrantName: string, remarkLine: string }>} Parts, empty on failure.
+     */
+    async function resolveImportedOrgNamePartsByAsn(asnInput) {
+      const empty = { registrantName: "", remarkLine: "" };
+      const asn = parseAsn(asnInput);
+      if (!asn) return empty;
+      try {
+        const payload = await fetchAutnumRecord(asn);
+        return payload ? extractRdapImportedOrgNameParts(payload) : empty;
+      } catch (_error) {
+        dbgWarn("rdap", `Error reading imported name parts for AS${asn}`, _error);
+        return empty;
+      }
+    }
+
     return {
       resolveOrganizationNameByAsn,
+      resolveImportedOrgNamePartsByAsn,
       clearCache,
     };
   })();
@@ -9824,7 +9893,17 @@
 
                 // On organization pages, split "trading as" into canonical name + AKA.
                 if (ctx.entity === "organization") {
-                  const identity = parseOrganizationNameIdentity(baseName, getSelectedOptionValue("#id_country"));
+                  let identity = parseOrganizationNameIdentity(baseName, getSelectedOptionValue("#id_country"));
+                  // Match on the cleaned name, as the network page does.
+                  const identityName = String(identity?.name || baseName);
+                  if (!String(identity?.knownAs || "").trim() && identityName.includes(",")) {
+                    // "<registrant>, <remark>" from the RDAP import, confirmed against RDAP.
+                    const rdapIdentity = await resolveRdapRemarkJoinedIdentity(
+                      identityName,
+                      await getOrganizationNetworkAsns(ctx.entityId),
+                    );
+                    if (rdapIdentity.knownAs) identity = rdapIdentity;
+                  }
                   if (identity?.name) {
                     baseName = identity.name;
                   }
@@ -9849,6 +9928,19 @@
                     wasMalformedOrgName = result.wasMalformed;
                     orgKnownAs = String(result.knownAs || "").trim();
                     identityFullName = String(result.fullName || "").trim();
+                    if (!orgKnownAs && String(baseName || "").includes(",")) {
+                      // "<registrant>, <remark>" from the RDAP import, confirmed against RDAP.
+                      const rdapIdentity = await resolveRdapRemarkJoinedIdentity(baseName, [getInputValue("#id_asn")]);
+                      if (rdapIdentity.knownAs) {
+                        baseName = rdapIdentity.name;
+                        orgKnownAs = rdapIdentity.knownAs;
+                        identityFullName = rdapIdentity.fullName;
+                        wasMalformedOrgName = true;
+                        // getOrganizationNameWithMalformationDetection() cached the joined
+                        // name; the org PUT's read-back must compare with the split one.
+                        setCachedOrganizationName(orgIdToUpdate, rdapIdentity.name);
+                      }
+                    }
                   } else {
                     baseName = await getOrganizationName(orgIdToUpdate);
                   }
