@@ -286,6 +286,33 @@ test('isKnownAsLegalFormOfNames detects an AKA that only adds a legal form', () 
   assert.equal(lib.isKnownAsLegalFormOfNames('', 'Foo'), false);
 });
 
+// Icelandic legal forms (net 43444, AS219430: "Photon ehf").
+test('Icelandic legal forms are stripped from the short Name', () => {
+  const cases = [
+    ['Photon ehf', 'Photon'],
+    ['Photon ehf.', 'Photon'],
+    ['PHOTON EHF', 'PHOTON'],
+    ['Photon e.h.f.', 'Photon'],
+    ['Síminn hf.', 'Síminn'],
+    ['Foo slf.', 'Foo'],
+    ['Bar sf.', 'Bar'],
+    ['Baz ses.', 'Baz'],
+  ];
+  for (const [input, shortName] of cases) {
+    assert.deepStrictEqual(
+      lib.compactEntityNameWithLongNameFallback(input),
+      { shortName, longName: input },
+      input,
+    );
+  }
+});
+
+test('short Icelandic forms only match lowercase, as the last word', () => {
+  for (const name of ['Foo SF', 'Net HF', 'Ses Networks', 'Sesame', 'Gehf Net', 'Mehf']) {
+    assert.deepStrictEqual(lib.compactEntityNameWithLongNameFallback(name), { shortName: name, longName: '' }, name);
+  }
+});
+
 test('parseRdapTradingAsIdentity splits person/company', () => {
   assert.deepStrictEqual(
     lib.parseRdapTradingAsIdentity('Remzi Toker trading as VENTURESDC'),

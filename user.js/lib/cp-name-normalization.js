@@ -188,6 +188,8 @@ function stripCompanyTypeSuffix(name) {
     "Z\\.?\\s*r\\.?\\s*t\\.?", // Zrt (Hungary: Zártkörűen működő részvénytársaság - private limited company)
     "K\\.?\\s*f\\.?\\s*t\\.?", // Kft (Hungary: Korlátolt Felelősségű Társaság - LLC)
     "A\\.?\\s*p\\.?\\s*S\\.?", // ApS (Denmark: Anpartsselskab - private limited company)
+    "e\\.?\\s*h\\.?\\s*f\\.?", // ehf (Iceland: einkahlutafélag - private limited company), e.g. "Photon ehf" (net 43444)
+    "s\\.?\\s*l\\.?\\s*f\\.?", // slf (Iceland: samlagsfélag - limited partnership)
     "A\\.?\\s*N\\.?\\s*S\\.?", // ANS (Norway: Ansvarlig Selskap - general partnership)
     "A\\.?\\s*S\\.?\\s*A\\.?", // ASA (Norway: Allmennaksjeselskap - public limited company)
     "O\\.?\\s*y\\.?\\s*j\\.?", // Oyj (Finland: julkinen osakeyhtiö - public limited company)
@@ -442,6 +444,23 @@ function stripCompanyTypeSuffix(name) {
   if (scandinavianAsSuffixRegex.test(candidate)) {
     const stripped = candidate
       .replace(scandinavianAsSuffixRegex, "")
+      .trim()
+      .replace(/[\s,().-]+$/g, "")
+      .trim();
+    if (stripped && (!hasBalancedParens(candidate) || hasBalancedParens(stripped))) {
+      candidate = stripped;
+    }
+  }
+
+  // Strip the short Icelandic forms hf. (hlutafélag - public limited company),
+  // sf. (sameignarfélag - general partnership) and ses. (sjálfseignarstofnun -
+  // self-owning foundation). Case-sensitive and lowercase only, as Iceland writes
+  // them, so "Foo SF" or a trailing "HF" radio term is left alone. Same placement
+  // as the Scandinavian AS step above.
+  const icelandicShortSuffixRegex = /(?:[\s,().-]+)(?:hf|sf|ses)\.?[\s,().-]*$/;
+  if (icelandicShortSuffixRegex.test(candidate)) {
+    const stripped = candidate
+      .replace(icelandicShortSuffixRegex, "")
       .trim()
       .replace(/[\s,().-]+$/g, "")
       .trim();
