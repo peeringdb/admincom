@@ -32,6 +32,7 @@ const lib = loadPureLib(
     'isLikelyGeneratedHandleName',
     'isKnownAsContainedInNames',
     'isKnownAsLegalFormOfNames',
+    'isSameNameText',
     'sanitizeRdapOrgName',
     'stripRirNoticeText',
     'parseRdapTradingAsIdentity',
@@ -311,6 +312,15 @@ test('short Icelandic forms only match lowercase, as the last word', () => {
   for (const name of ['Foo SF', 'Net HF', 'Ses Networks', 'Sesame', 'Gehf Net', 'Mehf']) {
     assert.deepStrictEqual(lib.compactEntityNameWithLongNameFallback(name), { shortName: name, longName: '' }, name);
   }
+});
+
+// Org 45185 repeats "Flynet BD Dot Com" in Name, Long Name and AKA.
+test('isSameNameText compares names ignoring case and spacing', () => {
+  assert.equal(lib.isSameNameText('Flynet BD Dot Com', 'Flynet BD Dot Com'), true);
+  assert.equal(lib.isSameNameText(' flynet  bd dot com ', 'Flynet BD Dot Com'), true);
+  assert.equal(lib.isSameNameText('Flynet BD Dot Com Ltd', 'Flynet BD Dot Com'), false);
+  assert.equal(lib.isSameNameText('', ''), false);
+  assert.equal(lib.isSameNameText('', 'Flynet'), false);
 });
 
 test('parseRdapTradingAsIdentity splits person/company', () => {

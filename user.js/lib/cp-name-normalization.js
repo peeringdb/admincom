@@ -778,6 +778,20 @@ function containsAsnLikeToken(value) {
 }
 
 /**
+ * Checks whether two name values are the same text, ignoring case and whitespace runs.
+ * Purpose: Let Update Name clear a Long Name that only repeats the Name, as on org 45185
+ * ("Flynet BD Dot Com" in Name, Long Name and AKA).
+ * @param {string} a - First name value.
+ * @param {string} b - Second name value.
+ * @returns {boolean} True when both are non-empty and equal after normalization.
+ */
+function isSameNameText(a, b) {
+  const normalize = (value) => String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+  const left = normalize(a);
+  return Boolean(left) && left === normalize(b);
+}
+
+/**
  * Checks whether an AKA value is one of the given names with only a legal form or quotes added.
  * Purpose: Let Update Name clear an AKA that repeats the Name in its registered legal form,
  * e.g. AKA 'ООО "Digital-Tel Net"' with Name "Digital-Tel Net" (AS39231, net 43285).

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.231
+// @version      2.0.232
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/*
@@ -2999,6 +2999,20 @@
 
     // Optional AS/ASN prefix + 4-10 digit ASN-like number.
     return /\b(?:AS|ASN)?\s*[-:]?\s*\d{4,10}\b/i.test(text);
+  }
+
+  /**
+   * Checks whether two name values are the same text, ignoring case and whitespace runs.
+   * Purpose: Let Update Name clear a Long Name that only repeats the Name, as on org 45185
+   * ("Flynet BD Dot Com" in Name, Long Name and AKA).
+   * @param {string} a - First name value.
+   * @param {string} b - Second name value.
+   * @returns {boolean} True when both are non-empty and equal after normalization.
+   */
+  function isSameNameText(a, b) {
+    const normalize = (value) => String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+    const left = normalize(a);
+    return Boolean(left) && left === normalize(b);
   }
 
   /**
@@ -11702,6 +11716,11 @@
                   isKnownAsContainedInNames(currentKnownAs, nextName, nextLongName || currentLongName) ||
                   isKnownAsLegalFormOfNames(currentKnownAs, nextName, nextLongName, currentLongName)
                 );
+              // Organization Long Name that only repeats the Name (org 45185: "Flynet BD Dot Com"
+              // in Name and Long Name), mirroring shouldClearNetworkLongName above.
+              const shouldClearOrganizationLongName =
+                ctx.entity === "organization" &&
+                isSameNameText(nextLongName || currentLongName, nextName);
               const shouldAttemptOrgUpdate = Boolean((wasMalformedOrgName || hasMalformedCurrentLongName) && orgIdToUpdate);
 
               if (
@@ -11712,6 +11731,7 @@
                 !shouldUpdateNetworkKnownAs &&
                 !shouldUpdateOrganizationKnownAs &&
                 !shouldClearOrganizationKnownAs &&
+                !shouldClearOrganizationLongName &&
                 !shouldAttemptOrgUpdate
               ) {
                 pulseToolbarButton(event?.target, "No-op");
@@ -11771,7 +11791,7 @@
                 }
               }
 
-              if (nextName === currentName && !shouldUpdateLongName && !shouldClearNetworkLongName && !shouldClearNetworkKnownAs && !shouldUpdateNetworkKnownAs && !shouldUpdateOrganizationKnownAs && !shouldClearOrganizationKnownAs) {
+              if (nextName === currentName && !shouldUpdateLongName && !shouldClearNetworkLongName && !shouldClearNetworkKnownAs && !shouldUpdateNetworkKnownAs && !shouldUpdateOrganizationKnownAs && !shouldClearOrganizationKnownAs && !shouldClearOrganizationLongName) {
                 pulseToolbarButton(event?.target, "Updated");
                 notifyUser({
                   title: "PeeringDB CP",
@@ -11787,8 +11807,11 @@
               if (ctx.entity === "network" && shouldClearNetworkLongName) {
                 setNetworkLongNameValue("");
               }
-              if (ctx.entity === "organization" && nextLongName) {
+              if (ctx.entity === "organization" && nextLongName && !shouldClearOrganizationLongName) {
                 setOrganizationLongNameValue(nextLongName);
+              }
+              if (shouldClearOrganizationLongName) {
+                setOrganizationLongNameValue("");
               }
               if (ctx.entity === "network" && shouldClearNetworkKnownAs) {
                 setInputValue("#id_aka", "");

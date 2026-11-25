@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.231
+// @version      2.0.232
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/*
@@ -10074,6 +10074,11 @@
                   isKnownAsContainedInNames(currentKnownAs, nextName, nextLongName || currentLongName) ||
                   isKnownAsLegalFormOfNames(currentKnownAs, nextName, nextLongName, currentLongName)
                 );
+              // Organization Long Name that only repeats the Name (org 45185: "Flynet BD Dot Com"
+              // in Name and Long Name), mirroring shouldClearNetworkLongName above.
+              const shouldClearOrganizationLongName =
+                ctx.entity === "organization" &&
+                isSameNameText(nextLongName || currentLongName, nextName);
               const shouldAttemptOrgUpdate = Boolean((wasMalformedOrgName || hasMalformedCurrentLongName) && orgIdToUpdate);
 
               if (
@@ -10084,6 +10089,7 @@
                 !shouldUpdateNetworkKnownAs &&
                 !shouldUpdateOrganizationKnownAs &&
                 !shouldClearOrganizationKnownAs &&
+                !shouldClearOrganizationLongName &&
                 !shouldAttemptOrgUpdate
               ) {
                 pulseToolbarButton(event?.target, "No-op");
@@ -10143,7 +10149,7 @@
                 }
               }
 
-              if (nextName === currentName && !shouldUpdateLongName && !shouldClearNetworkLongName && !shouldClearNetworkKnownAs && !shouldUpdateNetworkKnownAs && !shouldUpdateOrganizationKnownAs && !shouldClearOrganizationKnownAs) {
+              if (nextName === currentName && !shouldUpdateLongName && !shouldClearNetworkLongName && !shouldClearNetworkKnownAs && !shouldUpdateNetworkKnownAs && !shouldUpdateOrganizationKnownAs && !shouldClearOrganizationKnownAs && !shouldClearOrganizationLongName) {
                 pulseToolbarButton(event?.target, "Updated");
                 notifyUser({
                   title: "PeeringDB CP",
@@ -10159,8 +10165,11 @@
               if (ctx.entity === "network" && shouldClearNetworkLongName) {
                 setNetworkLongNameValue("");
               }
-              if (ctx.entity === "organization" && nextLongName) {
+              if (ctx.entity === "organization" && nextLongName && !shouldClearOrganizationLongName) {
                 setOrganizationLongNameValue(nextLongName);
+              }
+              if (shouldClearOrganizationLongName) {
+                setOrganizationLongNameValue("");
               }
               if (ctx.entity === "network" && shouldClearNetworkKnownAs) {
                 setInputValue("#id_aka", "");
