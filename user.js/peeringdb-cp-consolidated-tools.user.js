@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.236
+// @version      2.0.237
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/*
@@ -2950,8 +2950,12 @@
     // Strip trailing "AS<digits>" patterns (e.g., "Cogeco Connexion Inc. AS27168" -> "Cogeco Connexion Inc.")
     // Then drop separators left dangling at the end, e.g. "MaVi-ST, AS218414" -> "MaVi-ST,"
     // -> "MaVi-ST", so Long Name never ends in "," or ";". Periods are kept ("Inc.").
+    // A spaced dash or slash left dangling is dropped too: registro.br cuts owner names
+    // at 50 characters, so "<COMPANY> SERVICOS DE COMUNICACAO MULTIMIDIA - ME" arrives
+    // as "... MULTIMIDIA -" (net 25126 / org 45040, AS266063). "Foo-" keeps its dash.
     const withoutAsns = fullName
       .replace(/\s+AS\s*\d+\s*$/i, "")
+      .replace(/(?:[\s,;]*\s[-\u2013\u2014/]+)+\s*$/, "")
       .replace(/[\s,;]+$/, "")
       .trim();
 

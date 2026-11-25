@@ -605,6 +605,28 @@ test('stripTurkishSectorDescriptorTail', async (t) => {
   });
 });
 
+test('compactEntityNameWithLongNameFallback drops a dangling trailing dash', async (t) => {
+  // Shape of net 25126 / org 45040 (AS266063): registro.br cut the owner name at 50
+  // characters, after "<COMPANY> SERVICOS DE COMUNICACAO MULTIMIDIA -".
+  await t.test('no Long Name from a name that only adds " -"', () => {
+    assert.deepEqual(
+      lib.compactEntityNameWithLongNameFallback('EXAMPLE SERVICOS DE COMUNICACAO MULTIMIDIA -'),
+      { shortName: 'EXAMPLE SERVICOS DE COMUNICACAO MULTIMIDIA', longName: '' },
+    );
+  });
+
+  await t.test('en dash, em dash, slash and a comma before the dash', () => {
+    for (const name of ['Example Net \u2013', 'Example Net \u2014', 'Example Net /', 'Example Net, -']) {
+      assert.deepEqual(lib.compactEntityNameWithLongNameFallback(name), { shortName: 'Example Net', longName: '' }, name);
+    }
+  });
+
+  await t.test('keeps a real suffix after the dash and an unspaced dash', () => {
+    assert.equal(lib.compactEntityNameWithLongNameFallback('Example Multimidia - ME').longName, 'Example Multimidia - ME');
+    assert.equal(lib.compactEntityNameWithLongNameFallback('Example-').shortName, 'Example');
+  });
+});
+
 test('getDeterministicNetworkFallbackName', () => {
   assert.equal(lib.getDeterministicNetworkFallbackName(12345, 42, ' #42'), 'Network 42 #42');
   assert.equal(lib.getDeterministicNetworkFallbackName(null, 7), 'Network 7');
