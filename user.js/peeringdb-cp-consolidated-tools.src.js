@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.225
+// @version      2.0.226
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
 // @match        https://www.peeringdb.com/cp/peeringdb_server/*
@@ -64,7 +64,7 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.225";
+  const SCRIPT_VERSION = "2.0.226";
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
   const SHARED_USER_AGENT_STORAGE_KEY = "pdbAdmincom.userAgent";
@@ -9962,6 +9962,17 @@
                 isRdapOrgNameMalformed(currentLongName);
               if (hasMalformedCurrentLongName && !nextLongName && normalizedCurrentLongName) {
                 nextLongName = normalizedCurrentLongName;
+              }
+              // Trim a dangling trailing "," or ";" left on the current network Long Name
+              // (e.g. "MaVi-ST," on net 43902), so the save rewrites it without the separator.
+              const currentLongNameWithoutTrailingSeparator =
+                ctx.entity === "network" ? String(currentLongName || "").replace(/[\s,;]+$/, "").trim() : "";
+              if (
+                !nextLongName &&
+                currentLongNameWithoutTrailingSeparator &&
+                currentLongNameWithoutTrailingSeparator !== String(currentLongName || "").trim()
+              ) {
+                nextLongName = currentLongNameWithoutTrailingSeparator;
               }
               const currentNetworkKnownAs = ctx.entity === "network" ? getInputValue("#id_aka") : "";
               const currentKnownAs = ctx.entity === "organization" ? getInputValue("#id_aka") : "";

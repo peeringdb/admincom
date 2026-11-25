@@ -568,7 +568,12 @@ function compactEntityNameWithLongNameFallback(name) {
   if (!fullName) return { shortName: "", longName: "" };
 
   // Strip trailing "AS<digits>" patterns (e.g., "Cogeco Connexion Inc. AS27168" -> "Cogeco Connexion Inc.")
-  const withoutAsns = fullName.replace(/\s+AS\s*\d+\s*$/i, "").trim();
+  // Then drop separators left dangling at the end, e.g. "MaVi-ST, AS218414" -> "MaVi-ST,"
+  // -> "MaVi-ST", so Long Name never ends in "," or ";". Periods are kept ("Inc.").
+  const withoutAsns = fullName
+    .replace(/\s+AS\s*\d+\s*$/i, "")
+    .replace(/[\s,;]+$/, "")
+    .trim();
 
   const normalizedFullName = stripTrailingRegistrationIdentifier(withoutAsns);
 
