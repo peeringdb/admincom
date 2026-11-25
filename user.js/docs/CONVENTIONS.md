@@ -7,7 +7,7 @@
 | Files | kebab-case, `<name>.{meta,src,user}.js` triad | `peeringdb-cp-consolidated-tools.src.js` |
 | Functions/methods | camelCase, verb-first | `dispatchModules`, `notifyUser`, `tryBeginActionLock` |
 | Constants | SCREAMING_SNAKE_CASE | `MODULE_PREFIX`, `FEATURE_FLAGS_STORAGE_KEY`, `RETRYABLE_STATUS` |
-| Storage keys (localStorage/sessionStorage) | dot-namespaced, `${MODULE_PREFIX}.<setting>`, except a few deliberately shared cross-script keys | `pdbCpConsolidated.disabledModules`, shared `pdbAdmincom.debug` / `pdbAdmincom.userAgent` — see [README.md](../README.md) |
+| Storage keys (localStorage/sessionStorage) | dot-namespaced, `${MODULE_PREFIX}.<setting>`, except a few deliberately shared cross-script keys | `pdbCpConsolidated.disabledModules`, shared `pdbAdmincom.debug` / `pdbAdmincom.userAgent` / `pdbAdmincom.cache.<type>.<id>` (API-entity cache, see [INTEGRATIONS.md](INTEGRATIONS.md) "Data Stores") — see [README.md](../README.md) |
 
 No classes are used anywhere in the codebase (no `class ` declarations in any `.src.js`) — the
 codebase is entirely closures/plain functions inside a top-level IIFE per script, so there's no
@@ -41,6 +41,19 @@ bundler/linter without discussing it first (see [AGENTS.md](../AGENTS.md) "Addit
   no-op unless `isDebugEnabled()` is true. Always-visible failure logs (meant to reach an admin even
   without debug mode on) use plain `console.error`/`console.warn` directly — this split was
   deliberately preserved during the debug-logging centralization.
+- **Fetch helpers signal failure by throwing, not by returning a sentinel.** CP's `pdbFetch`
+  rejects with a `PdbFetchError` (`name`, `status`, `url`, `detail`) on HTTP error, parse failure,
+  transport error or timeout; a resolved value is always a parsed payload. It previously returned
+  `null` for all four, which silently made every `catch` around it unreachable —
+  `fetchRecentNetixlanChanges` had two, and its entire client-side fallback was dead code, so a
+  rejected API filter reported "0 rows, no error" to an admin verifying a renumber. Prefer throwing
+  for the same reason: a convention that lets correct-looking error handling be inert is worse than
+  no convention. Where a caller genuinely wants a sentinel — `requestJson` in the RDAP path and the
+  network-name batch fetchers — it catches at its own boundary and says so in a comment, so the
+  choice is visible rather than inherited.
+- **Fire-and-forget async work must carry its own `try/catch`.** A `void (async () => { ... })()`
+  has nothing to reject into, so an uncaught error there becomes an unhandled rejection with no
+  context. See the `networkixlan` toolbar lookup in `peeringdb-cp-consolidated-tools.src.js`.
 - **Sensitive-data redaction**: no secrets are logged or stored — there are no API tokens/credentials
   anywhere in the codebase (PeeringDB auth is same-origin session cookies).
 - **Documentation convention**: functions carry a JSDoc block with `Purpose:`, `Necessity:`, and an
@@ -50,5 +63,6 @@ bundler/linter without discussing it first (see [AGENTS.md](../AGENTS.md) "Addit
 
 ## Testing
 
-No test files, framework, or directory exist anywhere in the repo — see [AGENTS.md](../AGENTS.md)
-"Testing" for the manual verification workflow that stands in for one.
+A small `node:test` suite exists under `user.js/tests/` — see [AGENTS.md](../AGENTS.md) "Testing" for
+what it covers, how to run it, and the manual-smoke-test workflow that still applies to everything
+else.

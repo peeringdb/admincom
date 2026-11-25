@@ -33,3 +33,6 @@ npm-debug.log*
 .state/*.js
 .state/*.json
 .state/*.md
+
+# Local-only codebase-onboarding scan output (not the tracked user.js/docs/*.md set)
+docs/codebase/

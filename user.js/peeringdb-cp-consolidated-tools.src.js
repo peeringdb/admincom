@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name         PeeringDB CP - Consolidated Tools
 // @namespace    https://www.peeringdb.com/cp/
-// @version      2.0.227
+// @version      2.0.228
 // @description  Consolidated CP userscript with strict route-isolated modules for facility/network/user/entity workflows
 // @author       <chriztoffer@peeringdb.com>
-// @match        https://www.peeringdb.com/cp/peeringdb_server/*
-// @match        https://beta.peeringdb.com/cp/peeringdb_server/*
+// @match        https://www.peeringdb.com/cp/*
+// @match        https://beta.peeringdb.com/cp/*
 // @icon         https://icons.duckduckgo.com/ip2/peeringdb.com.ico
 // @grant        GM_xmlhttpRequest
 // @grant        GM_notification
@@ -64,7 +64,11 @@
   "use strict";
 
   const MODULE_PREFIX = "pdbCpConsolidated";
-  const SCRIPT_VERSION = "2.0.227";
+  // Sourced from the @version header at install time (Tampermonkey always injects
+  // GM_info, no @grant needed) so it can never drift from the shipped version.
+  // The fallback only engages outside Tampermonkey (e.g. Greasemonkey 4 exposes
+  // GM.info) and is deliberately unmistakable if it ever reaches an audit log.
+  const SCRIPT_VERSION = typeof GM_info !== "undefined" ? GM_info.script.version : "0.0.0-unknown";
 
   // Shared cross-script storage keys — must stay identical across DP, FP, and CP.
   const SHARED_USER_AGENT_STORAGE_KEY = "pdbAdmincom.userAgent";
@@ -78,7 +82,6 @@
     "::1",
     "localhost",
   ];
-  const DUMMY_ORG_ID = 20525;
   const FEATURE_FLAGS_STORAGE_KEY = `${MODULE_PREFIX}.featureFlags`;
   const FEATURE_FLAGS = Object.freeze({
     debugMode: true,
@@ -135,7 +138,10 @@
   const PDB_API_TIMEOUT_MS = 12000;
   const PDB_API_RETRIES = 1;
   const CACHE_TTL_MS = 7.5 * 60 * 60 * 1000;
-  const ORG_NAME_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.orgNameCache.`;
+  // Legacy org-name-cache key prefixes -- no longer written to; kept only so
+  // migrateLegacyOrgNameCacheKeys() can sweep and remove old entries once.
+  const LEGACY_ORG_NAME_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.orgNameCache.`;
+  const LEGACY_ORG_NAME_TAB_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.orgNameTabCache.`;
   const NETWORK_NAME_CACHE_KEY = `${MODULE_PREFIX}.networkNameCache`;
   const NETWORK_NAME_SCAN_CACHE_KEY = `${MODULE_PREFIX}.networkNameScanCache`;
   const NETWORK_NAME_SCAN_CACHE_TTL_MS = CACHE_TTL_MS;
@@ -150,21 +156,16 @@
   // Unset by default; see "CP: Set Update Name Shortcut" in the Tampermonkey menu.
   const UPDATE_NAME_SHORTCUT_STORAGE_KEY = `${MODULE_PREFIX}.updateNameShortcut`;
   const UPDATE_NAME_SHORTCUT_BUTTON_ID = `${MODULE_PREFIX}UpdateEntityName`;
+  // TTL policy for org entries in the shared cache (see lib/admincom-common.js
+  // getCachedDataFromStorage/setCachedDataInStorage) -- CP owns the policy
+  // value, the mechanism itself is shared with FP/DP.
   const ORG_NAME_CACHE_TTL_MS = CACHE_TTL_MS;
-  const ORG_NAME_TAB_CACHE_STORAGE_PREFIX = `${MODULE_PREFIX}.orgNameTabCache.`;
-  const ORG_NAME_TAB_CACHE_TTL_MS = 30 * 60 * 1000;
   const NETWORK_NAME_CACHE_TTL_MS = CACHE_TTL_MS;
   const NETWORK_NAME_SCAN_PAGE_SIZE = 2000;
   const NETWORK_NAME_SCAN_TARGET_COUNT = 0;
   const NETWORK_NAME_SCAN_MAX_REQUESTS = 40;
   const NETWORK_NAME_SCAN_MIN_SUSPICIOUS_SCORE = 14;
   const NETWORK_NAME_SCAN_HIGH_CONFIDENCE_MIN_SCORE = 20;
-  /**
-   * Increment this integer whenever the shape of a stored org-name cache entry changes.
-   * On first read after a script update, any entry whose stored v field does not match
-   * is treated as stale and evicted, preventing silent misreads of old formats.
-   */
-  const ORG_NAME_CACHE_SCHEMA_VERSION = 2;
   const ENTITY_TYPES = new Set([
     "facility",
     "network",
@@ -252,34 +253,7 @@
     campus: displayTypeMap.campus,
   };
 
-  /**
-   * Hard-excluded entity IDs for Example Organization records.
-   * Extend by appending IDs to the relevant Set.
-   */
-  const HARD_EXCLUDED_ENTITY_IDS = {
-    network: new Set(["32281", "666", "31754", "29032", "14185", "2858", "24084", "10664"]),
-    internetexchange: new Set(["4095"]),
-    organization: new Set(["25554", "34028", String(DUMMY_ORG_ID), "31503"]),
-    facility: new Set(["13346", "13399"]),
-    carrier: new Set(["66"]),
-    campus: new Set(["25"]),
-  };
-
-  /**
-   * Normalizes route aliases to canonical CP entity keys.
-   */
-  const HARD_EXCLUDED_ENTITY_ALIASES = {
-    fac: "facility",
-    net: "network",
-    org: "organization",
-    ix: "internetexchange",
-    carrier: "carrier",
-    campus: "campus",
-    facility: "facility",
-    network: "network",
-    organization: "organization",
-    internetexchange: "internetexchange",
-  };
+  /* @include admincom-entity-exclusions.js */
 
   /**
    * API resource mapping by CP entity type.
@@ -366,7 +340,6 @@
 
   /**
    * Reads JSON feature-flag overrides from localStorage.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {object} Parsed override map, or empty object when unavailable/invalid.
    */
   function getFeatureFlagOverrides() {
@@ -382,7 +355,6 @@
 
   /**
    * Returns resolved feature-flag value using defaults plus localStorage overrides.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} flagName - Flag key inside FEATURE_FLAGS.
    * @returns {boolean} Resolved boolean state.
    */
@@ -399,7 +371,6 @@
 
   /**
    * Returns feature-flag default/override/resolved state.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} flagName - Flag key inside FEATURE_FLAGS.
    * @returns {{ defaultValue: boolean, overrideValue: boolean|null, enabled: boolean }|null} Flag state.
    */
@@ -415,7 +386,6 @@
 
   /**
    * Sets a feature-flag override and removes redundant entries.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} flagName - Flag key inside FEATURE_FLAGS.
    * @param {boolean} enabled - Resolved target state.
    */
@@ -443,7 +413,6 @@
 
   /**
    * Removes all feature-flag overrides and restores defaults.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function resetFeatureFlagOverrides() {
     try {
@@ -466,7 +435,6 @@
    * Purpose: Provide one authoritative source of truth for all state-driven visuals.
    * Necessity: Background, title markers, and future features derive from the same
    * state data. Computing it once prevents drift and redundant DOM/field reads.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {object} ctx - Route context from getRouteContext().
    * @returns {{ state: string, entity: string, status: string,
    *             isDummyChildFacility: boolean }}
@@ -494,7 +462,6 @@
    * Ensures CSS classes for entity-state background highlighting are available.
    * Purpose: Centralize state background colors in one style block instead of inline colors.
    * Necessity: Keeps state precedence predictable and easy to maintain across modules.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function ensureEntityStateBackgroundStyles() {
     const styleId = `${MODULE_PREFIX}EntityStateBackgroundStyle`;
@@ -526,7 +493,6 @@
    * 3) deleted (all entities)
    * Purpose: Align visual background behavior with policy-defined ordering.
    * Necessity: Inline per-module background changes can conflict and obscure precedence.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ entity: string, status: string, isDummyChildFacility: boolean }} ctx - Route context.
    */
   function applyEntityStateBackgroundClass(ctx) {
@@ -556,7 +522,6 @@
    * Synchronizes title markers for dummy-facility and deleted states.
    * Purpose: Keep heading markers accurate as admins edit status/org fields in-place.
    * Necessity: Marker rendering previously relied on module-local one-time insertions.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ entity: string }} ctx - Route context used to resolve the current visual state.
    */
   function syncEntityStateTitleMarkers(ctx) {
@@ -617,7 +582,6 @@
    * Purpose: Refresh state highlighting when admins change status or org while editing.
    * Necessity: Without listeners, styling only reflects the state at initial page load.
    * Returns a dispose function that unsubscribes from the bus (lifecycle support).
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {{ entity: string }} ctx - Route context passed through to refresh callbacks.
    * @returns {Function|null} Dispose function that removes bus subscriptions, or null.
    */
@@ -647,7 +611,6 @@
    * Closes a single dropdown action item and resets its toggle accessibility state.
    * Purpose: Provide centralized close behavior for toolbar and secondary-row dropdowns.
    * Necessity: Shared close logic prevents duplicated listener code per dropdown instance.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {HTMLLIElement} listItem - The dropdown list item to close.
    */
   function closeDropdownActionItem(listItem) {
@@ -672,7 +635,6 @@
    * Closes all open dropdowns except an optional exempt item.
    * Purpose: Enforce single-open-dropdown behavior across custom CP action menus.
    * Necessity: Simplifies global click/escape handling and keeps UI predictable.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {HTMLLIElement|null} [exemptItem=null] - Optional item to leave open.
    */
   function closeAllDropdownActionItems(exemptItem = null) {
@@ -686,7 +648,6 @@
    * Registers one global listener pair for dropdown close behavior.
    * Purpose: Replace per-dropdown document listeners with one shared close handler.
    * Necessity: Reduces global event listener count and improves maintainability.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function ensureDropdownGlobalCloseListener() {
     if (dropdownGlobalCloseListenerBound) return;
@@ -713,7 +674,6 @@
    * Attempts to acquire a named action lock.
    * Purpose: Prevent duplicate execution for long-running script-driven actions.
    * Necessity: Double clicks or repeated menu triggers can race and produce duplicate saves.
-   * @ai Preserve execution ordering, locks, and route/module boundaries.
    * @param {string} lockKey - Unique identifier for the action being locked.
    * @returns {boolean} True when the lock was acquired; false if already held.
    */
@@ -730,7 +690,6 @@
    * Releases a previously acquired action lock.
    * Purpose: Re-enable action execution after async work completes.
    * Necessity: Locks must always be released to avoid permanent action blocking.
-   * @ai Preserve execution ordering, locks, and route/module boundaries.
    * @param {string} lockKey - Unique identifier for the lock to release.
    */
   function endActionLock(lockKey) {
@@ -745,7 +704,6 @@
   /**
    * Persists a lightweight org-update success audit entry.
    * Purpose: Keep a short local history to simplify regression triage.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ orgId: string, name: string, aka?: string }} entry - Successful update entry.
    */
   function appendOrgUpdateSuccessAuditEntry(entry) {
@@ -779,28 +737,9 @@
   }
 
   /**
-   * Returns storage for domain-scoped cache entries.
-   * Purpose: Share short-lived cache payloads across tabs on the same origin.
-   * Necessity: tab-scoped storage breaks cross-tab consistency; localStorage enables cross-tab reuse.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
-   * @returns {Storage|null} localStorage instance, or null when unavailable.
-   */
-  function getDomainCacheStorage() {
-    try {
-      if (window.localStorage) return window.localStorage;
-    } catch (_error) {
-      // Ignore; cache persistence will be unavailable.
-    }
-
-    return null;
-  }
-
-  /**
-  * Returns storage for tab-scoped transient state.
-  * Purpose: Provide optional per-tab persistence for ephemeral state when needed.
-  * Necessity: Some flows benefit from tab-local fallback storage that does not
-  * leak across tabs on the same origin.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
+   * Returns storage for tab-scoped transient state.
+   * Purpose: Only used now to sweep away legacy org-name-tab-cache entries
+   * (see migrateLegacyOrgNameCacheKeys) left over from before cache unification.
    * @returns {Storage|null} sessionStorage instance, or null when unavailable.
    */
   function getTabSessionStorage() {
@@ -817,7 +756,6 @@
    * Normalizes organization ID into a stable cache key suffix.
    * Purpose: Ensure cache keys are deterministic across string/number ID inputs.
    * Necessity: Different call sites may pass IDs with whitespace or mixed types.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string|number} orgId - Raw organization ID from form field or API response.
    * @returns {string} Trimmed string representation of the org ID.
    */
@@ -826,111 +764,12 @@
   }
 
   /**
-   * Builds storage key used for persisted org-name cache entries.
-   * Purpose: Keep all org-name cache keys namespaced under module prefix.
-   * Necessity: Avoid collisions with other userscripts and local app storage keys.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
-   * @param {string|number} orgId - Organization ID to build the key for.
-   * @returns {string} Namespaced storage key, or empty string if orgId is invalid.
-   */
-  function getOrgNameCacheStorageKey(orgId) {
-    const normalizedOrgId = normalizeOrgIdForCache(orgId);
-    if (!normalizedOrgId) return "";
-    return `${ORG_NAME_CACHE_STORAGE_PREFIX}${normalizedOrgId}`;
-  }
-
-  /**
-   * Builds storage key used for tab-scoped org-name cache entries.
-   * Purpose: Keep org-name tab-cache keys namespaced under module prefix.
-   * Necessity: Avoid collisions with unrelated session storage keys.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
-   * @param {string|number} orgId - Organization ID to build the key for.
-   * @returns {string} Namespaced tab-cache key, or empty string if orgId is invalid.
-   */
-  function getOrgNameTabCacheStorageKey(orgId) {
-    const normalizedOrgId = normalizeOrgIdForCache(orgId);
-    if (!normalizedOrgId) return "";
-    return `${ORG_NAME_TAB_CACHE_STORAGE_PREFIX}${normalizedOrgId}`;
-  }
-
-  /**
-   * Reads a valid organization-name cache entry from tab session storage.
-   * Purpose: Reuse very recent org lookups without touching global storage.
-   * Necessity: Supports strict cache order: global -> tab session -> API.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
-   * @param {string|number} orgId - Organization ID to look up.
-   * @returns {string|null} Tab-cached organization name, or null on miss/expiry/malform.
-   */
-  function getSessionCachedOrganizationName(orgId) {
-    const normalizedOrgId = normalizeOrgIdForCache(orgId);
-    if (!normalizedOrgId) return null;
-
-    const storageKey = getOrgNameTabCacheStorageKey(normalizedOrgId);
-    if (!storageKey) return null;
-
-    try {
-      const storage = getTabSessionStorage();
-      const raw = storage?.getItem(storageKey);
-      if (!raw) return null;
-
-      const now = Date.now();
-      const parsed = JSON.parse(raw);
-      const cachedName = String(parsed?.name || "").trim();
-      const expiresAt = Number(parsed?.expiresAt || 0);
-      const schemaVersion = Number(parsed?.v ?? -1);
-      if (
-        !cachedName ||
-        !Number.isFinite(expiresAt) ||
-        expiresAt <= now ||
-        schemaVersion !== ORG_NAME_CACHE_SCHEMA_VERSION
-      ) {
-        storage?.removeItem(storageKey);
-        return null;
-      }
-
-      return cachedName;
-    } catch (_error) {
-      return null;
-    }
-  }
-
-  /**
-   * Stores organization-name cache entry in tab session storage.
-   * Purpose: Persist short-lived per-tab org-name lookups.
-   * Necessity: Completes ordered cache chain before API calls.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
-   * @param {string|number} orgId - Organization ID to cache the name for.
-   * @param {string} name - Resolved organization name to persist.
-   */
-  function setSessionCachedOrganizationName(orgId, name) {
-    const normalizedOrgId = normalizeOrgIdForCache(orgId);
-    const normalizedName = String(name || "").trim();
-    if (!normalizedOrgId || !normalizedName) return;
-
-    const storageKey = getOrgNameTabCacheStorageKey(normalizedOrgId);
-    if (!storageKey) return;
-
-    try {
-      const storage = getTabSessionStorage();
-      storage?.setItem(
-        storageKey,
-        JSON.stringify({
-          v: ORG_NAME_CACHE_SCHEMA_VERSION,
-          name: normalizedName,
-          expiresAt: Date.now() + ORG_NAME_TAB_CACHE_TTL_MS,
-        }),
-      );
-    } catch (_error) {
-      // Session storage may be unavailable.
-    }
-  }
-
-  /**
-   * Reads a valid organization-name cache entry from in-memory or domain storage.
+   * Reads a valid organization-name cache entry from in-memory or the shared
+   * cross-script cache (see lib/admincom-common.js -- CP and FP genuinely
+   * share this, both running on the peeringdb.com origin).
    * Purpose: Reuse recent org-name lookups to reduce repeated API requests.
    * Necessity: Update Name and Reset Information may request the same org repeatedly.
    * Returns null when cache is absent, malformed, or expired.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string|number} orgId - Organization ID to look up.
    * @returns {string|null} Cached organization name, or null on miss/expiry/malform.
    */
@@ -949,40 +788,18 @@
       orgNameMemoryCache.delete(normalizedOrgId);
     }
 
-    const storageKey = getOrgNameCacheStorageKey(normalizedOrgId);
-    if (!storageKey) return null;
+    const cached = getCachedDataFromStorage("org", normalizedOrgId);
+    const cachedName = String(cached?.name || "").trim();
+    if (!cachedName) return null;
 
-    try {
-      const storage = getDomainCacheStorage();
-      const raw = storage?.getItem(storageKey);
-      if (!raw) return null;
-
-      const parsed = JSON.parse(raw);
-      const cachedName = String(parsed?.name || "").trim();
-      const expiresAt = Number(parsed?.expiresAt || 0);
-      const schemaVersion = Number(parsed?.v ?? -1);
-      if (
-        !cachedName ||
-        !Number.isFinite(expiresAt) ||
-        expiresAt <= now ||
-        schemaVersion !== ORG_NAME_CACHE_SCHEMA_VERSION
-      ) {
-        storage?.removeItem(storageKey);
-        return null;
-      }
-
-      orgNameMemoryCache.set(normalizedOrgId, { name: cachedName, expiresAt });
-      return cachedName;
-    } catch (_error) {
-      return null;
-    }
+    orgNameMemoryCache.set(normalizedOrgId, { name: cachedName, expiresAt: now + ORG_NAME_CACHE_TTL_MS });
+    return cachedName;
   }
 
   /**
-   * Stores organization-name cache entry in memory and domain storage.
+   * Stores organization-name cache entry in memory and the shared cross-script cache.
    * Purpose: Persist successful org-name lookups for current tab lifecycle.
    * Necessity: Avoid duplicate network requests for frequently used org IDs.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string|number} orgId - Organization ID to cache the name for.
    * @param {string} name - Resolved organization name to persist.
    */
@@ -994,27 +811,14 @@
     const expiresAt = Date.now() + ORG_NAME_CACHE_TTL_MS;
     orgNameMemoryCache.set(normalizedOrgId, { name: normalizedName, expiresAt });
 
-    const storageKey = getOrgNameCacheStorageKey(normalizedOrgId);
-    if (!storageKey) return;
-
-    try {
-      const storage = getDomainCacheStorage();
-      storage?.setItem(
-        storageKey,
-        JSON.stringify({ v: ORG_NAME_CACHE_SCHEMA_VERSION, name: normalizedName, expiresAt }),
-      );
-    } catch (_error) {
-      // Storage may be unavailable; memory cache still provides benefit.
-    }
-
-    setSessionCachedOrganizationName(normalizedOrgId, normalizedName);
+    setCachedDataInStorage("org", normalizedOrgId, { id: normalizedOrgId, name: normalizedName }, ORG_NAME_CACHE_TTL_MS);
   }
 
   /**
-   * Clears all organization-name cache entries from memory and domain storage.
+   * Clears all organization-name cache entries from memory and the shared
+   * cross-script cache, plus sweeps any leftover pre-migration legacy keys.
    * Purpose: Provide explicit cache invalidation control for stale org-name lookups.
    * Necessity: Admin workflows occasionally require immediate refresh after org renames.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    */
   function clearOrganizationNameCache() {
     orgNameMemoryCache.clear();
@@ -1025,7 +829,12 @@
         const keysToDelete = [];
         for (let index = 0; index < storage.length; index += 1) {
           const key = storage.key(index);
-          if (key && key.startsWith(ORG_NAME_CACHE_STORAGE_PREFIX)) {
+          if (
+            key &&
+            (key.startsWith(`${SHARED_CACHE_PREFIX}org.`) ||
+              key.startsWith(LEGACY_ORG_NAME_CACHE_STORAGE_PREFIX) ||
+              key.startsWith(LEGACY_ORG_NAME_TAB_CACHE_STORAGE_PREFIX))
+          ) {
             keysToDelete.push(key);
           }
         }
@@ -1045,7 +854,7 @@
       const keysToDelete = [];
       for (let index = 0; index < storage.length; index += 1) {
         const key = storage.key(index);
-        if (key && key.startsWith(ORG_NAME_TAB_CACHE_STORAGE_PREFIX)) {
+        if (key && key.startsWith(LEGACY_ORG_NAME_TAB_CACHE_STORAGE_PREFIX)) {
           keysToDelete.push(key);
         }
       }
@@ -1059,11 +868,51 @@
   }
 
   /**
+   * One-time sweep that removes org-name cache entries written under the old,
+   * pre-unification per-script key scheme (pdbCpConsolidated.orgNameCache.
+   * and orgNameTabCache. prefixes), now replaced by the shared cross-script
+   * cache. Safe to call on every init -- becomes a no-op once old entries
+   * are gone.
+   */
+  function migrateLegacyOrgNameCacheKeys() {
+    try {
+      const storage = getDomainCacheStorage();
+      if (storage) {
+        const keysToDelete = [];
+        for (let index = 0; index < storage.length; index += 1) {
+          const key = storage.key(index);
+          if (key && key.startsWith(LEGACY_ORG_NAME_CACHE_STORAGE_PREFIX)) {
+            keysToDelete.push(key);
+          }
+        }
+        keysToDelete.forEach((key) => storage.removeItem(key));
+      }
+    } catch (_error) {
+      // Ignore storage failures; legacy keys will simply persist unused.
+    }
+
+    try {
+      const storage = getTabSessionStorage();
+      if (!storage) return;
+
+      const keysToDelete = [];
+      for (let index = 0; index < storage.length; index += 1) {
+        const key = storage.key(index);
+        if (key && key.startsWith(LEGACY_ORG_NAME_TAB_CACHE_STORAGE_PREFIX)) {
+          keysToDelete.push(key);
+        }
+      }
+      keysToDelete.forEach((key) => storage.removeItem(key));
+    } catch (_error) {
+      // Ignore storage failures.
+    }
+  }
+
+  /**
    * Retrieves the set of disabled module IDs from localStorage.
    * Purpose: Allows individual modules to be toggled on/off without code changes.
    * Necessity: Provides user-level module control for the modular architecture.
    * Supports both JSON array and comma-separated formats for backward compatibility.
-   * @ai Preserve execution ordering, locks, and route/module boundaries.
    * @returns {Set<string>} Set of module ID strings that are currently disabled.
    */
   function getDisabledModules() {
@@ -1091,7 +940,6 @@
    * Checks if a module is enabled (not in the disabled set).
    * Purpose: Gate-keeper for module execution in dispatchModules().
    * Necessity: Implements selective module control without removing code.
-   * @ai Preserve execution ordering, locks, and route/module boundaries.
    * @param {string} moduleId - The module identifier to check.
    * @param {Set<string>} disabledModules - Set of currently disabled module IDs.
    * @returns {boolean} True when the module is enabled (not in the disabled set).
@@ -1106,7 +954,6 @@
    * Retrieves explicit or auto-computed User-Agent for this session.
    * Purpose: Provide flexible UA configuration with fallback to trust-based generation.
    * Necessity: Allows manual override via localStorage while auto-computing from domain trust.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @returns {string} User-Agent string to use for outgoing requests.
    */
   function getCustomRequestUserAgent() {
@@ -1121,7 +968,6 @@
    * Purpose: Provides a unique identifier for correlating requests within a session.
    * Necessity: Enables server-side analytics and request tracking without exposing device fingerprint.
    * UUID persists across page reloads and tabs on the same origin.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @returns {string} Session UUID string (generated once per browser session).
    */
   function getSessionUuid() {
@@ -1142,7 +988,6 @@
    * Purpose: Creates a privacy-preserving identifier for requests from untrusted domains.
    * Necessity: Balances analytics tracking with user privacy for non-trusted networks.
    * Returns a 16-character hex string derived from UA, platform, language, CPU count, memory.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {string} 16-character lowercase hex fingerprint string.
    */
   function computeClientFingerprint() {
@@ -1169,7 +1014,6 @@
    * Necessity: Distinguishes between trusted (localhost, peeringdb.com) and untrusted domains
    * to decide whether to use full browser info or privacy-preserving fingerprint.
    * Also normalizes IPv6 URIs with bracket notation ([::1]) for transparent matching.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {string} domain - Hostname to test (e.g., "www.peeringdb.com", "localhost").
    * @returns {boolean} True when the domain matches a TRUSTED_DOMAINS_FOR_UA entry.
    */
@@ -1203,7 +1047,6 @@
    * Necessity: For trusted domains (development, peeringdb.com), includes browser/platform for debugging;
    * for untrusted domains, uses fingerprint only to minimize data exposure.
    * Includes session UUID in both cases for request correlation.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} domain - Hostname of the page making the request.
    * @returns {string} Constructed User-Agent header value.
    */
@@ -1226,7 +1069,6 @@
    * Constructs HTTP headers for Tampermonkey requests with User-Agent.
    * Purpose: Centralize header building for all script-initiated requests.
    * Necessity: Ensures consistent User-Agent and other important headers across all API calls.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {object} [baseHeaders={}] - Optional base headers to merge with generated ones.
    * @returns {object} Header object with User-Agent key populated.
    */
@@ -1246,7 +1088,6 @@
   /**
    * Returns a copy of headers safe to pass into fetch().
    * Purpose: Remove forbidden header names that browsers block in fetch.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {object} headers - Source headers object.
    * @returns {object} Fetch-safe headers object.
    */
@@ -1261,7 +1102,6 @@
   /**
    * Reads a cookie value by name from document.cookie.
    * Purpose: Retrieve CSRF token for authenticated state-changing API requests.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string} name - Cookie name to look up.
    * @returns {string} Decoded cookie value or empty string when missing.
    */
@@ -1285,7 +1125,6 @@
   /**
    * Resolves CSRF token from common cookie and DOM locations.
    * Purpose: Ensure authenticated mutation requests can pass Django CSRF checks.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {string} CSRF token string, or empty string if unavailable.
    */
   function getCsrfToken() {
@@ -1315,7 +1154,6 @@
   /**
    * Extracts a header value from raw response headers text.
    * Purpose: Retrieve server-provided diagnostics (e.g., x-auth-status) from GM responses.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} rawHeaders - Raw response headers string.
    * @param {string} headerName - Header name to find (case-insensitive).
    * @returns {string} Header value, or empty string when absent.
@@ -1341,7 +1179,6 @@
    * Logs outgoing request UA for external URIs when debug mode is enabled.
    * Purpose: Provide per-request UA visibility for RDAP/bootstrap troubleshooting.
    * Necessity: External requests can behave differently based on the effective UA.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ method: string, url: string, headers: object, attempt?: number, retries?: number, mode?: string }} meta
    */
   function logExternalRequestUserAgent(meta) {
@@ -1380,7 +1217,6 @@
    * Emits current User-Agent details to debug console when diagnostics are enabled.
    * Purpose: Make it easy to verify which UA is currently active and why.
    * Necessity: Debugging remote API behavior often depends on the effective UA value.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {boolean} True when a log was emitted; false when debug mode is disabled.
    */
   function logCurrentUserAgentDebug() {
@@ -1410,56 +1246,50 @@
    * Purpose: Provide a single authoritative source of routing data for all modules.
    * Necessity: Multiple modules need entity type, entity ID, and page kind without
    * re-parsing the URL each time — centralizing parsing prevents divergent path logic.
-   * @ai Preserve execution ordering, locks, and route/module boundaries.
-   * @returns {{ host: string, path: string[], pathName: string, isCp: boolean,
-   *             entity: string, entityId: string, pageKind: string,
+   * @returns {{ host: string, path: string[], pathName: string, isAdminPage: boolean,
+   *             isCp: boolean, entity: string, entityId: string, pageKind: string,
    *             isEntityChangePage: boolean, isEntityListPage: boolean,
-   *             isEntityHistoryPage: boolean }}
+   *             isEntityAddPage: boolean, isEntityDeletePage: boolean,
+   *             isEntityHistoryPage: boolean, isOrgMergeToolPage: boolean }}
    */
   function getRouteContext() {
     const path = window.location.pathname.replace(/(^\/|\/$)/g, "").split("/");
+    const isCp = path[0] === "cp" && path[1] === "peeringdb_server";
     return {
       host: window.location.hostname,
       path,
       pathName: window.location.pathname,
-      isCp: path[0] === "cp" && path[1] === "peeringdb_server",
+      // True anywhere under /cp/ (admin dashboard + every registered app, not just
+      // peeringdb_server) -- broader than isCp, used to gate script-wide init now
+      // that @match covers the whole admin site rather than peeringdb_server only.
+      isAdminPage: path[0] === "cp",
+      isCp,
       entity: path[2] || "",
       entityId: path[3] || "",
       pageKind: path[4] || "",
-      isEntityChangePage:
-        path[0] === "cp" && path[1] === "peeringdb_server" && path[4] === "change",
-      isEntityListPage:
-        path[0] === "cp" && path[1] === "peeringdb_server" && Boolean(path[2]) && !path[3],
-      isEntityHistoryPage:
-        path[0] === "cp" && path[1] === "peeringdb_server" && path[4] === "history",
+      isEntityChangePage: isCp && path[4] === "change",
+      isEntityListPage: isCp && Boolean(path[2]) && !path[3],
+      isEntityAddPage: isCp && path[3] === "add" && !path[4],
+      isEntityDeletePage: isCp && path[4] === "delete",
+      isEntityHistoryPage: isCp && path[4] === "history",
+      isOrgMergeToolPage: isCp && path[2] === "organization" && path[3] === "org-merge-tool",
     };
   }
 
   /**
-   * Resolves canonical entity key for hard-exclude checks.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
-   * @param {string} entity - Route entity segment.
-   * @returns {string} Canonical entity key, or empty string if unsupported.
-   */
-  function normalizeEntityTypeForHardExclude(entity) {
-    const normalized = String(entity || "").trim().toLowerCase();
-    return HARD_EXCLUDED_ENTITY_ALIASES[normalized] || "";
-  }
-
-  /**
-   * Returns exclusion metadata when current route is hard-excluded.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
+   * Returns exclusion metadata when the current route's entity is excluded
+   * from the update-name tooling.
    * @param {{ isEntityChangePage: boolean, entity: string, entityId: string }} ctx - Route context.
    * @returns {{ entityType: string, entityId: string }|null} Exclusion info or null.
    */
-  function getHardExcludedEntityInfo(ctx) {
+  function getUpdateNameExcludedEntityInfo(ctx) {
     if (!ctx?.isEntityChangePage) return null;
 
-    const entityType = normalizeEntityTypeForHardExclude(ctx.entity);
+    const entityType = normalizeExcludedEntityType(ctx.entity);
     const entityId = String(ctx.entityId || "").trim();
     if (!entityType || !entityId) return null;
 
-    const excludedIds = HARD_EXCLUDED_ENTITY_IDS[entityType];
+    const excludedIds = UPDATE_NAME_EXCLUDED_ENTITY_IDS[entityType];
     if (!excludedIds || !excludedIds.has(entityId)) return null;
 
     return { entityType, entityId };
@@ -1467,28 +1297,32 @@
 
   /**
    * Returns true when script-driven write/change actions must be blocked.
-   * @ai Preserve execution ordering, locks, and route/module boundaries.
+   * Keys on the broad update-name exclusions
+   * (UPDATE_NAME_EXCLUDED_ENTITY_IDS), so it is only the right gate for
+   * flows that rewrite an entity's name; a guard for non-name destructive
+   * writes keys on the narrow EXAMPLE_ORG_DO_NOT_TOUCH_ENTITY_IDS instead
+   * (as FP's netixlan guard does).
    * @param {{ isEntityChangePage: boolean, entity: string, entityId: string }} ctx - Route context.
    * @returns {boolean} True when write/change actions are disallowed for this entity.
    */
-  function isWriteActionBlockedForHardExcludedEntity(ctx) {
-    return Boolean(getHardExcludedEntityInfo(ctx));
+  function isWriteActionBlockedForUpdateNameExcludedEntity(ctx) {
+    return Boolean(getUpdateNameExcludedEntityInfo(ctx));
   }
 
   /**
-   * Notifies user that write/change action is blocked for hard-excluded entities.
-   * @ai Preserve execution ordering, locks, and route/module boundaries.
+   * Notifies user that a write/change action is blocked for an entity
+   * excluded from the update-name tooling.
    * @param {string} actionLabel - Human-readable action label.
    * @param {{ isEntityChangePage: boolean, entity: string, entityId: string }} ctx - Route context.
    */
-  function notifyWriteActionBlockedForHardExcludedEntity(actionLabel, ctx) {
-    const hardExcludedEntity = getHardExcludedEntityInfo(ctx);
-    const entityText = hardExcludedEntity
-      ? `${hardExcludedEntity.entityType}#${hardExcludedEntity.entityId}`
+  function notifyWriteActionBlockedForUpdateNameExcludedEntity(actionLabel, ctx) {
+    const excludedEntity = getUpdateNameExcludedEntityInfo(ctx);
+    const entityText = excludedEntity
+      ? `${excludedEntity.entityType}#${excludedEntity.entityId}`
       : `${String(ctx?.entity || "entity")}#${String(ctx?.entityId || "")}`;
     notifyUser({
       title: "PeeringDB CP",
-      text: `${String(actionLabel || "Write action")}: blocked for hard-excluded ${entityText}. Read/view actions remain allowed.`,
+      text: `${String(actionLabel || "Write action")}: blocked for update-name-excluded ${entityText}. Read/view actions remain allowed.`,
     });
   }
 
@@ -1499,7 +1333,6 @@
    * Necessity: Reactive listeners can fire dozens of times per second; batching keeps
    * visual updates smooth without debounce latency.
    * If a callback is already pending for the same key, the new fn replaces it.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {string} key - Deduplication key; one pending callback allowed per key.
    * @param {Function} fn - DOM write callback to execute in the next animation frame.
    */
@@ -1522,7 +1355,6 @@
    * subscribers so future modules attach to named events rather than raw DOM fields.
    * Necessity: Prevents N-modules × 2-fields listener explosion; one DOM binding
    * per field emits to all interested subscribers through the bus.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   const pdbBus = (() => {
     const listeners = new Map();
@@ -1549,7 +1381,6 @@
    * addEventListener call on the same elements.
    * Necessity: Single DOM listener per field, many bus subscribers — O(1) DOM cost.
    * Guarded by data-pdb-cp-bus-bound so safe to call from multiple modules.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function bindFormFieldBus() {
     const statusSelect = qs("#id_status");
@@ -1574,7 +1405,6 @@
    * Purpose: Reduce boilerplate for DOM querying throughout the script.
    * Necessity: Used extensively for finding form fields and toolbar elements.
    * Wraps in try-catch to safely return null on selector errors.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {string} selector - CSS selector string.
    * @param {Document|Element} [root=document] - Optional scoping root element.
    * @returns {Element|null} First matching element, or null.
@@ -1591,7 +1421,6 @@
    * Convenience wrapper for querySelectorAll returning an array.
    * Purpose: Reduce boilerplate for finding multiple DOM elements.
    * Necessity: Used for inline sets, dynamic forms, and multi-element operations.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {string} selector - CSS selector string.
    * @param {Document|Element} [root=document] - Optional scoping root element.
    * @returns {Element[]} Array of matching elements (may be empty).
@@ -1608,7 +1437,6 @@
    * Retrieves trimmed value from form input elements (input, select, textarea).
    * Purpose: Unified value extraction that handles both .value property and data attributes.
    * Necessity: Normalizes form field reading across different input types in Django admin forms.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} selector - CSS selector for the target input element.
    * @returns {string} Trimmed value string, or empty string if element not found.
    */
@@ -1627,7 +1455,6 @@
    * Reads the value attribute of the currently selected option from a `<select>` element.
    * Purpose: Extract the option value rather than display text for form submissions.
    * Necessity: Some dropdowns store codes (country codes) in value vs. full text in display.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} selector - CSS selector for the target `<select>` element.
    * @returns {string} Trimmed value of the selected option, or empty string if absent.
    */
@@ -1649,7 +1476,6 @@
    * Purpose: Unified selected-option reader that works across choice and render states.
    * Necessity: `option:checked` and `option[selected]` behave differently across browsers
    * and scripted form states; normalizing prevents silent empty reads.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} selector - CSS selector for the target `<select>` element.
    * @returns {string} Trimmed text of the selected option, or empty string if absent.
    */
@@ -1672,7 +1498,6 @@
    * falling back to a formatted street address when coordinates are absent.
    * Necessity: Facilities may have coordinates or address-only data; a unified
    * builder covers both cases without branching at the call site.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @returns {string} Comma-separated coordinate pair or formatted address string.
    */
   function buildFacilityMapsQuerySource() {
@@ -1735,7 +1560,6 @@
    * Sets value on form input elements with consistent synchronization.
    * Purpose: Unified value assignment that updates both .value and attributes.
    * Necessity: Ensures form frameworks recognize the change (defaultValue for reset detection).
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} selector - CSS selector for the target input element.
    * @param {string} value - Value to assign to the matched element.
    * @returns {boolean} True when the element was found and updated; false otherwise.
@@ -1760,7 +1584,6 @@
    * Sets network name field value with proper change event firing.
    * Purpose: Ensure form validation and dependency updates trigger when name changes.
    * Necessity: Django admin forms monitor change events; manual setting requires event dispatch.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} value - New name value to assign to the network name input.
    * @returns {boolean} True when the #id_name element was found and updated.
    */
@@ -1782,7 +1605,6 @@
    * Purpose: Keep Long Name reads/writes resilient to minor template/id changes.
    * Necessity: CP forms may render this field with different IDs depending on
    * model/version, so lookup must support both ID and label-based discovery.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @returns {HTMLInputElement|HTMLTextAreaElement|null} Long Name input element.
    */
   function getNetworkLongNameInputElement() {
@@ -1811,7 +1633,6 @@
 
   /**
    * Reads current Long Name field value for network change forms.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @returns {string} Trimmed long-name value, or empty string when unavailable.
    */
   function getNetworkLongNameValue() {
@@ -1822,7 +1643,6 @@
 
   /**
    * Sets Long Name field value with change/input events.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} value - Value to set in Long Name.
    * @returns {boolean} True when Long Name field was found and updated.
    */
@@ -1843,7 +1663,6 @@
 
   /**
    * Resolves editable long-name input element for organization forms.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {HTMLInputElement|HTMLTextAreaElement|null} Long Name input element.
    */
   function getOrganizationLongNameInputElement() {
@@ -1872,7 +1691,6 @@
 
   /**
    * Reads current Long Name field value for organization change forms.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {string} Trimmed long-name value, or empty string when unavailable.
    */
   function getOrganizationLongNameValue() {
@@ -1883,7 +1701,6 @@
 
   /**
    * Sets organization Long Name field value with change/input events.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} value - Value to set in Long Name.
    * @returns {boolean} True when Long Name field was found and updated.
    */
@@ -1913,7 +1730,6 @@
    * Returns the PeeringDB frontend URL slug for a given CP entity type.
    * Purpose: Translate internal CP entity names to their public frontend URL segments.
    * Necessity: Centralizes the entity→slug mapping shared by frontend links and API paths.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} entity - Lowercase CP entity type (e.g., "internetexchange").
    * @returns {string} Frontend URL slug (e.g., "ix"), or empty string if unmapped.
    */
@@ -1926,7 +1742,6 @@
    * Purpose: Generate the canonical frontend path used for toolbar link href values.
    * Necessity: Centralizes path construction from entity type + ID to avoid slug/ID drift
    * across separate call sites that build frontend links.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ entity: string, entityId: string }} ctx - Route context from getRouteContext().
    * @returns {string} Root-relative path such as "/ix/42", or empty string on failure.
    */
@@ -1940,7 +1755,6 @@
    * Resolves PeeringDB API resource slug for a CP entity type.
    * Purpose: Build direct JSON API links for the current entity page.
    * Necessity: CP workflows often require quick access to canonical API payloads.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} entity - Lowercase CP entity type (e.g., "internetexchange").
    * @returns {string} API resource slug (e.g., "ix"), or empty string if unmapped.
    */
@@ -1952,7 +1766,6 @@
    * Builds full API JSON URL for the current CP entity context.
    * Purpose: Provide one-click navigation to the matching API record.
    * Necessity: Avoid manual URL crafting when validating backend/source-of-truth data.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ entity: string, entityId: string }} ctx - Route context from getRouteContext().
    * @returns {string} Full API URL (e.g., "https://www.peeringdb.com/api/ix/42"), or empty string.
    */
@@ -1967,7 +1780,6 @@
    * Builds a canonical PeeringDB API object URL for resource/id pairs.
    * Purpose: Keep API endpoint construction centralized and consistent.
    * Necessity: Avoids hardcoded URL drift across modules.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} resource - API resource slug (e.g., "org", "ix").
    * @param {string|number} entityId - Entity record ID.
    * @returns {string} Full API URL, or empty string if either argument is invalid.
@@ -1984,7 +1796,6 @@
    * Purpose: Surface API contract violations in debug mode without flooding the console.
    * Necessity: The same endpoint can be called many times per session; deduplication
    * via a Set ensures the warning fires only once per source URL.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} source - Endpoint URL or identifier where the payload was received.
    * @param {*} payload - The malformed payload value forwarded to console.warn.
    */
@@ -2010,7 +1821,6 @@
    * Records the most recent fetch failure details for a URL.
    * Purpose: Improve malformed payload diagnostics with concrete transport/parse reasons.
    * Necessity: Null payload alone is ambiguous during troubleshooting.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} url - Request URL key.
    * @param {object} details - Structured failure metadata.
    */
@@ -2025,7 +1835,6 @@
 
   /**
    * Clears tracked fetch-failure metadata for a URL after a successful fetch.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} url - Request URL key.
    */
   function clearFetchFailure(url) {
@@ -2039,7 +1848,6 @@
    * Purpose: Standardize extraction of the first `data` entry from API payloads.
    * Necessity: Reduces repeated optional-chaining and handles malformed shapes uniformly
    * by delegating shape warnings to warnMalformedApiPayloadOnce.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {*} payload - Raw JSON response object from a PeeringDB list endpoint.
    * @param {string} [source="unknown"] - Endpoint URL for diagnostic messages.
    * @returns {object|null} First item in `payload.data`, or null on any shape mismatch.
@@ -2065,7 +1873,6 @@
    * Necessity: The renumber workflow performs host-bit math on netixlan
    * addresses for both families; a single BigInt-backed parser avoids
    * pulling in an external library and keeps the script self-contained.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {string} text - Address literal (e.g. "185.0.1.50", "2001:db8::1").
    * @returns {{ family: 4|6, bigint: bigint }|null} Parsed value or null on
    *   malformed input.
@@ -2115,7 +1922,6 @@
    * arithmetic in replaceHostInPrefix().
    * Necessity: IPv6 in particular requires RFC 5952 lowercase compressed
    * form for parity with PeeringDB CP rendering.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {4|6} family - Address family.
    * @param {bigint} value - Numeric address.
    * @returns {string} Canonical address string, or empty string on invalid input.
@@ -2168,7 +1974,6 @@
    * Purpose: Foundation for the IXLAN peer renumber workflow.
    * Necessity: Renumbering preserves host bits across a prefix change, which
    * requires both the network base and a network mask as BigInts.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {string} text - CIDR literal.
    * @returns {{ family: 4|6, address: bigint, prefixLen: number,
    *             totalBits: number, networkMask: bigint, hostMask: bigint,
@@ -2211,7 +2016,6 @@
    * Necessity: Host bits must remain stable across prefix changes (e.g.
    * 185.0.1.50/24 -> 185.1.184.50/23). The result also tells callers when
    * the host portion does not fit the new prefix (returns fits:false).
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {string} ipText - The current address to rewrite.
    * @param {string} oldCidrText - Source prefix in CIDR notation.
    * @param {string} newCidrText - Target prefix in CIDR notation.
@@ -2296,7 +2100,6 @@
    * directly; without it we fall back to a startswith scan against the v4
    * (or v6) old prefix's address portion and the CP modal then groups by
    * `ixlan_id` for an operator selection step.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {object} payload - Parsed renumber payload from parseRenumberHash().
    * @returns {Promise<{rows: object[], scanFilter: string, error: string}>}
    *   List of API rows plus the filter string used (for diagnostics) and an
@@ -2388,7 +2191,6 @@
    * Necessity: Operators need to see which rows are eligible, skipped (no
    * change), out of host range, or conflicting before approving the apply
    * step. Classification is pure and re-run on every Dry run press.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {object[]} rows - netixlan rows from fetchRenumberAffectedRows().
    * @param {object} payload - Parsed renumber payload.
    * @returns {Array<{ row: object, v4: object|null, v6: object|null,
@@ -2445,7 +2247,6 @@
    * Persists a renumber audit entry to the dedicated audit log key.
    * Purpose: Keep a forensic record of every applied netixlan rewrite so
    * operators can manually revert if needed.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {object} entry - Audit entry payload.
    */
   function recordRenumberAuditEntry(entry) {
@@ -2478,7 +2279,6 @@
    * Strips read-only / server-managed fields from a netixlan row before
    * round-tripping it through a PUT request.
    * Purpose: Avoid sending derived metadata back to the API.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {object} row - netixlan row as returned by the list endpoint.
    * @returns {object} Sanitized payload safe for PUT.
    */
@@ -2500,7 +2300,6 @@
    * Purpose: Surface PeeringDB's per-field DRF validation messages (which
    * are how the 400 "IP already exists" responses come back) instead of
    * the opaque "http-error" placeholder.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {object} result - Return value of pdbPost().
    * @returns {string} Compact, single-line error detail string.
    */
@@ -2530,7 +2329,6 @@
    * Necessity: PeeringDB API rejects PATCH; updates must round-trip the
    * full record. Sequential issue keeps server pressure low and respects
    * the API's per-key rate limit.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {object[]} entries - Selected classified entries to apply.
    * @param {{ cancelled: boolean }} signal - Cancel flag flipped by UI.
    * @param {Function} onProgress - Invoked per row with status updates.
@@ -2575,7 +2373,6 @@
    * Purpose: Top-level UI entry point invoked from the toolbar button.
    * Necessity: Centralizes Dry run + Apply orchestration so the toolbar
    * button stays a one-liner and dispose() is straightforward.
-   * @ai Preserve menu command registration behavior and gating on feature flag.
    * @param {object} payload - Parsed renumber payload.
    */
   async function openIxlanRenumberModal(payload) {
@@ -2716,10 +2513,27 @@
     backdrop.appendChild(modal);
     document.body.appendChild(backdrop);
 
+    // Resolves when the modal is dismissed. The opener awaits this, so the
+    // caller's action lock spans the modal's lifetime rather than only its
+    // first render -- otherwise a second click stacks a second modal, with its
+    // own cancelSignal, over rows the first one is still writing.
+    let resolveClosed;
+    const closed = new Promise((resolve) => { resolveClosed = resolve; });
+
     /**
-     * Removes the modal from the DOM.
+     * Removes the modal from the DOM and cancels any apply loop in flight.
+     * @ai Preserve the cancelSignal write and the resolveClosed() call.
      */
-    function close() { backdrop.remove(); }
+    function close() {
+      // Dismissing the UI must stop the work, not just hide it. This was
+      // `backdrop.remove()` alone, so a backdrop click mid-apply tore down the
+      // progress display while the loop kept issuing PUT/DELETE with no
+      // remaining way to abort. The explicit Cancel button already set this
+      // flag; close() did not.
+      cancelSignal.cancelled = true;
+      backdrop.remove();
+      resolveClosed();
+    }
     closeBtn.addEventListener("click", close);
     backdrop.addEventListener("click", (ev) => { if (ev.target === backdrop) close(); });
 
@@ -2856,11 +2670,17 @@
       const conflictItems = collectConflictItemsFromEntries(entries);
       if (conflictItems.length === 0) return;
       if (!selectedIxlanId) { status.textContent = "Select an ixlan first."; return; }
+      // Fire-and-forget: nothing awaits this, so it needs its own handler --
+      // see "Fire-and-forget async work must carry its own try/catch" in
+      // docs/CONVENTIONS.md. It now settles on dismissal, not on first render.
       openConflictResolverModal({
         ixlanId: String(selectedIxlanId),
         ticketId: payload.ticketId || "",
         payload,
         conflictItems,
+      }).catch((error) => {
+        console.error(`[${MODULE_PREFIX}] Conflict resolver modal failed`, error);
+        status.textContent = "Conflict resolver failed. See console for details.";
       });
     });
     conflictsBannerBtn.addEventListener("click", () => resolveConflictsBtn.click());
@@ -2868,7 +2688,10 @@
     recentChangesBtn.addEventListener("click", () => {
       if (!isFeatureEnabled("recentIpChanges")) { status.textContent = "Recent IP changes feature is disabled."; return; }
       if (!selectedIxlanId) { status.textContent = "Select an ixlan first."; return; }
-      openRecentIpChangesModal(String(selectedIxlanId));
+      // Fire-and-forget, so it carries its own handler (docs/CONVENTIONS.md).
+      openRecentIpChangesModal(String(selectedIxlanId)).catch((error) => {
+        console.error(`[${MODULE_PREFIX}] Recent IP changes modal failed`, error);
+      });
     });
 
     dryBtn.addEventListener("click", () => { refresh(); });
@@ -2921,6 +2744,10 @@
     });
 
     await refresh();
+    // Resolve only once the admin dismisses the modal. The toolbar handler
+    // holds its action lock across this await, so a second click reports
+    // "already running" instead of stacking a second modal over the same rows.
+    await closed;
   }
 
   // ── IX-F Member Audit (helpers) ────────────────────────────────────────────
@@ -2939,7 +2766,6 @@
    * a single ixlan so the module can derive ixlanId without prompting.
    * Necessity: The IX-F audit is scoped to one ixlan at a time; running
    * unscoped would be expensive and ambiguous.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {string} href - URL to inspect (defaults to current location).
    * @returns {string} Numeric ixlan id, or "" when no single-ixlan filter is set.
    */
@@ -2960,7 +2786,6 @@
   /**
    * Fetches an ixlan record and returns its IX-F member-list URL.
    * Purpose: Centralize the "does this ixlan publish IX-F?" check.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} ixlanId - Numeric ixlan id.
    * @returns {Promise<{ ixfUrl: string, ixlan: object|null, error: string }>}
    */
@@ -2985,7 +2810,6 @@
    * the IX portal hostname is not same-origin with PeeringDB.
    * Necessity: pdbFetch uses fetch() which is blocked by CORS for arbitrary
    * IX portals; we need the userscript-grant code path.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} ixfUrl - The IX-F export URL.
    * @returns {Promise<{ data: object|null, status: number, error: string }>}
    */
@@ -3026,7 +2850,6 @@
    * Purpose: PDB rows and IX-F exports may differ in v6 spelling
    * (e.g. "2001:DB8::1" vs "2001:db8:0:0:0:0:0:1") even though they
    * refer to the same address.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {string} ip - IPv6 string (or empty).
    * @returns {string} Canonical lowercase compressed form, or "" on error.
    */
@@ -3050,7 +2873,6 @@
    * Necessity: IX-F treats v4 and v6 as fields of one vlan entry; PeeringDB
    * historically allows them as separate netixlan rows, which is the
    * mismatch this module is built to reconcile.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {object} ixfData - Parsed IX-F member-export JSON (v0.x or v1.x).
    * @returns {Map<string, Array<{v4: string, v6: string, v6Norm: string, ixpId: string|number}>>}
    */
@@ -3097,7 +2919,6 @@
    *                   stale dual row. Discovered via operator report
    *                   (ixlan #3990, AS211750) where the pair otherwise
    *                   slipped through the audit silently.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {object[]} rows - netixlan rows for the ixlan.
    * @param {Map<string, Array<{v4: string, v6: string, v6Norm: string}>>} ixfMap
    * @returns {Array<{ asn: string, keeperRow: object, otherRow: object,
@@ -3175,7 +2996,6 @@
    * Persists an IX-F merge audit entry.
    * Purpose: Forensic record of every merge so operators can manually undo
    * if the IX-F export turns out to have been wrong.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {object} entry - Audit entry payload.
    */
   function recordIxfMergeAuditEntry(entry) {
@@ -3205,16 +3025,25 @@
 
   /**
    * Applies a list of merge candidates sequentially.
-    * Purpose: For each candidate, pre-clear the sibling row's transfer IP
-    * (so unique-ip validation does not block keeper PUT), then PUT the
-    * keeper with both ipv4 + ipv6, then DELETE the sibling.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+   * Purpose: For each candidate, re-read both rows live and re-confirm the
+   * pair still merges, pre-clear the sibling row's transfer IP (so unique-ip
+   * validation does not block keeper PUT), PUT the keeper with both IPs plus
+   * anything the doomed row carries that the keeper lacks, verify that landed,
+   * then DELETE the sibling.
+   * Necessity: this loop used to write from the refresh()-time snapshot and
+   * PUT only ipaddr4/ipaddr6, so (a) rows edited between render and Apply were
+   * merged on stale premises, and (b) speed/is_rs_peer/bfd_support/operational
+   * /notes carried solely by the doomed row were destroyed by the DELETE. The
+   * conflict resolver already did all of this correctly; this ports its
+   * discipline rather than introducing a second mechanism.
+   * @ai Do NOT DELETE before the keeper read-back confirms every absorbed field.
    * @param {object[]} candidates - Selected merge candidates.
+   * @param {Map|null} ixfMap - IX-F ASN->pairs map used to re-confirm the pair.
    * @param {{ cancelled: boolean }} signal - External cancel flag.
    * @param {Function} onProgress - Per-row callback.
    * @returns {Promise<object[]>} Outcomes for the audit log.
    */
-  async function applyIxfMerges(candidates, signal, onProgress) {
+  async function applyIxfMerges(candidates, ixfMap, signal, onProgress) {
     const outcomes = [];
     for (const candidate of candidates) {
       const base = {
@@ -3224,6 +3053,8 @@
         ipv4: candidate.ipv4,
         ipv6: candidate.ipv6,
         shape: candidate.shape || "split",
+        absorbed: {},
+        acknowledgedMismatches: [],
       };
       if (signal?.cancelled) {
         outcomes.push({ ...base, status: "cancelled" });
@@ -3232,7 +3063,58 @@
 
       onProgress?.(candidate, { status: "in-flight" });
 
-      const otherOriginal = buildNetixlanPutPayload(candidate.otherRow);
+      const abort = async (status, error, extra = {}) => {
+        const outcome = { ...base, ...extra, status, error };
+        outcomes.push(outcome);
+        onProgress?.(candidate, outcome);
+        if (IXF_MEMBER_APPLY_DELAY_MS > 0) await new Promise((r) => setTimeout(r, IXF_MEMBER_APPLY_DELAY_MS));
+      };
+
+      // Live re-read. Everything below is decided from these rows, never from
+      // the refresh()-time snapshot the table was rendered from.
+      const [freshKeeperRes, freshOtherRes] = await Promise.all([
+        fetchNetixlanRowById(candidate.keeperRow.id),
+        fetchNetixlanRowById(candidate.otherRow.id),
+      ]);
+      if (freshKeeperRes.error || freshOtherRes.error || !freshKeeperRes.row || !freshOtherRes.row) {
+        await abort("aborted", freshKeeperRes.error || freshOtherRes.error || "no-row", { gateFailed: "fresh-reread" });
+        continue;
+      }
+
+      // Re-run the same predicate that produced this candidate, against the
+      // live rows. If the pair no longer merges -- an IP moved, a row was
+      // edited, IX-F no longer confirms it -- this one is out.
+      const liveCandidates = ixfMap
+        ? findIxfMergeCandidates([freshKeeperRes.row, freshOtherRes.row], ixfMap)
+        : [];
+      const liveCandidate = liveCandidates.find((c) =>
+        String(c.keeperRow.id) === String(candidate.keeperRow.id) &&
+        String(c.otherRow.id) === String(candidate.otherRow.id) &&
+        c.ipv4 === candidate.ipv4 &&
+        normalizeIpv6ForCompare(c.ipv6) === normalizeIpv6ForCompare(candidate.ipv6) &&
+        (c.shape || "split") === (candidate.shape || "split"),
+      );
+      if (!liveCandidate) {
+        await abort("aborted", ixfMap ? "live-recheck-failed" : "ixf-map-unavailable", { gateFailed: "live-recheck" });
+        continue;
+      }
+
+      // What this DELETE would absorb, and what it would discard. The
+      // acknowledgement is bound to the exact disagreement set the admin saw;
+      // a set that changed under us is a new decision, not an approved one.
+      const effects = summarizeIxfMergeEffects(liveCandidate);
+      base.absorbed = { ...effects.merge };
+      base.acknowledgedMismatches = effects.mismatches.map((m) => m.field);
+      if (effects.mismatches.length > 0 && candidate.acknowledgedMismatchKey !== effects.mismatchKey) {
+        await abort(
+          "aborted",
+          `unacknowledged-mismatch:${effects.mismatches.map((m) => m.field).join(",")}`,
+          { gateFailed: "mismatch-ack" },
+        );
+        continue;
+      }
+
+      const otherOriginal = buildNetixlanPutPayload(freshOtherRes.row);
       const otherNeutralized = { ...otherOriginal };
       const candidateV4 = String(candidate.ipv4 || "").trim();
       const candidateV6Norm = normalizeIpv6ForCompare(candidate.ipv6 || "");
@@ -3252,7 +3134,7 @@
       }
 
       if (neutralizeChanged) {
-        const otherUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${candidate.otherRow.id}`;
+        const otherUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${freshOtherRes.row.id}`;
         const neutralizeRes = await pdbPost(otherUrl, "PUT", otherNeutralized, { contentType: "application/json", retries: 1 });
         const neutralizeOk = Number(neutralizeRes?.status || 0) >= 200 && Number(neutralizeRes?.status || 0) < 300;
         if (!neutralizeOk) {
@@ -3269,17 +3151,23 @@
         }
       }
 
-      const putBody = buildNetixlanPutPayload(candidate.keeperRow);
+      // Absorb before the DELETE: any preserved field the doomed row carries
+      // and the keeper lacks is copied over, because the DELETE is about to
+      // destroy its only carrier. IPs are set explicitly from the IX-F-
+      // confirmed pair, which is why summarizeIxfMergeEffects skips both
+      // families. Disagreements are not absorbed -- the keeper's value stands,
+      // and the admin has already acknowledged the loss above.
+      const putBody = { ...buildNetixlanPutPayload(freshKeeperRes.row), ...effects.merge };
       putBody.ipaddr4 = candidate.ipv4;
       putBody.ipaddr6 = candidate.ipv6;
-      const putUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${candidate.keeperRow.id}`;
+      const putUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${freshKeeperRes.row.id}`;
       const putResult = await pdbPost(putUrl, "PUT", putBody, { contentType: "application/json", retries: 1 });
       const putOk = Number(putResult?.status || 0) >= 200 && Number(putResult?.status || 0) < 300;
       if (!putOk) {
         let rollbackStatus = 0;
         let rollbackError = "";
         if (neutralizeChanged) {
-          const otherUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${candidate.otherRow.id}`;
+          const otherUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${freshOtherRes.row.id}`;
           const rollbackRes = await pdbPost(otherUrl, "PUT", otherOriginal, { contentType: "application/json", retries: 1 });
           rollbackStatus = Number(rollbackRes?.status || 0);
           const rollbackOk = rollbackStatus >= 200 && rollbackStatus < 300;
@@ -3298,7 +3186,29 @@
         if (IXF_MEMBER_APPLY_DELAY_MS > 0) await new Promise((r) => setTimeout(r, IXF_MEMBER_APPLY_DELAY_MS));
         continue;
       }
-      const delUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${candidate.otherRow.id}`;
+      // Verify the keeper actually holds everything before destroying the only
+      // other copy. Same discipline as applyConflictDeletes: a PUT that
+      // returned 2xx but did not persist a field must not be followed by a
+      // DELETE, because the doomed row is the last carrier.
+      const verifyRes = await fetchNetixlanRowById(freshKeeperRes.row.id);
+      if (verifyRes.error || !verifyRes.row) {
+        await abort("keeper-verify-failed", verifyRes.error || "no-row");
+        continue;
+      }
+      const wanted = { ...effects.merge, ipaddr4: candidate.ipv4, ipaddr6: candidate.ipv6 };
+      const mismatched = [];
+      for (const [field, want] of Object.entries(wanted)) {
+        const got = verifyRes.row[field];
+        if (normalizeNetixlanFieldForCompare(field, want) !== normalizeNetixlanFieldForCompare(field, got)) {
+          mismatched.push(field);
+        }
+      }
+      if (mismatched.length > 0) {
+        await abort("keeper-verify-failed", `mismatch:${mismatched.join(",")}`);
+        continue;
+      }
+
+      const delUrl = `${PEERINGDB_API_BASE_URL}/netixlan/${freshOtherRes.row.id}`;
       const delResult = await pdbPost(delUrl, "DELETE", "", { contentType: "application/json", retries: 1 });
       const delOk = Number(delResult?.status || 0) >= 200 && Number(delResult?.status || 0) < 300;
       const outcome = {
@@ -3317,7 +3227,6 @@
   /**
    * Opens the IX-F audit modal for a chosen ixlan.
    * Purpose: Top-level entry point invoked from the toolbar button.
-   * @ai Preserve menu command registration behavior and gating on feature flag.
    * @param {string} ixlanId - Numeric ixlan id to audit.
    */
   async function openIxfMemberAuditModal(ixlanId) {
@@ -3415,7 +3324,10 @@
     setIconButtonLabel(recentChangesBtn, "\u23f2", `Recent IP changes (\u2264${RECENT_IP_CHANGES_WINDOW_MIN}m)`);
     recentChangesBtn.addEventListener("click", () => {
       if (!isFeatureEnabled("recentIpChanges")) return;
-      openRecentIpChangesModal(String(ixlanId));
+      // Fire-and-forget, so it carries its own handler (docs/CONVENTIONS.md).
+      openRecentIpChangesModal(String(ixlanId)).catch((error) => {
+        console.error(`[${MODULE_PREFIX}] Recent IP changes modal failed`, error);
+      });
     });
     // Right-aligned fixed-offset strip: buttons stay side-by-side.
     buttons.append(closeBtn, refreshBtn, recentChangesBtn, cancelApplyBtn, applyBtn);
@@ -3423,21 +3335,101 @@
     backdrop.appendChild(modal);
     document.body.appendChild(backdrop);
 
-    /** Removes the modal. */
-    function close() { backdrop.remove(); }
+    // Resolves when the modal is dismissed. The opener awaits this, so the
+    // caller's action lock spans the modal's lifetime rather than only its
+    // first render -- otherwise a second click stacks a second modal, with its
+    // own cancelSignal, over rows the first one is still writing.
+    let resolveClosed;
+    const closed = new Promise((resolve) => { resolveClosed = resolve; });
+
+    /**
+     * Removes the modal and cancels any merge loop in flight.
+     * @ai Preserve the cancelSignal write and the resolveClosed() call.
+     */
+    function close() {
+      // Dismissing the UI must stop the work, not just hide it. This was
+      // `backdrop.remove()` alone, so a backdrop click mid-apply tore down the
+      // progress display while the loop kept issuing PUT/DELETE with no
+      // remaining way to abort. The explicit Cancel button already set this
+      // flag; close() did not.
+      cancelSignal.cancelled = true;
+      backdrop.remove();
+      resolveClosed();
+    }
     closeBtn.addEventListener("click", close);
     backdrop.addEventListener("click", (ev) => { if (ev.target === backdrop) close(); });
 
     let candidates = [];
     let ixfUrlInUse = "";
+    // Kept at modal scope so applyIxfMerges can re-confirm each pair against
+    // the same IX-F data at write time, not just at render time.
+    let ixfMap = null;
     let cancelSignal = { cancelled: false };
+
+    /**
+     * Builds the "Merge effect" cell: what the keeper absorbs, and any field
+     * both rows disagree on, with the acknowledgement the admin must tick.
+     * Purpose: Put the consequence of the DELETE in front of the admin before
+     * Apply, instead of leaving it to the changelog afterwards.
+     * Necessity: v4-only and v6-only rows are created independently and
+     * commonly disagree on speed or is_rs_peer. Hard-failing every such pair
+     * would block most real merges; merging silently would discard the doomed
+     * row's value with no record. Neither is the admin's call to skip.
+     * @ai Preserve the acknowledgement gate -- applyIxfMerges aborts any
+     *   candidate whose acknowledgedMismatchKey does not match what it re-reads.
+     * @param {object} candidate - Annotated merge candidate.
+     * @returns {HTMLElement} Table cell.
+     */
+    function buildMergeEffectCell(candidate) {
+      const cell = document.createElement("td");
+      Object.assign(cell.style, { padding: "5px 8px", borderBottom: "1px solid #eee", verticalAlign: "top" });
+      const effects = candidate.effects || { merge: {}, mismatches: [], mismatchKey: "" };
+
+      const absorbedFields = Object.keys(effects.merge);
+      if (absorbedFields.length > 0) {
+        const line = document.createElement("div");
+        line.textContent = `absorbs ${absorbedFields.join(", ")}`;
+        Object.assign(line.style, { color: "#15803d" });
+        cell.appendChild(line);
+      }
+
+      if (effects.mismatches.length === 0) {
+        if (absorbedFields.length === 0) {
+          const line = document.createElement("div");
+          line.textContent = "no data loss";
+          Object.assign(line.style, { color: "#666" });
+          cell.appendChild(line);
+        }
+        return cell;
+      }
+
+      for (const mismatch of effects.mismatches) {
+        const line = document.createElement("div");
+        line.textContent = `${mismatch.field}: keeper=${String(mismatch.keeper)} doomed=${String(mismatch.doomed)} (doomed value is discarded)`;
+        Object.assign(line.style, { color: "#b91c1c" });
+        cell.appendChild(line);
+      }
+
+      const ackLabel = document.createElement("label");
+      Object.assign(ackLabel.style, { display: "block", marginTop: "3px", color: "#b91c1c", cursor: "pointer" });
+      const ack = document.createElement("input");
+      ack.type = "checkbox";
+      ack.checked = candidate.acknowledgedMismatchKey === effects.mismatchKey;
+      ack.addEventListener("change", () => {
+        candidate.acknowledgedMismatchKey = ack.checked ? effects.mismatchKey : "";
+      });
+      ackLabel.appendChild(ack);
+      ackLabel.appendChild(document.createTextNode(" I reviewed this mismatch"));
+      cell.appendChild(ackLabel);
+      return cell;
+    }
 
     /** Re-renders the candidate table. */
     function render() {
       table.textContent = "";
       const thead = document.createElement("thead");
       const trh = document.createElement("tr");
-      for (const label of ["✓", "ASN", "Shape", "Keeper id", "Other id", "IPv4", "IPv6", "Status"]) {
+      for (const label of ["✓", "ASN", "Shape", "Keeper id", "Other id", "IPv4", "IPv6", "Merge effect", "Status"]) {
         const th = document.createElement("th");
         th.textContent = label;
         Object.assign(th.style, { textAlign: "left", padding: "6px 8px", borderBottom: "1px solid #ccc", background: "#fafafa", position: "sticky", top: "0" });
@@ -3460,7 +3452,7 @@
           shapeCell.title = "v4-only keeper + dual stale row: absorb v6, DELETE the stale row whose v4 disagrees with IX-F.";
           Object.assign(shapeCell.style, { color: "#b45309", fontWeight: "600" });
         }
-        tr.append(cbCell, td(candidate.asn), shapeCell, td(candidate.keeperRow.id), td(candidate.otherRow.id), td(candidate.ipv4 || ""), td(candidate.ipv6 || ""), td(candidate.applyStatus || "ready"));
+        tr.append(cbCell, td(candidate.asn), shapeCell, td(candidate.keeperRow.id), td(candidate.otherRow.id), td(candidate.ipv4 || ""), td(candidate.ipv6 || ""), buildMergeEffectCell(candidate), td(candidate.applyStatus || "ready"));
         tbody.appendChild(tr);
       }
       table.appendChild(tbody);
@@ -3490,9 +3482,23 @@
         status.textContent = "PDB netixlan fetch failed.";
         candidates = []; render(); return;
       }
-      const ixfMap = extractIxfAsnIpPairs(ixfResult.data);
-      candidates = findIxfMergeCandidates(rows, ixfMap).map((c) => ({ ...c, selected: true, applyStatus: "" }));
-      status.textContent = `ixlan #${ixlanId} — ${rows.length} PDB rows • ${ixfMap.size} IX-F ASNs • ${candidates.length} mergeable split pair(s)`;
+      ixfMap = extractIxfAsnIpPairs(ixfResult.data);
+      candidates = findIxfMergeCandidates(rows, ixfMap).map((c) => {
+        const effects = summarizeIxfMergeEffects(c);
+        return {
+          ...c,
+          selected: true,
+          applyStatus: "",
+          effects,
+          // Set only when the admin ticks the row's acknowledgement box, and
+          // compared by value at apply time so a disagreement that changed in
+          // between re-prompts instead of riding on the old tick.
+          acknowledgedMismatchKey: "",
+        };
+      });
+      const reviewCount = candidates.filter((c) => c.effects.mismatches.length > 0).length;
+      status.textContent = `ixlan #${ixlanId} — ${rows.length} PDB rows • ${ixfMap.size} IX-F ASNs • ${candidates.length} mergeable split pair(s)`
+        + (reviewCount ? ` • ${reviewCount} need mismatch review` : "");
       render();
     }
 
@@ -3500,9 +3506,25 @@
     applyBtn.addEventListener("click", async () => {
       const selected = candidates.filter((c) => c.selected);
       if (selected.length === 0) { status.textContent = "Nothing selected to apply."; return; }
+      // Refuse the whole batch rather than silently skipping rows: a partial
+      // apply that quietly dropped the rows needing review would read as
+      // success. applyIxfMerges re-checks this against live data anyway; this
+      // is the early, legible failure.
+      const unreviewed = selected.filter(
+        (c) => c.effects.mismatches.length > 0 && c.acknowledgedMismatchKey !== c.effects.mismatchKey,
+      );
+      if (unreviewed.length > 0) {
+        status.textContent = `Review the mismatch on ${unreviewed.length} selected row(s) first `
+          + `(AS${unreviewed.map((c) => c.asn).join(", AS")}), or unselect them.`;
+        return;
+      }
+      const absorbing = selected.filter((c) => Object.keys(c.effects.merge).length > 0).length;
+      const discarding = selected.filter((c) => c.effects.mismatches.length > 0).length;
       const confirmed = window.confirm(
         `Merge ${selected.length} split netixlan pair(s)?\n` +
-        `Each merge will pre-clear the sibling transfer IP if needed, PUT both IPs onto the older (lower-id) row, then DELETE the sibling.\n` +
+        `Each merge re-reads both rows, pre-clears the sibling transfer IP if needed, PUTs both IPs onto the older (lower-id) row, verifies it, then DELETEs the sibling.\n` +
+        `Absorbing fields from the deleted row: ${absorbing}\n` +
+        `Discarding a disagreeing value you acknowledged: ${discarding}\n` +
         `ixlan: #${ixlanId}\n` +
         `IX-F source: ${ixfUrlInUse}`,
       );
@@ -3510,20 +3532,27 @@
       applyBtn.disabled = true; refreshBtn.disabled = true;
       cancelApplyBtn.style.display = ""; cancelSignal = { cancelled: false };
       cancelApplyBtn.onclick = () => { cancelSignal.cancelled = true; };
-      const outcomes = await applyIxfMerges(selected, cancelSignal, (candidate, update) => {
+      const outcomes = await applyIxfMerges(selected, ixfMap, cancelSignal, (candidate, update) => {
         candidate.applyStatus = update.status === "in-flight" ? "applying…" : `${update.status}${update.httpStatus ? ` (${update.httpStatus})` : ""}${update.error ? ` — ${update.error}` : ""}`;
         render();
       });
       recordIxfMergeAuditEntry({ ixlanId, ixfUrl: ixfUrlInUse, outcomes });
       applyBtn.disabled = false; refreshBtn.disabled = false; cancelApplyBtn.style.display = "none";
-      const ok = outcomes.filter((o) => o.status === "done").length;
-      const preclearErr = outcomes.filter((o) => o.status === "preclear-failed").length;
-      const putErr = outcomes.filter((o) => o.status === "put-failed").length;
-      const delErr = outcomes.filter((o) => o.status === "delete-failed").length;
-      status.textContent = `Apply complete — ok:${ok} preclear-failed:${preclearErr} put-failed:${putErr} delete-failed:${delErr} cancelled:${outcomes.filter((o) => o.status === "cancelled").length}`;
+      const count = (s) => outcomes.filter((o) => o.status === s).length;
+      status.textContent = `Apply complete — ok:${count("done")} aborted:${count("aborted")} `
+        + `preclear-failed:${count("preclear-failed")} put-failed:${count("put-failed")} `
+        + `keeper-verify-failed:${count("keeper-verify-failed")} delete-failed:${count("delete-failed")} `
+        + `cancelled:${count("cancelled")}`;
+      // Aborted rows are the ones a live re-read disqualified; refresh so the
+      // table reflects why rather than leaving a stale "ready".
+      if (count("aborted") > 0) await refresh();
     });
 
     await refresh();
+    // Resolve only once the admin dismisses the modal. The toolbar handler
+    // holds its action lock across this await, so a second click reports
+    // "already running" instead of stacking a second modal over the same rows.
+    await closed;
   }
 
   // ── IXLAN Conflict Resolver (helpers) ──────────────────────────────────────
@@ -3547,7 +3576,6 @@
    * Necessity: A keeper must exist by definition for the doomed row to have
    * been flagged as a conflict; if zero or multiple rows are returned, the
    * resolver MUST refuse to act.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ ixlanId: string, doomedId: string|number, asn: string|number,
    *           family: 4|6, newIp: string }} args
    * @returns {Promise<{ keeper: object|null, error: string }>}
@@ -3580,7 +3608,6 @@
    * Re-fetches a single netixlan row by id from the live API.
    * Purpose: Pre-delete confirmation that nothing has shifted since the
    * keeper/doomed snapshot was taken.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string|number} id - netixlan id.
    * @returns {Promise<{ row: object|null, error: string }>}
    */
@@ -3602,7 +3629,6 @@
    * undefined, or empty string). Numeric `0` and boolean `false` count
    * as empty for our purposes here because the netixlan model treats
    * those as "absent / default off" for the fields we inspect.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {*} value
    * @returns {boolean}
    */
@@ -3618,7 +3644,6 @@
    * Normalizes a netixlan field value for cross-row equality. IPv6 gets
    * collapsed via normalizeIpv6ForCompare so that `2001:7f8::1` and
    * `2001:7f8:0:0:0:0:0:1` are treated as the same address.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {string} field
    * @param {*} value
    * @returns {string}
@@ -3639,13 +3664,14 @@
    *
    * Skips the conflicting family entirely — the renumber flow already
    * gives the keeper its post-renumber IP on that family (gates 3 & 4
-   * verify this).
+   * verify this). `family: "both"` skips ipaddr4 and ipaddr6 together, for
+   * the IX-F merge path, which writes both addresses onto the keeper from
+   * the IX-F-confirmed pair and so owns neither field's merge decision.
    *
    * Purpose: Prevent IP-family / attribute data loss when a DELETE would
    * otherwise destroy the only carrier of a value (operator-discovered
    * bug: ixlan #3990, doomed #93168 IPv6 would have been lost).
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
-   * @param {{ doomedRow: object, keeperRow: object, family: 4|6 }} args
+   * @param {{ doomedRow: object, keeperRow: object, family: 4|6|"both" }} args
    * @returns {{ merge: object, blockers: Array<{ field: string, kind: string, doomed: *, keeper: * }> }}
    */
   function buildMergePlan(args) {
@@ -3653,9 +3679,11 @@
     const merge = {};
     const blockers = [];
     if (!doomedRow || !keeperRow) return { merge, blockers };
-    const conflictingFamilyField = family === 4 ? "ipaddr4" : "ipaddr6";
+    const skippedFamilyFields = family === "both"
+      ? ["ipaddr4", "ipaddr6"]
+      : [family === 4 ? "ipaddr4" : "ipaddr6"];
     for (const field of PRESERVED_NETIXLAN_FIELDS) {
-      if (field === conflictingFamilyField) continue;
+      if (skippedFamilyFields.includes(field)) continue;
       const d = doomedRow[field];
       const k = keeperRow[field];
       const dHas = isMergeableValue(d);
@@ -3680,6 +3708,41 @@
   }
 
   /**
+   * Summarizes what an IX-F merge would absorb from the doomed row and what
+   * it would discard.
+   * Purpose: Give the audit modal a per-candidate answer to "does this DELETE
+   * destroy anything?" so mismatches can be shown before Apply rather than
+   * discovered in the changelog afterwards.
+   * Necessity: applyIxfMerges used to PUT only ipaddr4/ipaddr6 onto the
+   * keeper, so speed/is_rs_peer/bfd_support/operational/notes carried solely
+   * by the doomed row were destroyed by the DELETE with nothing recorded.
+   * Split v4-only/v6-only rows are created independently and disagree often,
+   * so a mismatch is a normal finding to review, not an error.
+   * @param {{ keeperRow: object, otherRow: object }} candidate - Merge candidate.
+   * @returns {{ merge: object, mismatches: Array<{ field: string, keeper: *, doomed: * }>,
+   *             mismatchKey: string }} Fields to absorb, disagreements to review,
+   *   and a stable key identifying the disagreement set.
+   */
+  function summarizeIxfMergeEffects(candidate) {
+    const plan = buildMergePlan({
+      doomedRow: candidate?.otherRow,
+      keeperRow: candidate?.keeperRow,
+      family: "both",
+    });
+    const mismatches = plan.blockers
+      .filter((b) => b.kind === "field-mismatch")
+      .map((b) => ({ field: b.field, keeper: b.keeper, doomed: b.doomed }));
+    // Stable identity for the disagreement set, so an acknowledgement made
+    // against what the admin saw cannot silently carry over to a different
+    // set discovered during the live re-read at apply time.
+    const mismatchKey = mismatches
+      .map((m) => `${m.field}=${String(m.keeper)}|${String(m.doomed)}`)
+      .sort()
+      .join(";");
+    return { merge: plan.merge, mismatches, mismatchKey };
+  }
+
+  /**
    * Verifies a doomed/keeper conflict pair against all 8 safety gates.
    * Purpose: Single source of truth for "is it safe to absorb the
    * doomed netixlan into the keeper and DELETE it?". Every gate must
@@ -3688,7 +3751,6 @@
    * hard-fail (we choose 200% sure over 90%). Gate 8 catches the
    * silent-data-loss case where the doomed row carries a non-empty
    * field value the keeper lacks and that field is not auto-mergeable.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {{ doomedRow: object, keeperRow: object, payload: object,
    *           ixfMap: Map|null, family: 4|6 }} args
    * @returns {{ gates: Array<{ name: string, ok: boolean, detail: string }>,
@@ -3824,7 +3886,6 @@
    * Persists a conflict-resolve audit entry.
    * Purpose: Forensic record of every DELETE so operators can manually
    * audit and (if needed) reverse via the netixlan admin.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {object} entry - Audit entry payload.
    */
   function recordConflictResolveAuditEntry(entry) {
@@ -3864,7 +3925,6 @@
    * only then DELETE the doomed row. Any drift or failure aborts that
    * specific row without affecting others — and critically, no DELETE
    * ever runs unless the merge PUT both succeeded and verified.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {object[]} items - Selected conflict items.
    * @param {object} payload - Renumber payload (for prefix gates).
    * @param {Map|null} ixfMap - IX-F ASN→pairs map, or null if unavailable.
@@ -4026,7 +4086,6 @@
    * Purpose: Translate the renumber modal's per-row classification into
    * one conflict item per (row, family) that needs resolution. A row
    * with conflicts on both families produces two items.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {object[]} entries - classifyRenumberRows() output.
    * @returns {Array<{ doomedRow: object, family: 4|6, newIp: string }>}
    */
@@ -4049,7 +4108,6 @@
    * approving (or refusing) the DELETE of stale duplicates.
    * Necessity: The DELETE is destructive and cross-references upstream
    * IX-F data; this MUST NOT be a one-click operation.
-   * @ai Preserve menu command registration behavior and gating on feature flag.
    * @param {{ ixlanId: string, ticketId: string, payload: object,
    *           conflictItems: object[] }} args
    */
@@ -4133,11 +4191,14 @@
     confirmLabel.textContent = `Type ixlan id "${ixlanId}" to enable Apply: `;
     const confirmInput = document.createElement("input");
     confirmInput.type = "text";
-    confirmInput.placeholder = normalizedExpectedIxlanId || ixlanId;
-    // Pre-fill to prevent false lockout where the operator sees "3990"
-    // but Apply remains disabled due placeholder/value confusion.
-    // Final window.confirm remains in place as destructive safeguard.
-    confirmInput.value = normalizedExpectedIxlanId;
+    // Deliberately NOT the expected id: a placeholder showing "3990" made an
+    // empty field look filled, which is the "false lockout" the previous
+    // pre-fill was added to work around. That pre-fill satisfied the gate from
+    // first render, so the banner's "type the ixlan id to enable Apply" was
+    // never actually enforced. Fix the confusing placeholder instead and leave
+    // the field empty, so the admin's keystrokes are what enable Apply.
+    // @ai Do NOT set confirmInput.value here.
+    confirmInput.placeholder = "ixlan id";
     Object.assign(confirmInput.style, { padding: "4px 6px", marginLeft: "6px", width: "100px" });
     confirmLabel.appendChild(confirmInput);
     confirmRow.appendChild(confirmLabel);
@@ -4219,7 +4280,25 @@
     backdrop.appendChild(modal);
     document.body.appendChild(backdrop);
 
-    closeBtn.addEventListener("click", () => backdrop.remove());
+    // See the same pattern in openIxlanRenumberModal: resolves on dismissal so
+    // the enclosing action lock covers the modal's whole lifetime.
+    let resolveClosed;
+    const closed = new Promise((resolve) => { resolveClosed = resolve; });
+
+    /**
+     * Removes the modal and cancels any delete loop in flight.
+     * @ai Preserve the cancelSignal write and the resolveClosed() call.
+     */
+    function close() {
+      // Dismissing the UI must stop the work, not just hide it -- this modal
+      // issues DELETEs, and the teardown used to leave the loop running with
+      // no progress display and no way to abort.
+      cancelSignal.cancelled = true;
+      backdrop.remove();
+      resolveClosed();
+    }
+    closeBtn.addEventListener("click", close);
+    backdrop.addEventListener("click", (ev) => { if (ev.target === backdrop) close(); });
 
     // State.
     let items = initialItems.map((it) => ({
@@ -4448,6 +4527,10 @@
     });
 
     await refresh();
+    // Resolve only once the admin dismisses the modal. The toolbar handler
+    // holds its action lock across this await, so a second click reports
+    // "already running" instead of stacking a second modal over the same rows.
+    await closed;
   }
 
   // ── Recent IP Changes Audit Report (helpers) ───────────────────────────────
@@ -4464,7 +4547,6 @@
    * a given ixlan. Falls back to a client-side filter if the server rejects
    * `updated__gte`.
    * Purpose: Retrieve the authoritative current state for the report.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} ixlanId
    * @param {number} windowMinutes
    * @returns {Promise<{ rows: object[], cutoffIso: string, source: string, error: string }>}
@@ -4474,7 +4556,10 @@
     if (!/^\d+$/.test(id)) return { rows: [], cutoffIso: "", source: "", error: "bad-ixlan-id" };
     const cutoffMs = Date.now() - Math.max(1, Number(windowMinutes) || 60) * 60 * 1000;
     const cutoffIso = new Date(cutoffMs).toISOString().replace(/\.\d{3}Z$/, "Z");
-    // Try server-side filter first.
+    // Try server-side filter first. Both catch blocks below were dead code while
+    // pdbFetch returned null: the try always reached its return, so a rejected
+    // updated__gte filter reported "0 rows, no error" and the client-filter
+    // fallback never ran. They are live now that pdbFetch throws.
     try {
       const serverUrl = `${PEERINGDB_API_BASE_URL}/netixlan?ixlan_id=${encodeURIComponent(id)}&updated__gte=${encodeURIComponent(cutoffIso)}&depth=0&limit=250`;
       const data = await pdbFetch(serverUrl);
@@ -4502,7 +4587,6 @@
    * resolve) and emits outcome entries within `windowMinutes` of now.
    * Purpose: Provide the "old IP" side of the merge for IP changes the
    * userscript itself performed.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {number} windowMinutes
    * @param {string} ixlanFilter - When non-empty, restricts to that ixlan id.
    * @returns {Array<{ netixlanId: string, asn: string, oldIp4: string,
@@ -4638,7 +4722,6 @@
    * Merges PDB API rows with local audit outcomes, keyed by netixlan id.
    * Purpose: API gives current state and authoritative timestamp; logs give
    * the historical "old IP" the API can no longer show.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {object[]} apiRows - From fetchRecentNetixlanChanges().
    * @param {object[]} logOutcomes - From readAllNetixlanAuditOutcomes().
    * @returns {Array<{ netixlanId: string, asn: string, name: string,
@@ -4715,7 +4798,6 @@
    * Purpose: One line per IP family that changed; DELETE rows get a
    * "(deleted; superseded by #<keeperId>)" suffix.
    * Format: "<Network name> (AS<asn>); netixlan #<id>; <oldIP> → <newIP>"
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {object[]} merged - From mergeAuditSources().
    * @returns {string[]} One string per emitted line.
    */
@@ -4765,7 +4847,6 @@
    * Backfills missing network names on merged entries via /api/net.
    * Purpose: API-only rows already carry a `name` field, but log-only rows
    * (e.g. DELETE entries where the row is gone) do not.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {object[]} merged - From mergeAuditSources().
    * @returns {Promise<void>} Mutates entries in place.
    */
@@ -4793,7 +4874,6 @@
   /**
    * Opens the Recent IP Changes report modal for one ixlan.
    * Purpose: Read-only audit view; text area + sortable table + copy.
-   * @ai Preserve menu command registration behavior and gating on feature flag.
    * @param {string} ixlanId - Numeric ixlan id.
    */
   async function openRecentIpChangesModal(ixlanId) {
@@ -4882,7 +4962,19 @@
     backdrop.appendChild(modal);
     document.body.appendChild(backdrop);
 
-    closeBtn.addEventListener("click", () => backdrop.remove());
+    // Read-only report, so there is no cancelSignal to trip -- but the opener
+    // still awaits dismissal, which is what makes the caller's "report is
+    // already open" lock message true rather than aspirational.
+    let resolveClosed;
+    const closed = new Promise((resolve) => { resolveClosed = resolve; });
+
+    /** Removes the modal. */
+    function close() {
+      backdrop.remove();
+      resolveClosed();
+    }
+    closeBtn.addEventListener("click", close);
+    backdrop.addEventListener("click", (ev) => { if (ev.target === backdrop) close(); });
 
     async function refresh() {
       refreshBtn.disabled = true; copyBtn.disabled = true;
@@ -4910,13 +5002,16 @@
     });
 
     await refresh();
+    // Resolve only once the admin dismisses the modal. The toolbar handler
+    // holds its action lock across this await, so a second click reports
+    // "already running" instead of stacking a second modal over the same rows.
+    await closed;
   }
 
   /**
    * Returns a reason code when API JSON action should be blocked.
    * Purpose: Keep visibility and click-policy checks consistent.
    * Necessity: Some entities may not expose status reliably; block only when policy-relevant.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ entity: string, entityId: string }} ctx - Route context from getRouteContext().
    * @returns {string} Empty string when allowed; "missing-endpoint" or "status:<value>" otherwise.
    */
@@ -4937,7 +5032,6 @@
    * Determines whether the API JSON action should be visible for current context.
    * Purpose: Avoid showing the button when action policy does not allow opening.
    * Necessity: Prevent no-op UI affordances for non-OK entities.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ entity: string, entityId: string }} ctx - Route context from getRouteContext().
    * @returns {boolean} True when the API JSON toolbar action should be shown.
    */
@@ -4949,7 +5043,6 @@
    * Debug-only OpenAPI coverage check for mapped CP API resources.
    * Purpose: Catch accidental resource-slug typos or drift early in diagnostics mode.
    * Necessity: ENTITY_API_RESOURCE_MAP is a critical integration point for API links/fetches.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    */
   function runApiResourceCoverageCheck() {
     if (!isDebugEnabled()) return;
@@ -4975,7 +5068,6 @@
    * Purpose: Make copy button labels contextually explicit (e.g., "Copy IX URL").
    * Necessity: A generic "Copy URL" label is ambiguous when Org and Entity
    * copy buttons both appear on the same secondary action row.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} entity - Lowercase CP entity type (e.g., "internetexchange").
    * @returns {string} Human-readable label string for the copy action.
    */
@@ -4996,7 +5088,6 @@
    * Returns human-friendly website label for the current object type.
    * Purpose: Keep header website action labels concise and entity-specific.
    * Necessity: Replaces generic "ObjType Website" text with context-aware naming.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} entity - Lowercase CP entity type (e.g., "internetexchange").
    * @returns {string} Human-readable toolbar label (e.g., "IX Website").
    */
@@ -5028,7 +5119,6 @@
    * Returns human-friendly frontend label for a CP entity.
    * Purpose: Make the main frontend action explicit about the destination entity type.
    * Necessity: Replaces generic "Frontend" text with entity-specific naming.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} entity - Lowercase CP entity type (e.g., "internetexchange").
   * @returns {string} Human-readable label (e.g., "IX (FP)").
    */
@@ -5059,7 +5149,6 @@
   /**
    * Returns human-friendly CP label for a CP entity.
    * Purpose: Keep CP-toolbar labels consistent across modules.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} entity - Lowercase CP entity type (e.g., "internetexchange").
    * @returns {string} Human-readable label (e.g., "IX (CP)").
    */
@@ -5094,7 +5183,6 @@
    * or the #id_org field for all other entity types.
    * Necessity: Organization pages use their own entity ID as the org reference;
    * child entities (networks, carriers, etc.) need the parent org from the form.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ isEntityChangePage: boolean, entity: string, entityId: string }} ctx
    * @returns {string} Organization ID string, or empty string if unresolvable.
    */
@@ -5109,7 +5197,6 @@
    * Purpose: Provide a single point of access for the main toolbar list.
    * Necessity: Toolbar selectors differ across Grappelli versions; a unified locator
    * with multiple fallback selectors avoids duplicate selector logic in every module.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @returns {HTMLUListElement|null} The primary toolbar list element, or null if absent.
    */
   function getToolbarList() {
@@ -5125,7 +5212,6 @@
    * Removes deprecated primary action row from legacy versions.
    * Purpose: Clean up stale DOM elements from previous script versions.
    * Necessity: Ensures backward compatibility when script updates; prevents duplicate action rows.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function cleanupLegacyPrimaryActionRow() {
     const legacyRow = qs(`#${MODULE_PREFIX}PrimaryActionRow`);
@@ -5139,7 +5225,6 @@
    * Purpose: Prevent overlap between primary toolbar and secondary action row.
    * Necessity: Secondary row appears below primary toolbar; must account for toolbar height
    * which varies by content. Uses BoundingClientRect to detect actual overlap.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLUListElement} row - The secondary action row element to adjust.
    */
   function applySecondaryRowVerticalOffset(row) {
@@ -5250,7 +5335,6 @@
    * Purpose: Standardized way to add custom buttons (Google Maps, Frontend links, etc.).
    * Necessity: Ensures consistent styling, idempotency (prevents duplicates), and placement.
    * Marks buttons with data-pdb-cp-action attribute for reordering and identification.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {{ id: string, label: string, href?: string, onClick?: Function,
    *           target?: string|null, insertLeft?: boolean }} opts
    * @returns {HTMLAnchorElement|null} The created anchor element, or null on failure.
@@ -5346,7 +5430,6 @@
    * Purpose: Build the shared DOM structure for multi-item toolbar and secondary-row menus.
    * Necessity: Both toolbar and secondary-row dropdown helpers use the same toggle/flyout
    * HTML pattern; centralizing avoids DOM duplication and styling drift.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {{ id: string, label: string, items: Array<{label: string, href: string, target?: string}>,
    *           resolveItemTarget?: Function }} opts
    * @returns {{ li: HTMLLIElement, toggle: HTMLAnchorElement }|null}
@@ -5456,7 +5539,6 @@
    * Purpose: Add multi-item expandable menus (e.g., Maps) to the main toolbar UL.
    * Necessity: Toolbar insertion semantics differ from the secondary row; wrapping
    * createDropdownActionListItem ensures correct placement and data-pdb-cp-action tagging.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {{ id: string, label: string, items: Array<{label: string, href: string}>,
    *           insertLeft?: boolean }} opts
    * @returns {HTMLAnchorElement|null} The dropdown toggle anchor element, or null on failure.
@@ -5528,7 +5610,6 @@
    * Purpose: Provide a persistent secondary UL row below the primary toolbar for custom buttons.
    * Necessity: Multiple modules inject secondary buttons; a shared row avoids
    * multiple disconnected rows and centralizes vertical offset handling.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {HTMLUListElement|null} The secondary action row element, or null on DOM failure.
    */
   function getOrCreateSecondaryActionRow() {
@@ -5579,7 +5660,6 @@
    * Creates and appends a button to the secondary action row.
    * Purpose: Add custom actions to secondary row with consistent styling.
    * Necessity: Secondary row actions need inline-block styling and spacing different from primary toolbar.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ id: string, label: string, href?: string, title?: string, onClick: Function }} opts
    * @returns {HTMLAnchorElement|null} The created anchor element, or null on failure.
    */
@@ -5640,7 +5720,6 @@
    * Purpose: Add multi-item expandable actions (e.g., Maps) to the secondary row.
    * Necessity: Secondary row insertion semantics and item target resolution differ from
    * the primary toolbar; a dedicated helper keeps module code concise.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {{ id: string, label: string, items: Array<{label: string, href: string}> }} opts
    * @returns {HTMLAnchorElement|null} The dropdown toggle anchor element, or null on failure.
    */
@@ -5677,7 +5756,6 @@
    * Purpose: Support both CSS-selector strings and predicate functions in TOOLBAR_*_ORDER arrays.
    * Necessity: History item uses a function matcher; custom items use CSS attribute selectors;
    * a unified tester lets one reorder loop handle both types without branching.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {Element} child - DOM child element to test.
    * @param {string|Function} priority - CSS selector string or boolean predicate function.
    * @returns {boolean} True if `child` matches the given priority descriptor.
@@ -5704,7 +5782,6 @@
    * Identifies if a toolbar item is the History button.
    * Purpose: Handle History button specially in reordering (position it before custom actions).
    * Necessity: History button is Django admin native; needs position priority awareness.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {Element} child - Toolbar LI element to test.
    * @returns {boolean} True when the element is the native History button.
    */
@@ -5724,7 +5801,6 @@
    * Purpose: Establish deterministic button order (Frontend before Org links, History before custom).
    * Necessity: Ensures consistent UI layout across page variations and module load orders.
    * Unmatched children stay in original order at the end.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLElement} container - Parent element whose children will be reordered.
    * @param {Array<string|Function>} priorities - Ordered list of CSS selectors or predicate functions.
    */
@@ -5756,7 +5832,6 @@
    * Purpose: Coordinate reordering of all network page toolbar buttons.
    * Necessity: Network pages have most custom actions; reordering provides consistent UX.
    * For other entity types, no special ordering applied (preserves natural order).
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {{ isEntityChangePage: boolean, entity: string }} ctx - Route context.
    */
   function enforceToolbarButtonOrder(ctx) {
@@ -5774,16 +5849,45 @@
   }
 
   /**
+   * Builds the error pdbFetch rejects with.
+   * Purpose: Give callers a single recognisable failure type carrying enough
+   * context to report or branch on, instead of an untyped null that is
+   * indistinguishable from a legitimately empty response.
+   * @param {string} url - Request URL that failed.
+   * @param {object} detail - Same shape passed to recordFetchFailure (type,
+   *   mode, status, message, ...), attached for callers that want specifics.
+   * @returns {Error} Error with name "PdbFetchError" plus url/detail/status.
+   */
+  function makePdbFetchError(url, detail) {
+    const status = detail && typeof detail.status === "number" ? detail.status : 0;
+    const suffix = status ? ` (HTTP ${status})` : "";
+    const error = new Error(`pdbFetch ${detail?.type || "failed"}${suffix}: ${url}`);
+    error.name = "PdbFetchError";
+    error.url = url;
+    error.status = status;
+    error.detail = detail || {};
+    return error;
+  }
+
+  /**
    * Unified JSON fetch helper for all script-initiated HTTP requests.
    * Purpose: Single network abstraction with timeout, retry, and error normalisation
    * for both same-origin (PeeringDB API via fetch) and cross-origin (RDAP via
    * GM_xmlhttpRequest) call sites.
    * Necessity: Prevents N ad-hoc GM_xmlhttpRequest patterns from diverging on
    * timeout handling or header construction.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
+   *
+   * THROWS on failure -- it does not return null. This previously resolved to
+   * null for every failure mode, which silently made `catch` blocks around it
+   * dead code: fetchRecentNetixlanChanges had two, and its entire client-side
+   * fallback was unreachable because the try block always returned. Callers
+   * must handle rejection; a resolved value is always a parsed payload.
+   *     Do NOT reintroduce a null return -- callers rely on rejection to detect failure.
    * @param {string} url - Absolute URL to fetch.
    * @param {{ headers?: object, timeout?: number, retries?: number }} [options]
-   * @returns {Promise<object|null>} Parsed JSON or null on any failure.
+   * @returns {Promise<object>} Parsed JSON payload.
+   * @throws {Error} PdbFetchError (see makePdbFetchError) on HTTP error, parse
+   *   failure, transport error or timeout.
    */
   async function pdbFetch(url, { headers = {}, timeout = PDB_API_TIMEOUT_MS, retries = PDB_API_RETRIES } = {}) {
     const fullHeaders = buildTampermonkeyRequestHeaders(headers);
@@ -5822,7 +5926,7 @@
             clearFetchFailure(url);
             return parsed;
           } catch (parseError) {
-            recordFetchFailure(url, {
+            const detail = {
               type: "parse",
               mode: "same-origin",
               attempt: 1,
@@ -5830,12 +5934,13 @@
               status: response.status,
               statusText: response.statusText,
               message: String(parseError?.message || parseError || "json-parse-failed"),
-            });
-            return null;
+            };
+            recordFetchFailure(url, detail);
+            throw makePdbFetchError(url, detail);
           }
         }
 
-        recordFetchFailure(url, {
+        const httpDetail = {
           type: "http",
           mode: "same-origin",
           attempt: 1,
@@ -5843,23 +5948,29 @@
           status: response.status,
           statusText: response.statusText,
           ok: false,
-        });
-        return null;
-      } catch (_err) {
-        recordFetchFailure(url, {
+        };
+        recordFetchFailure(url, httpDetail);
+        throw makePdbFetchError(url, httpDetail);
+      } catch (err) {
+        // A PdbFetchError from the branches above is already recorded; only a
+        // genuine transport/abort failure needs recording here. Rethrowing
+        // unchanged keeps the original status and type intact for callers.
+        if (err?.name === "PdbFetchError") throw err;
+        const exceptionDetail = {
           type: "exception",
           mode: "same-origin",
           attempt: 1,
           retries,
-          message: String(_err?.message || _err || "fetch-exception"),
-          name: String(_err?.name || "Error"),
+          message: String(err?.message || err || "fetch-exception"),
+          name: String(err?.name || "Error"),
           timeout,
-        });
-        return null;
+        };
+        recordFetchFailure(url, exceptionDetail);
+        throw makePdbFetchError(url, exceptionDetail);
       }
     }
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       logExternalRequestUserAgent({
         method: "GET",
         url,
@@ -5884,7 +5995,7 @@
               resolve(parsed);
             }
             catch (_err) {
-              recordFetchFailure(url, {
+              const detail = {
                 type: "parse",
                 mode: "cross-origin",
                 attempt: 1,
@@ -5892,11 +6003,12 @@
                 status: response.status,
                 statusText: response.statusText,
                 message: String(_err?.message || _err || "json-parse-failed"),
-              });
-              resolve(null);
+              };
+              recordFetchFailure(url, detail);
+              reject(makePdbFetchError(url, detail));
             }
           } else {
-            recordFetchFailure(url, {
+            const detail = {
               type: "http",
               mode: "cross-origin",
               attempt: 1,
@@ -5904,29 +6016,32 @@
               status: response.status,
               statusText: response.statusText,
               ok: false,
-            });
-            resolve(null);
+            };
+            recordFetchFailure(url, detail);
+            reject(makePdbFetchError(url, detail));
           }
         },
         onerror: () => {
-          recordFetchFailure(url, {
+          const detail = {
             type: "error",
             mode: "cross-origin",
             attempt: 1,
             retries,
             timeout,
-          });
-          resolve(null);
+          };
+          recordFetchFailure(url, detail);
+          reject(makePdbFetchError(url, detail));
         },
         ontimeout: () => {
-          recordFetchFailure(url, {
+          const detail = {
             type: "timeout",
             mode: "cross-origin",
             attempt: 1,
             retries,
             timeout,
-          });
-          resolve(null);
+          };
+          recordFetchFailure(url, detail);
+          reject(makePdbFetchError(url, detail));
         },
       });
     });
@@ -5939,7 +6054,6 @@
    * Supports same-origin fetch and cross-origin GM_xmlhttpRequest delegation.
   * Returns mutation metadata including HTTP status, parsed JSON body (if any),
   * raw response text, and x-auth-status (when present).
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} url - API endpoint URL.
    * @param {string} method - HTTP method (POST, PUT, PATCH, DELETE).
    * @param {string|object} body - Request body (string or JSON object).
@@ -6053,7 +6167,6 @@
    * from the entity response instead of making a separate /api/org/{id} call.
    * Necessity: Carrier and Campus schemas include org_name as a readOnly field.
    * Returns null on network error or missing data (graceful degradation).
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} entity - Lowercase CP entity type (e.g., "carrier").
    * @param {string|number} entityId - CP entity record ID.
    * @returns {Promise<string|null>} Resolved organization name, or null on failure.
@@ -6100,7 +6213,6 @@
   /**
    * Detects if an organization name has RDAP corruption patterns.
    * Purpose: Identify org names that need sanitization/update.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} name - Organization name to test.
    * @returns {boolean} True if corruption patterns are detected.
    */
@@ -6126,7 +6238,6 @@
   /**
    * Fetches organization name and detects if it has RDAP corruption patterns.
    * Purpose: Identify and flag malformed org names for user awareness.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {string|number} orgId - Organization ID to fetch.
    * @returns {Promise<{name: string, wasMalformed: boolean, knownAs: string, fullName: string}>}
    *   Name, malformation flag, extracted AKA, and (when a split occurred) the original
@@ -6140,18 +6251,6 @@
     if (globalCachedName) {
       return {
         name: sanitizeRdapOrgName(globalCachedName),
-        wasMalformed: false,
-        knownAs: "",
-        fullName: "",
-      };
-    }
-
-    const tabCachedName = getSessionCachedOrganizationName(normalizedOrgId);
-    if (tabCachedName) {
-      const sanitized = sanitizeRdapOrgName(tabCachedName);
-      setCachedOrganizationName(normalizedOrgId, sanitized);
-      return {
-        name: sanitized,
         wasMalformed: false,
         knownAs: "",
         fullName: "",
@@ -6186,7 +6285,6 @@
   /**
    * Fetches and caches organization name by organization ID.
    * Purpose: Provide a simple org-name resolver for flows that do not require malformation metadata.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string|number} orgId - Organization ID to resolve.
    * @returns {Promise<string|null>} Sanitized organization name or null on failure.
    */
@@ -6198,13 +6296,6 @@
     if (globalCached) {
       // Still sanitize cached values in case they were stored before sanitization was added
       return sanitizeRdapOrgName(globalCached);
-    }
-
-    const tabCached = getSessionCachedOrganizationName(normalizedOrgId);
-    if (tabCached) {
-      const sanitizedTabCached = sanitizeRdapOrgName(tabCached);
-      setCachedOrganizationName(normalizedOrgId, sanitizedTabCached);
-      return sanitizedTabCached;
     }
 
     try {
@@ -6230,7 +6321,6 @@
    * Updates organization name via PeeringDB API.
    * Purpose: Persist sanitized org names back to the database so all related entities benefit.
    * Necessity: When org names have RDAP corruption, updating the org ensures all networks/carriers/etc. under it reference the corrected name.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string|number} orgId - Organization ID to update.
    * @param {string} newName - New organization name to save.
    * @param {string} [knownAs=""] - Optional AKA/legal owner name extracted from trading-as patterns.
@@ -6325,7 +6415,6 @@
    * Programmatically clicks the "Save and continue editing" button.
    * Purpose: Auto-submit form after automated edits (Reset Information, Update Name).
    * Necessity: Script-driven form changes need programmatic submission; improves UX.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @returns {boolean} True when the save button was found and clicked.
    */
   function clickSaveAndContinue() {
@@ -6350,7 +6439,6 @@
   /**
    * Stores one-shot redirect intent for Update Name flow.
    * Purpose: Redirect to history only after next successful save round-trip.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ entity: string, entityId: string }} ctx - Route context.
    */
   function setPendingPostUpdateNameHistoryRedirect(ctx) {
@@ -6374,7 +6462,6 @@
 
   /**
    * Clears one-shot redirect intent for Update Name flow.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    */
   function clearPendingPostUpdateNameHistoryRedirect() {
     try {
@@ -6386,7 +6473,6 @@
 
   /**
    * Reads pending one-shot redirect intent.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @returns {{ entity: string, entityId: string, createdAt: number, expiresAt: number }|null} Parsed payload or null.
    */
   function getPendingPostUpdateNameHistoryRedirect() {
@@ -6418,7 +6504,6 @@
 
   /**
    * Determines whether current change page shows a successful save message.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {boolean} True when Django success message is present and no error notes are visible.
    */
   function hasSuccessfulChangeSaveMessage() {
@@ -6436,7 +6521,6 @@
 
   /**
    * Fallback detector for successful post-submit round-trip when message markup differs.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ entity: string, entityId: string, createdAt: number }} pending - Pending redirect marker.
    * @returns {boolean} True when current page likely came from a successful same-page submit.
    */
@@ -6461,7 +6545,6 @@
 
   /**
    * Redirects one time from change page to history page after successful Update Name save.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ entity: string, entityId: string, isEntityChangePage: boolean }} ctx - Route context.
    * @returns {boolean} True when redirect is triggered.
    */
@@ -6494,7 +6577,6 @@
    * Prompts user to confirm dangerous network reset operation.
    * Purpose: Prevent accidental data loss from Reset Information action.
    * Necessity: Shows user which network is being reset (by ID, ASN, name) for confirmation.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} asn - ASN string for the network being reset.
    * @param {string} networkName - Current network name shown in the confirmation prompt.
    * @param {string|number} networkId - CP network record ID.
@@ -6522,7 +6604,6 @@
    * Copies text to clipboard with modern and fallback implementations.
    * Purpose: Enable "Copy URL" actions for user convenience.
    * Necessity: Handles browsers with and without Clipboard API support.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} text - Text content to write to the system clipboard.
    * @returns {Promise<boolean>} Resolves true when copy succeeded; false otherwise.
    */
@@ -6569,7 +6650,6 @@
    * Purpose: Support one-click copying of every visible change-page URL from a filtered list.
    * Necessity: Admin overview pages often expose many object rows and copying them manually
    * is tedious; harvesting current row links preserves the user's active filter/pagination view.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {string[]} Ordered, de-duplicated absolute change URLs currently present in the content area.
    */
   function getCurrentOverviewChangeLinks() {
@@ -6610,7 +6690,6 @@
    * Builds a PeeringDB list API URL with query parameters.
    * Purpose: Centralize URL construction for sparse list retrieval calls.
    * Necessity: Reused by REST fallback and future bulk list scanners.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} resource - API resource slug (e.g., "net").
    * @param {Record<string, string|number|boolean|undefined|null>} [params={}] - Query parameter map.
    * @returns {string} Absolute URL string.
@@ -6631,7 +6710,6 @@
    * Normalizes API row objects into minimal network scan records.
    * Purpose: Keep name-pattern analysis independent of source transport shape.
    * Necessity: GraphQL and REST rows can differ slightly in key casing/types.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {object} row - Source row object.
    * @returns {{ id: string, name: string }|null} Normalized record or null.
    */
@@ -6647,7 +6725,6 @@
    * Parses GraphQL response payload into normalized network records.
    * Purpose: Support multiple plausible GraphQL response envelopes safely.
    * Necessity: GraphQL schema details can vary; parser must be tolerant.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {object|null} payload - GraphQL response payload.
    * @returns {{ id: string, name: string }[]} Parsed records.
    */
@@ -6694,7 +6771,6 @@
    * Executes one GraphQL network-name batch query via GET.
    * Purpose: Retrieve only id/name fields with schema-driven sparse selection.
    * Necessity: Keeps payload minimal and reusable for future GraphQL extensions.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ offset: number, limit: number }} opts - Pagination options.
    * @returns {Promise<{ id: string, name: string }[]|null>} Parsed rows or null when unavailable.
    */
@@ -6704,13 +6780,22 @@
     const variables = { first: limit, offset };
 
     const url = `${endpoint}?query=${encodeURIComponent(query)}&variables=${encodeURIComponent(JSON.stringify(variables))}`;
-    const payload = await pdbFetch(url, {
-      headers: {
-        Accept: "application/json",
-      },
-      timeout: REQUEST_TIMEOUT_MS,
-      retries: 1,
-    });
+    // null here is a fallback signal, not an error: the caller drops to the REST
+    // transport when this returns falsy. pdbFetch now throws, so that signal is
+    // produced explicitly rather than by pdbFetch happening to return null.
+    let payload = null;
+    try {
+      payload = await pdbFetch(url, {
+        headers: {
+          Accept: "application/json",
+        },
+        timeout: REQUEST_TIMEOUT_MS,
+        retries: 1,
+      });
+    } catch (err) {
+      dbg("names", "GraphQL name batch failed, falling back to REST", { offset, limit, error: err?.message });
+      return null;
+    }
     if (!payload) return null;
     if (payload.errors && Array.isArray(payload.errors) && payload.errors.length > 0) return null;
 
@@ -6722,7 +6807,6 @@
    * Executes one REST network-name batch query with sparse fields.
    * Purpose: Reliable fallback when GraphQL endpoint is unavailable.
    * Necessity: Guarantees completion under strict request budgets.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ offset: number, limit: number }} opts - Pagination options.
    * @returns {Promise<{ id: string, name: string }[]>} Parsed rows.
    */
@@ -6736,13 +6820,21 @@
     });
     if (!url) return [];
 
-    const payload = await pdbFetch(url, {
-      headers: {
-        Accept: "application/json",
-      },
-      timeout: REQUEST_TIMEOUT_MS,
-      retries: 1,
-    });
+    // An empty batch is how this reports failure to its caller's paging loop,
+    // which simply stops. Preserved explicitly now that pdbFetch throws.
+    let payload = null;
+    try {
+      payload = await pdbFetch(url, {
+        headers: {
+          Accept: "application/json",
+        },
+        timeout: REQUEST_TIMEOUT_MS,
+        retries: 1,
+      });
+    } catch (err) {
+      dbg("names", "REST name batch failed", { offset, limit, error: err?.message });
+      return [];
+    }
 
     const rows = Array.isArray(payload?.data) ? payload.data : [];
     return rows
@@ -6755,7 +6847,6 @@
    * Purpose: Fetch up to 3000 names in 6 requests (500 each) under strict rate limits.
    * Necessity: Supports CP-side operational audits without backend tooling.
    * GraphQL is attempted once first; automatic REST fallback is used thereafter.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{
    *   targetCount?: number,
    *   pageSize?: number,
@@ -6841,7 +6932,6 @@
    * Classifies one network name for likely auto-generated patterns.
    * Purpose: Prioritize names likely requiring manual "Update Name" remediation.
    * Necessity: Provides deterministic, extensible heuristics for operational triage.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
   * @param {string} name - Network name string.
   * @returns {{ score: number, reasons: string[] }} Classification result.
    */
@@ -6960,7 +7050,6 @@
    * Analyzes network-name records and returns pattern diagnostics.
    * Purpose: Produce ranked candidate set and aggregate reason counts.
    * Necessity: Converts raw names into actionable remediation targets.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {Array<{id: string, name: string}>} records - Retrieved network records.
    * @returns {{
    *   scannedAt: string,
@@ -7044,7 +7133,6 @@
    * Returns a compact human-readable summary for notifications/logging.
    * Purpose: Surface key scan outcomes without requiring table inspection.
    * Necessity: Enables quick operator feedback after long-running scans.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {object} result - Combined retrieval + analysis result.
    * @returns {string} One-line summary.
    */
@@ -7063,7 +7151,6 @@
    * Reads cached network-name retrieval payload when still fresh.
    * Purpose: Reuse previously fetched network rows without re-calling list endpoints.
    * Necessity: Scan-logic changes should not force a refetch of the same network-name data.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @returns {object|null} Cached retrieval payload or null.
    */
   function getCachedNetworkNameData() {
@@ -7101,7 +7188,6 @@
    * Stores fetched network-name retrieval payload in short-lived domain cache.
    * Purpose: Cache full fetched row list once, then reuse for repeated analysis runs.
    * Necessity: Keeps scan cost low while allowing scan-logic reruns within TTL.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {object} payload - Retrieval payload including records + transport metadata.
    */
   function setCachedNetworkNameData(payload) {
@@ -7126,7 +7212,6 @@
    * Builds a stable signature for fetched network-name rows.
    * Purpose: Tie derived scan analysis to the exact cached dataset it was computed from.
    * Necessity: Separating data-cache and analysis-cache requires safe reuse boundaries.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {Array<{id: string, name: string}>} records - Normalized or raw network records.
    * @returns {string} Compact deterministic signature.
    */
@@ -7150,7 +7235,6 @@
    * Builds the cache signature for derived network-name scan analysis.
    * Purpose: Invalidate analysis whenever either the fetched dataset or scan logic changes.
    * Necessity: Logic changes should not force data refetches, but must prevent stale analysis reuse.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {object} retrieval - Retrieval payload containing fetched network records.
    * @returns {string} Deterministic analysis-cache signature.
    */
@@ -7172,7 +7256,6 @@
    * Reads cached derived network-name scan analysis when it matches current data and logic.
    * Purpose: Avoid re-running analysis while keeping scan-logic changes isolated from fetch cache.
    * Necessity: Operators may iterate on scan rules often; only derived results should churn.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {object} retrieval - Retrieval payload containing fetched network rows.
    * @returns {object|null} Cached analysis payload or null.
    */
@@ -7214,7 +7297,6 @@
    * Stores derived network-name scan analysis in short-lived domain cache.
    * Purpose: Reuse analysis results independently from the fetched row cache.
    * Necessity: Splitting caches allows scan logic to churn without invalidating network-name data.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {object} retrieval - Retrieval payload containing fetched network rows.
    * @param {object} analysis - Derived analysis payload.
    */
@@ -7242,7 +7324,6 @@
    * Builds TSV text for suspicious network-name candidates.
    * Purpose: Provide copy-pastable remediation worklist for manual update runs.
    * Necessity: Operators frequently move candidate sets between browser and spreadsheets.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ suspicious: Array<{id: string, name: string, reasons: string[], changeUrl: string}> }} analysis - Analysis payload.
    * @returns {string} TSV output string.
    */
@@ -7265,7 +7346,6 @@
    * Emits structured network-name diagnostics to the console.
    * Purpose: Keep detailed pattern evidence available without cluttering notifications.
    * Necessity: Manual cleanup planning benefits from sortable tables and reason distributions.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{
    *   requestCount: number,
    *   transport: string,
@@ -7320,7 +7400,6 @@
    * Shows a non-blocking userscript notification when supported.
    * Purpose: Surface completion/failure status for long-running CP actions.
    * Necessity: Async updates may complete after several network calls and benefit from toasts.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ title?: string, text: string, timeout?: number }} opts - Notification options.
    */
   function notifyUser({ title, text, timeout = 2500 }) {
@@ -7345,7 +7424,6 @@
    * Temporarily changes button text then reverts after a delay.
    * Purpose: Provide user feedback that copy action succeeded.
    * Necessity: "Copied" feedback improves UX for copy-to-clipboard buttons.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {HTMLAnchorElement} anchor - The toolbar button anchor whose text will pulse.
    * @param {string} [successLabel="Copied"] - Temporary label shown during the pulse.
    */
@@ -7363,7 +7441,6 @@
    * Temporarily changes copy-icon button text then reverts after a delay.
    * Purpose: Give immediate feedback for field-level copy actions.
    * Necessity: Field copy buttons are icon-only by default and need success confirmation.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLButtonElement} button - The copy icon button whose text will pulse.
    * @param {string} [successLabel="Copied"] - Temporary label shown during the pulse.
    */
@@ -7381,7 +7458,6 @@
    * Ensures copy button CSS is available for field-level copy buttons.
    * Purpose: Keep button visuals consistent and lightweight without external CSS dependencies.
    * Necessity: The userscript runs in-page and must inject styles itself.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function ensureFieldCopyButtonStyles() {
     const styleId = `${MODULE_PREFIX}CopyFieldStyle`;
@@ -7429,7 +7505,6 @@
    * Ensures CSS styles are available for inline rows marked for deletion.
    * Purpose: Make pending inline deletions visually obvious before save.
    * Necessity: Grappelli delete checkboxes can be easy to miss in dense tabular inlines.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function ensureInlineDeleteHighlightStyles() {
     const styleId = `${MODULE_PREFIX}InlineDeleteHighlightStyle`;
@@ -7462,7 +7537,6 @@
 
   /**
    * Returns the owning inline row element for a delete control.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {Element|null} element - Delete checkbox or delete icon descendant.
    * @returns {HTMLElement|null} Owning `.form-row.grp-dynamic-form` element.
    */
@@ -7472,7 +7546,6 @@
 
   /**
    * Applies/removes the marked-for-deletion visual state on an inline row.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLElement|null} row - Inline row element.
    * @param {boolean} isMarkedForDelete - Whether delete checkbox is active.
    */
@@ -7483,7 +7556,6 @@
 
   /**
    * Syncs highlight state for one inline row based on its DELETE checkbox value.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLElement|null} row - Inline row element.
    */
   function syncInlineDeleteRowHighlight(row) {
@@ -7496,7 +7568,6 @@
    * Binds delegated listeners that highlight rows when inline delete is toggled.
    * Purpose: Make delete actions (cross icon/checkbox) highly visible instantly.
    * Necessity: Inline rows are dynamic; delegated binding covers existing and added rows.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @returns {Function|null} Dispose function that removes listeners.
    */
   function bindInlineDeleteHighlightReactivity() {
@@ -7543,7 +7614,6 @@
    * Normalizes text copied from rendered field contents.
    * Purpose: Remove excessive whitespace while preserving readable one-line output.
    * Necessity: Rendered HTML often contains line breaks and spacing artifacts.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {string} text - Raw text content extracted from the DOM.
    * @returns {string} Normalized single-line string with trimmed whitespace.
    */
@@ -7558,7 +7628,6 @@
    * Finds the field label text for a value container.
    * Purpose: Support field-level filtering rules by human-visible label.
    * Necessity: Some CP rows are metadata or helper rows and should not get copy icons.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLElement} valueCell - The `.c-2` value cell whose parent row label is read.
    * @returns {string} Lowercase label text, or empty string if no label found.
    */
@@ -7574,7 +7643,6 @@
    * Resolves best non-help data value from direct controls inside a field value cell.
    * Purpose: Distinguish actual field data from explanatory helper text.
    * Necessity: Prevents copy buttons from appearing when only help text is present.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLElement} valueCell - The `.c-2` value cell to inspect.
    * @returns {string} Best available data value string, or empty string if none.
    */
@@ -7626,7 +7694,6 @@
    * Determines whether a value container should receive a copy button.
    * Purpose: Exclude helper/metadata/lookup-only rows while keeping real data fields copiable.
    * Necessity: Avoids noisy icons on rows that do not represent useful copyable values.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {HTMLElement} valueCell - The `.c-2` cell to evaluate.
    * @returns {boolean} True when a copy button should be injected into this cell.
    */
@@ -7659,7 +7726,6 @@
    * Resolves the best rendered value from a Django admin field value container.
    * Purpose: Prefer human-visible values (grp-readonly, selected option labels) over raw markup.
    * Necessity: Different field types render values differently in CP forms and inline forms.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {HTMLElement} container - The `.c-2` or similar value container element.
    * @returns {string} Best human-visible text value from the container.
    */
@@ -7743,7 +7809,6 @@
    * Adds a copy icon button to each rendered form value container.
    * Purpose: Make every visible field value directly copiable from the CP UI.
    * Necessity: Admin workflows often require copying readonly values such as Prefixes.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function addCopyButtonsToRenderedFields() {
     ensureFieldCopyButtonStyles();
@@ -7809,7 +7874,6 @@
    * Determines the frontend URL path for a CP entity (network, carrier, ix).
    * Purpose: Generate correct copy-to-clipboard URL for the current entity type.
    * Necessity: Different entity types map to different URL paths.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ entity: string, entityId: string }} ctx - Route context from getRouteContext().
    * @returns {string} Root-relative frontend path (e.g., "/net/42").
    */
@@ -7829,7 +7893,6 @@
    * Retrieves currently selected status from the status dropdown.
    * Purpose: Determine if network/entity is marked as deleted.
    * Necessity: Used to add " #deleted" suffix to entity names for deleted records.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {string} Lowercase status value (e.g., "ok", "deleted"), or empty string.
    */
   function getSelectedStatus() {
@@ -7855,7 +7918,6 @@
 
   /**
    * Builds storage key for one-time pending network delete confirmation flow.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string|number} networkId - CP network record ID.
    * @returns {string} Namespaced storage key.
    */
@@ -7867,7 +7929,6 @@
 
   /**
    * Persists one-time pending confirmation state for network delete page.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string|number} networkId - CP network record ID.
    */
   function setPendingNetworkDeleteConfirm(networkId) {
@@ -7890,7 +7951,6 @@
 
   /**
    * Reads pending network delete confirmation state when still valid.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string|number} networkId - CP network record ID.
    * @returns {{ networkId: string }|null} Pending state or null.
    */
@@ -7918,7 +7978,6 @@
 
   /**
    * Clears pending network delete confirmation state.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string|number} networkId - CP network record ID.
    */
   function clearPendingNetworkDeleteConfirm(networkId) {
@@ -7936,7 +7995,6 @@
   /**
    * Starts network delete via the footer delete link on network change page.
    * Purpose: Use native Django/Grappelli delete flow (includes confirmation page).
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string|number} networkId - CP network record ID.
    * @returns {boolean} True when delete navigation was triggered.
    */
@@ -7956,7 +8014,6 @@
    * Purpose: Append the entity ID to names of deleted records for disambiguation.
    * Necessity: Deleted entities may share similar names; a stable ID suffix makes
    * them distinguishable during audits and prevents duplicate-name collisions.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string|number} entityId - The current entity's CP record ID.
    * @returns {string} ` #<entityId>` when status is "deleted", otherwise empty string.
    */
@@ -7968,7 +8025,6 @@
    * Builds storage key for persisted one-time network update-name retry state.
    * Purpose: Keep retry metadata isolated per network record.
    * Necessity: Enables safe post-submit retry on the next page load.
-   * @ai Preserve shared storage/cache key contracts and TTL behavior.
    * @param {string|number} networkId - CP network record ID.
    * @returns {string} Namespaced storage key.
    */
@@ -7982,7 +8038,6 @@
    * Extracts ASN digits from user/API values.
    * Purpose: Normalize ASN for deterministic retry suffixes.
    * Necessity: ASN values can include spaces or optional AS prefixes.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {string|number} asnInput - Raw ASN value.
    * @returns {string} Numeric ASN text, or empty string when invalid.
    */
@@ -7997,7 +8052,6 @@
    * Builds one retry variant by appending ` (AS<asn>)` when possible.
    * Purpose: Resolve duplicate-name validation conflicts deterministically.
    * Necessity: Some names collide only after submit-side uniqueness checks.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} name - Candidate network name.
    * @param {string|number} asnInput - ASN source value.
    * @returns {string} Retry candidate name, or empty string when unavailable.
@@ -8020,7 +8074,6 @@
    * during the first Update Name submit, not only after duplicate retries.
    * Necessity: Certain names (for example IPv4-leading labels) are likely to
    * collide operationally and benefit from explicit ASN suffixing immediately.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string} name - Candidate network name before forced suffixing.
    * @returns {boolean} True when ASN suffix should be forced.
    */
@@ -8043,7 +8096,6 @@
   * Persists one-time retry metadata for network Update Name submit flow.
   * Purpose: Bridge state across page reload after first save attempt.
   * Necessity: Duplicate-name validation appears only after form submit.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{
    *   networkId: string|number,
    *   originalName: string,
@@ -8082,7 +8134,6 @@
   * Reads pending network update-name retry metadata when still valid.
   * Purpose: Resume one-time retry workflow after save-triggered page reload.
   * Necessity: Expired/stale payloads must be ignored to prevent unintended edits.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string|number} networkId - CP network record ID.
    * @returns {{networkId: string, originalName: string, retryName: string, attempts: number}|null}
    */
@@ -8124,7 +8175,6 @@
   * Clears pending network update-name retry metadata.
   * Purpose: Stop retry loop once success/failure outcome is known.
   * Necessity: Prevents stale retries from affecting later manual edits.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {string|number} networkId - CP network record ID.
    */
   function clearPendingNetworkUpdateNameRetry(networkId) {
@@ -8143,7 +8193,6 @@
    * Detects duplicate network-name validation errors on the current form.
    * Purpose: Trigger retry only for the specific uniqueness validation failure.
    * Necessity: Avoids overriding names for unrelated form errors.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @returns {boolean} True when duplicate-name validation is present.
    */
   function hasDuplicateNetworkNameValidationError() {
@@ -8158,7 +8207,6 @@
   /**
    * Detects validation errors caused by deprecated private POC visibility.
    * Purpose: Trigger automatic remediation from Private -> Users visibility.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {boolean} True when private-contacts validation error is present.
    */
   function hasPrivateContactsUnsupportedValidationError() {
@@ -8175,7 +8223,6 @@
   /**
    * Converts POC inline visibility from Private to Users where supported.
    * Purpose: Auto-remediate obsolete visibility mode rejected by backend validation.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @returns {number} Number of inline rows modified.
    */
   function normalizeNetworkPocVisibilityPrivateToUsers() {
@@ -8243,7 +8290,6 @@
   /**
    * Auto-remediates private-contact visibility errors and retries save once.
    * Purpose: Recover from backend rejection without manual inline edits.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ entity: string, entityId: string, isEntityChangePage: boolean }} ctx - Route context.
    * @returns {boolean} True when a retry save was triggered.
    */
@@ -8278,7 +8324,6 @@
    * Applies one automatic retry for Update Name when duplicate-name error appears.
    * Purpose: Retry with ` (AS<asn>)` suffix after server-side uniqueness rejection.
    * Necessity: Duplicate validation is only known after submit, requiring reload-time retry.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @param {{ entity: string, entityId: string, isEntityChangePage: boolean }} ctx - Route context.
    * @returns {boolean} True when retry save was triggered.
    */
@@ -8342,7 +8387,6 @@
    * Reads a readonly field value from a form row by its visible label text.
    * Purpose: Prefer values already rendered on the change form over stale API payloads.
    * Necessity: Some readonly values can differ from API fetch timing/state on page load.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} labelText - Visible row label text (case-insensitive match).
    * @returns {string} Trimmed text content of the `.grp-readonly` element, or empty string.
    */
@@ -8364,7 +8408,6 @@
    * Reads a readonly link href from a form row by its visible label text.
    * Purpose: Reuse row-level links (e.g. Org website) as header actions.
    * Necessity: Some URLs are rendered as readonly anchors rather than inputs.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} labelText - Visible row label text (case-insensitive match).
    * @returns {string} href attribute value of the first public link in the row, or empty string.
    */
@@ -8386,7 +8429,6 @@
    * Builds a stable link identity derived from Grainy namespace when available.
    * Purpose: Use deterministic per-object identity in window targets and action semantics.
    * Necessity: Avoid fragile IDs while preserving object-level context in opened links.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ entity: string, entityId: string }} ctx - Route context from getRouteContext().
    * @returns {string} Sanitized token derived from Grainy namespace or entity/ID fallback.
    */
@@ -8406,7 +8448,6 @@
    * Normalizes arbitrary text into a deterministic token usable in window target names.
    * Purpose: Guarantee stable, safe target segments for toolbar links.
    * Necessity: Prevents dynamic labels/IDs from creating invalid or inconsistent target names.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} value - Raw string to normalize into a token.
    * @param {string} [fallback="item"] - Token to use when value normalizes to empty.
    * @returns {string} Lowercase alphanumeric-and-underscore token string.
@@ -8425,7 +8466,6 @@
    * Builds deterministic target names for injected primary toolbar links.
    * Purpose: Ensure all nav-header links open in stable, object-scoped tab identities.
    * Necessity: Replaces ad-hoc _new/_blank targets with per-object deterministic targets.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    * @param {string} actionId - Action identifier string used to compose the target suffix.
    * @param {{ entity: string, entityId: string }} [ctx] - Route context; defaults to current page.
    * @returns {string} Stable window target name string (e.g., "pdb_ix_42_pdbCpConsolidatedFrontend").
@@ -8440,7 +8480,6 @@
    * Marks inline form rows (POCs, netfacs, netixlans) for deletion if status = 'deleted'.
    * Purpose: Clean up stale inline items when network status is deleted.
    * Necessity: Automatic cleanup prevents orphaned POCs/facilities when network is marked deleted.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function clickDeleteHandlersForInlineSet(inlineSetPrefix) {
     let markedCount = 0;
@@ -8484,7 +8523,6 @@
    * Marks all deleted-status inline items for deletion across all inline sets.
    * Purpose: Centralize deletion of all stale inline items (POCs, facilities, ixlans).
    * Necessity: Ensures consistent cleanup of deleted network members across all relation types.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    */
   function markDeletedNetworkInlinesForDeletion() {
     let totalMarked = 0;
@@ -8498,7 +8536,6 @@
    * Binds native save actions on network change pages to auto-mark child rows for deletion.
    * Purpose: Avoid save validation blocks when existing inline child rows already have status=deleted.
    * Necessity: Admins may use any native save action (Save, Save and add another, Save and continue).
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    * @returns {Function|null} Dispose function removing listeners, or null when form not found.
    */
   function bindNetworkSaveActionInlineDeletionGuard() {
@@ -8551,7 +8588,6 @@
    * Purpose: Provide fallback organization name lookup via IANA RDAP bootstrap.
    * Necessity: When org lookup fails (org_id invalid), RDAP provides ASN-based name resolution.
    * Bootstraps RDAP service URLs from IANA registry with 6-hour TTL cache.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    */
   const rdapAutnumClient = (() => {
     const BOOTSTRAP_ASN_URL = "https://data.iana.org/rdap/asn.json"; // RFC 9224 bootstrap registry
@@ -8601,8 +8637,18 @@
       * @param {string} url - Absolute RDAP or bootstrap URL.
       * @returns {Promise<object|null>} Parsed JSON payload, or null when the request fails.
      */
-    function requestJson(url) {
-      return pdbFetch(url, { headers: { Accept: RDAP_ACCEPT_HEADER } });
+    async function requestJson(url) {
+      // getBootstrap carries an "@ai Preserve ... null-on-failure behavior so
+      // RDAP resolution degrades safely" contract, and fetchAutnumRecord relies
+      // on the same. pdbFetch throws now, so that contract is honoured here
+      // rather than inherited: RDAP is a best-effort fallback for a name lookup,
+      // and a failed lookup must not surface as an unhandled rejection.
+      try {
+        return await pdbFetch(url, { headers: { Accept: RDAP_ACCEPT_HEADER } });
+      } catch (err) {
+        dbg("rdap", "RDAP request failed", { url, error: err?.message });
+        return null;
+      }
     }
 
     /**
@@ -8839,7 +8885,6 @@
    * Purpose: Prepare network record for re-initialization (especially for RDAP lookups).
    * Necessity: Reset Information action clears stale data before re-populating from API sources.
    * Preserves critical fields (name handles separately) and marks deleted inlines for removal.
-   * @ai Preserve request retries/timeouts/error classification and payload assumptions.
    */
   function runNetworkResetActions() {
     const formArea = qs("#network_form > div > fieldset:nth-child(2)");
@@ -8931,7 +8976,6 @@
 
   /**
    * Resolves a Django AP-style month token (e.g. "Sept.", "March") to its 1-12 number.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} rawMonth - Month token as it appears in the rendered date.
    * @returns {number} Month number 1-12, or 0 when unrecognized.
    */
@@ -8989,7 +9033,6 @@
    * Necessity: Column position isn't guaranteed, so the "Date" header is resolved by text
    * match rather than a hardcoded index; conversion is idempotent via a dataset marker so
    * repeated module dispatch (e.g. after a mutation-observed DOM change) is a no-op.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function convertHistoryTableTimestampsTo24Hour() {
     const table = qs("table#change-history");
@@ -9217,7 +9260,13 @@
           const networkId = String(getInputValue("#id_network") || "").trim();
           const ixlanId = String(getInputValue("#id_ixlan") || "").trim();
 
+          // Fire-and-forget: nothing awaits this, so an unhandled rejection here
+          // would surface as a console error with no context and no recovery.
+          // These org/ix toolbar links are decorative -- a failed lookup means
+          // the button is simply absent, which is the pre-existing behavior when
+          // the API returned nothing.
           void (async () => {
+            try {
             let orgId = "";
             let ixId = "";
 
@@ -9272,6 +9321,13 @@
             scheduleDomUpdate(`${MODULE_PREFIX}.networkixlan.toolbarOrder`, () => {
               enforceToolbarButtonOrder(ctx);
             });
+            } catch (err) {
+              dbg("toolbar", "networkixlan org/ix lookup failed; links omitted", {
+                networkId,
+                ixlanId,
+                error: err?.message,
+              });
+            }
           })();
         }
 
@@ -9334,12 +9390,7 @@
               orgName = getCachedOrganizationName(orgId) || "";
             }
 
-            // Priority C: Check tab-session cache if global cache misses
-            if (!orgName) {
-              orgName = getSessionCachedOrganizationName(orgId) || "";
-            }
-
-            // Priority D: API fetch if cache miss and status is not deleted
+            // Priority C: API fetch if cache miss and status is not deleted
             if (!orgName) {
               const status = String(getSelectedStatus() || "").trim().toLowerCase();
               if (status !== "deleted") {
@@ -9358,7 +9409,7 @@
               }
             }
 
-            // Priority E: Build copy text (org name + URL or URI only)
+            // Priority D: Build copy text (org name + URL or URI only)
             const copyText = orgName ? `${orgName} | ${orgUrl}` : orgUrl;
             const copied = await copyToClipboard(copyText);
             if (copied) {
@@ -9736,7 +9787,7 @@
       match: (ctx) => ctx.isEntityChangePage && ctx.entity === "network",
       preconditions: () => Boolean(qs("#id_name") && qs("form")),
       run: (ctx) => {
-        if (isWriteActionBlockedForHardExcludedEntity(ctx)) {
+        if (isWriteActionBlockedForUpdateNameExcludedEntity(ctx)) {
           clearPendingNetworkUpdateNameRetry(ctx.entityId);
           return;
         }
@@ -9762,8 +9813,8 @@
           label: "Update Name",
           iconType: "submenu",
           onClick: async (event) => {
-            if (isWriteActionBlockedForHardExcludedEntity(ctx)) {
-              notifyWriteActionBlockedForHardExcludedEntity("Update Name", ctx);
+            if (isWriteActionBlockedForUpdateNameExcludedEntity(ctx)) {
+              notifyWriteActionBlockedForUpdateNameExcludedEntity("Update Name", ctx);
               return;
             }
             if (getSelectedStatus() === "pending") {
@@ -10152,8 +10203,8 @@
           label: "Reset Information",
           insertLeft: true,
           onClick: async (event) => {
-            if (isWriteActionBlockedForHardExcludedEntity(ctx)) {
-              notifyWriteActionBlockedForHardExcludedEntity("Reset Information", ctx);
+            if (isWriteActionBlockedForUpdateNameExcludedEntity(ctx)) {
+              notifyWriteActionBlockedForUpdateNameExcludedEntity("Reset Information", ctx);
               return;
             }
             const actionLockKey = `${MODULE_PREFIX}.resetNetworkInformation.${ctx.entityId}`;
@@ -10532,13 +10583,12 @@
     },
     {
       id: "set-window-title",
-      match: (ctx) =>
-        ctx.isCp && (ctx.isEntityChangePage || (ctx.entity === "network" && ctx.pageKind === "history")),
+      match: () => true,
       run: (ctx) => {
         const sep = " | ";
-        let title = "";
 
         if (ctx.isEntityChangePage) {
+          let title = "";
           if (ctx.entity === "user") {
             const username = getInputValue("#id_username");
             const email = getInputValue("#id_email");
@@ -10553,33 +10603,63 @@
           return;
         }
 
-        // Extract historyName from breadcrumbs first
-        let historyName = "";
-        const breadcrumbAnchors = qsa("#grp-breadcrumbs a");
-        for (let i = breadcrumbAnchors.length - 1; i >= 0; i--) {
-          const text = breadcrumbAnchors[i]?.innerText?.trim() || "";
-          if (text && !/\bhistory\b/i.test(text)) {
-            historyName = text;
-            break;
+        if (ctx.isEntityHistoryPage) {
+          // Extract historyName from breadcrumbs first
+          let historyName = "";
+          const breadcrumbAnchors = qsa("#grp-breadcrumbs a");
+          for (let i = breadcrumbAnchors.length - 1; i >= 0; i--) {
+            const text = breadcrumbAnchors[i]?.innerText?.trim() || "";
+            if (text && !/\bhistory\b/i.test(text)) {
+              historyName = text;
+              break;
+            }
           }
-        }
 
-        // Fallback: try #grp-content-title h1, h1 with trailing history token stripped
-        if (!historyName) {
-          const rawHistoryName = qs("#grp-content-title h1, h1")?.innerText?.trim() || "";
-          historyName = rawHistoryName.replace(/\s*\bhistory\b\s*$/i, "").trim();
-        }
+          // Fallback: try #grp-content-title h1, h1 with trailing history token stripped
+          if (!historyName) {
+            const rawHistoryName = qs("#grp-content-title h1, h1")?.innerText?.trim() || "";
+            historyName = rawHistoryName.replace(/\s*\bhistory\b\s*$/i, "").trim();
+          }
 
-        // Final fallback
-        if (!historyName) {
-          historyName = `network#${ctx.entityId}`;
-        }
+          // Final fallback
+          if (!historyName) {
+            historyName = `${ctx.entity}#${ctx.entityId}`;
+          }
 
-        const historyTitle = `PDB CP${sep}NETWORK${sep}${historyName}${sep}History`;
-        document.title = historyTitle;
-        setTimeout(() => {
+          const historyTitle = `PDB CP${sep}${ctx.entity.toUpperCase()}${sep}${historyName}${sep}History`;
           document.title = historyTitle;
-        }, 250);
+          setTimeout(() => {
+            document.title = historyTitle;
+          }, 250);
+          return;
+        }
+
+        if (ctx.isOrgMergeToolPage) {
+          document.title = `PDB CP${sep}Org Merge Tool`;
+          return;
+        }
+
+        if (ctx.isEntityListPage) {
+          document.title = `PDB CP${sep}${ctx.entity.toUpperCase()}${sep}List`;
+          return;
+        }
+
+        if (ctx.isEntityAddPage) {
+          document.title = `PDB CP${sep}${ctx.entity.toUpperCase()}${sep}Add`;
+          return;
+        }
+
+        if (ctx.isEntityDeletePage) {
+          document.title = `PDB CP${sep}${ctx.entity.toUpperCase()}${sep}Delete #${ctx.entityId}`;
+          return;
+        }
+
+        // Last-resort normalizer for every other admin page (dashboard, non-peeringdb_server
+        // apps' admin screens, future new page kinds) -- guarantees a consistent "PDB CP | ..."
+        // tab title without hand-maintaining an exhaustive page-kind table.
+        const current = String(document.title || "").trim();
+        if (!current || current.startsWith("PDB")) return;
+        document.title = `PDB CP${sep}${current}`;
       },
     },
     {
@@ -10713,7 +10793,6 @@
    * Purpose: Central dispatcher that activates modules for the current page.
    * Necessity: Implements modular architecture; checks both enabled status and page match
    * before running each module. Catches and logs errors to prevent cascade failures.
-   * @ai Preserve execution ordering, locks, and route/module boundaries.
    * @param {{ entity: string, entityId: string, isEntityChangePage: boolean }} ctx - Route context.
    */
   function dispatchModules(ctx) {
@@ -10767,7 +10846,6 @@
    * Requires at least one of Ctrl/Alt/Meta so the binding can never fire while
    * the user is typing an ordinary (optionally shifted) letter into a form
    * field - Shift alone is not accepted as a qualifying modifier.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {string} raw - User-entered shortcut text.
    * @returns {string|null} Canonical combo string, or null if invalid.
    */
@@ -10806,7 +10884,6 @@
   /**
    * Builds the same canonical combo string as normalizeShortcutComboString(),
    * from a live KeyboardEvent.
-   * @ai Preserve normalization/parsing rules and backward-compatible output formats.
    * @param {KeyboardEvent} event - Keydown event.
    * @returns {string} Canonical combo string for the pressed keys.
    */
@@ -10824,7 +10901,6 @@
 
   /**
    * Reads the user-configured Update Name shortcut combo from storage.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @returns {string} Canonical combo string, or "" when unset.
    */
   function getUpdateNameShortcutCombo() {
@@ -10833,7 +10909,6 @@
 
   /**
    * Persists (or clears, when passed "") the Update Name shortcut combo.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {string} combo - Canonical combo string, or "" to clear.
    */
   function setUpdateNameShortcutCombo(combo) {
@@ -10857,9 +10932,9 @@
    * Necessity: Opt-in (unset by default) and gated on at least one of
    * Ctrl/Alt/Meta by normalizeShortcutComboString(), so it can never collide
    * with ordinary typing in form fields. Clicking the real button (rather
-   * than re-implementing its handler) means every existing guard - hard-excluded
-   * entity check, pending-status check, action lock - still runs unchanged.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
+   * than re-implementing its handler) means every existing guard -
+   * update-name-excluded entity check, pending-status check, action lock -
+   * still runs unchanged.
    */
   function ensureUpdateNameShortcutListener() {
     if (updateNameShortcutListenerBound) return;
@@ -10882,7 +10957,6 @@
    * Registers one-time Tampermonkey menu commands for common CP actions.
    * Purpose: Provide keyboard/popup access to frequent actions without toolbar clicks.
    * Necessity: Power users benefit from script actions in the Tampermonkey command menu.
-   * @ai Preserve selector contracts and idempotent DOM mutation behavior.
    */
   function registerCpMenuCommands() {
     if (cpMenuCommandsRegistered) return;
@@ -11119,7 +11193,6 @@
    * a self-check surfaces breakage before a user triggers an action.
    * Always logs to console.warn for any failed check; emits console.debug
    * details in debug mode. Runs at most once per page load.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    * @param {{ entity: string, entityId: string, pathName: string }} ctx - Route context.
    */
   function runSelfCheck(ctx) {
@@ -11171,12 +11244,15 @@
    * self-check, legacy cleanup, module dispatch, toolbar ordering, and TM menu registration.
    * Necessity: A single entry point ensures sequential, predictable initialization
    * regardless of DOMContentLoaded timing or future module additions.
-   * @ai Keep behavior stable and prefer minimal, localized edits.
    */
   function runConsolidatedInit() {
     const ctx = getRouteContext();
 
-    if (!ctx.isCp || (!ctx.isEntityChangePage && !ctx.isEntityListPage && !ctx.isEntityHistoryPage)) {
+    // isAdminPage covers all of /cp/* (dashboard + every registered app), not just
+    // peeringdb_server pages -- widened alongside @match so set-window-title's generic
+    // fallback can run anywhere the script now loads. Individual modules still gate
+    // themselves on ctx.isCp where their behavior is peeringdb_server-specific.
+    if (!ctx.isAdminPage) {
       return;
     }
 
@@ -11189,13 +11265,53 @@
     dbg("init", `v${SCRIPT_VERSION}`, { entity: ctx.entity, entityId: ctx.entityId });
     logCurrentUserAgentDebug();
     cleanupLegacyPrimaryActionRow();
+    migrateLegacyOrgNameCacheKeys();
     dispatchModules(ctx);
     enforceToolbarButtonOrder(ctx);
     registerCpMenuCommands();
     ensureUpdateNameShortcutListener();
   }
 
-  if (document.readyState === "loading") {
+  // Test-only escape hatch: Node's test runner sets window.__PDB_TEST__ on a
+  // fake window/document before evaluating this script, so it can exercise
+  // module logic (e.g. title builders) directly without running the real
+  // browser bootstrap, which a minimal test DOM doesn't implement. Never set
+  // by Tampermonkey in production, so real page behavior is unchanged.
+  if (typeof window !== "undefined" && window.__PDB_TEST__) {
+    window.__pdbCpTestHooks__ = {
+      SCRIPT_VERSION,
+      pdbFetch,
+      fetchRecentNetixlanChanges,
+      getRouteContext,
+      modules,
+      getOrganizationName,
+      getCachedOrganizationName,
+      setCachedOrganizationName,
+      clearOrganizationNameCache,
+      migrateLegacyOrgNameCacheKeys,
+      getCachedDataFromStorage,
+      setCachedDataInStorage,
+      parseIp,
+      formatIp,
+      parseCidr,
+      replaceHostInPrefix,
+      parseRenumberHash,
+      classifyRenumberRows,
+      buildNetixlanPutPayload,
+      extractRenumberApiErrorDetail,
+      extractIxfAsnIpPairs,
+      findIxfMergeCandidates,
+      buildMergePlan,
+      summarizeIxfMergeEffects,
+      applyIxfMerges,
+      verifyConflictGates,
+      classifyNetworkNamePattern,
+      buildNetworkNamePatternSummary,
+      buildSuspiciousNetworkNameTsv,
+      mergeAuditSources,
+      formatRecentChangeLines,
+    };
+  } else if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", runConsolidatedInit, { once: true });
   } else {
     runConsolidatedInit();

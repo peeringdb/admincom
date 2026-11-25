@@ -2,9 +2,12 @@
 
 `peeringdb/admincom` (this repo) is a small collection of Tampermonkey/Greasemonkey userscripts that
 add admin tooling to PeeringDB's Control Panel (CP) and Frontend (FP), plus DeskPro support-ticket
-tooling (DP). There is no application server, package manager, or test suite — the entire codebase
-lives right here in `user.js/`, and scripts run client-side in the browser once installed via
-Tampermonkey.
+tooling (DP). There is no application server or package manager — the entire codebase lives right
+here in `user.js/`, and scripts run client-side in the browser once installed via Tampermonkey. A
+`node:test` suite exists under `user.js/tests/` and a GitHub Actions workflow runs it (plus the
+build/syntax checks) on every push and PR (see "Testing" below) — but it covers a meaningful
+minority of the codebase; manual browser smoke testing is still the primary verification method for
+most modules.
 
 ## Layout
 
@@ -21,8 +24,10 @@ Tampermonkey.
   system flow, layer boundaries), [CONCERNS.md](docs/CONCERNS.md) (known risks/debt/security gaps),
   [INTEGRATIONS.md](docs/INTEGRATIONS.md) (external systems, retry/reliability behavior),
   [CONVENTIONS.md](docs/CONVENTIONS.md) (naming, logging, error handling).
-- `.github/ISSUE_TEMPLATE/` (repo root) — issue templates for admin add/remove requests. No CI
-  workflows exist in this repo.
+- `.github/ISSUE_TEMPLATE/` (repo root) — issue templates for admin add/remove requests.
+- `.github/workflows/verify.yml` (repo root) — CI: `build_userscripts.py --check`, `node --check` on
+  every generated `.user.js`, and `node --test`, on every push/PR. Does not run the opt-in live suite
+  (`user.js/tests/live/`) — see Testing below.
 
 ## Setup
 
@@ -45,8 +50,201 @@ Run these from the repo root (the script resolves `user.js/` as a relative path)
 
 ## Testing
 
-There is no automated test suite (no CI workflow, no package.json, no test runner). Verification is:
+There is no package.json (deliberately zero-dependency — see "Additional notes" below), but there is
+CI: `.github/workflows/verify.yml` runs the build-check, syntax-check, and full `node --test` suite
+on every push/PR (not the opt-in live suite — see below). There is a behavioral test suite for all
+three scripts under `user.js/tests/`, using Node's built-in test runner (`node:test`/`node:assert`,
+no new dependency beyond Node itself, which is already required for `node --check`). It currently covers:
+- the `set-window-title` module's title format for every page kind in CP and FP;
+- DP's org-link-shortcut behavior (`ensureOrgShortcut`/`hydrateExistingPeeringDbAnchor` — every
+  entity kind gets the owning org's link inserted beside it, not just shown in the tooltip);
+- the unified cross-script API-entity cache (`shared-cache.test.js` — CP and FP genuinely share
+  cached org/entity data via `getCachedDataFromStorage`/`setCachedDataInStorage` in
+  `lib/admincom-common.js`, both same-origin on `peeringdb.com`; simulated by pointing two separate
+  `loadScript()` calls at the same fake `localStorage` instance — DP is deliberately excluded since
+  it runs on a different origin and can never share with CP/FP regardless of code);
+- CP's org/RDAP name-normalization helpers (`cp-name-normalization.test.js` — the highest
+  regex-complexity, highest silent-regression-risk surface in the repo: 150+ legal-suffix patterns
+  across dozens of jurisdictions in `lib/cp-name-normalization.js`). Two tests in there are marked
+  "known discrepancy" — they lock in current (not necessarily correct) behavior for cases where the
+  code doesn't do what its own docstring claims; see the test file for specifics before "fixing"
+  either without reading why;
+- the shared retry/backoff decision logic (`admincom-common-retry.test.js` —
+  `parseRetryAfterMs`/`classifyRetry`, used by every GM_xmlhttpRequest/fetch call in all three
+  scripts);
+- DP's Whitelist CMD Generator URL/hostname parsing (`dp-whitelist-generator.test.js` —
+  `parseWhitelistChangeHref`/`extractWhitelistHostname`; `deriveWhitelistCandidates`'
+  PSL-based eTLD+1 resolution is *not* covered, since the PSL library is loaded via `@require` and
+  isn't available in this offline test environment);
+- CP's IP/CIDR host-bit arithmetic (`cp-ip-cidr.test.js` — `parseIp`/`formatIp`/`parseCidr`/
+  `replaceHostInPrefix`, the BigInt math behind the IXLAN Renumber modal; a silent regression here
+  misconfigures live peering sessions, making it the single highest-consequence untested surface
+  identified in the repo);
+- CP's renumber classification (`cp-renumber-classification.test.js` — `parseRenumberHash` (the
+  hash-payload contract with the DP launcher), `classifyRenumberRows` (per-row eligible/conflict/
+  skip/no-change classification), `buildNetixlanPutPayload`, and `extractRenumberApiErrorDetail`);
+- CP's IX-F Member Audit and Conflict Resolver safety logic (`cp-ixf-merge-gates.test.js` —
+  `extractIxfAsnIpPairs`/`findIxfMergeCandidates` for both the "split" and "stale-dual" merge
+  shapes, and `buildMergePlan`/`verifyConflictGates`, the 8-gate check that must all pass before an
+  operator DELETEs a live netixlan row; several cases lock in the exact operator-discovered
+  edge cases referenced in the source comments, e.g. ixlan #3990/AS211750);
+- CP's Network Name Pattern Diagnostics and Recent IP Changes audit reconciliation
+  (`cp-name-pattern-diagnostics.test.js` — `classifyNetworkNamePattern`, the dense multi-signal
+  regex scoring function deciding which network names look auto-generated/handle-like;
+  `buildNetworkNamePatternSummary`/`buildSuspiciousNetworkNameTsv` for the scan's notification and
+  TSV-export formatting; `mergeAuditSources`/`formatRecentChangeLines` for reconciling API rows with
+  local audit-log entries into the operator-facing diff lines);
+- DP's text-linkification engine (`dp-linkify-text.test.js` — `linkifyText`'s `REPLACEMENT_RULES`
+  (4 overlapping ASN/org-name regex patterns run in one combined, position-sorted pass) and
+  `findProbableStandaloneAsnHits`, a heuristic detector for bare 3-10 digit ASN lines gated on
+  surrounding context to avoid false-positiving on arbitrary numbers — the richest untested
+  regex/business logic in either script);
+- DP's IXLAN Peer Renumber launcher and Whitelist CMD Generator command builder
+  (`dp-renumber-launcher.test.js` — `collectRenumberCandidates`/`extractIxlanIdFromTicket` (ticket-
+  text parsing distinct from CP's renumber classification), `buildRenumberCpUrl` (the DP→CP hash-
+  payload contract), and `buildWhitelistCommand`);
+- DP's CP-fallback-on-404 flow, mailto decoration, and shared error classifier
+  (`dp-cp-fallback-and-mailto.test.js` — `getCpModelForFrontendKind`/`buildCpChangeUrl`/
+  `getFrontendExistenceProbeUrl`/`isFrontendEntityMissing` (the last exercised via the fetchMap
+  mock, both the "exists" and "404" paths), `extractMailtoAddress`/`buildCpEmailSearchUrl`, and
+  `classifyError`, the retry/abort decision classifier used across DP's API calls);
+- FP's admin-ops CP URL builders and report-string builders (`fp-admin-ops-builders.test.js` —
+  `buildCpNetworkSearchUrlByAsn`/`buildCpOrgChangeUrl`/`buildCpUserManagerUrl`/
+  `buildCpEntitySearchUrl`/`buildCpAccountSearchUrl`, load-bearing for every admin-ops action behind
+  the `admin-console-link`/`admin-workflow-buttons` modules; `formatEntityIdsBundle`/
+  `formatAdminTriageSummary`, the copy/paste report-string builders, exercised through their full
+  data-edit-attribute → getText → input-value fallback chains via the shim's `elements`/
+  `elementLists` fixtures. `fix-double-slashes`'/`asn-404-cp-search-redirect`'s inline
+  `window.location` mutation closures are deliberately **not** covered — see the test file's header
+  for why);
+- FP's ASN-search-zero-result CP redirect (`fp-asn-search-redirect.test.js` —
+  `extractAsnFromSearchQuery`/`isFrontendZeroResultSearchPage` plus the
+  `asn-search-zero-result-cp-redirect` module's `match()`/`run()` end-to-end, including the actual
+  redirect call, by stubbing `window.location.replace` directly on the shim's sandbox window. Added
+  when peeringdb.com's frontend stopped routing an "AS<digits>" quick-search to `/asn/<digits>` on a
+  miss (it now stays on `/search?q=AS<digits>` with a zero-count results page instead), which had
+  silently broken `asn-404-cp-search-redirect`'s detection for that path; `asn-404-cp-search-redirect`
+  itself is untouched and still guards a direct `/asn/<digits>` link, which still 404s server-side).
+  `extractAsnFromSearchQuery` also matches `ASN<digits>` and bare digits with no prefix at all (e.g.
+  `"141743"`), since admins commonly type just the number — a bare-number search with zero results is
+  now treated as an ASN lookup too;
+- FP's single-search-result auto-navigation (`fp-search-single-result-auto-nav.test.js` —
+  `getFrontendSearchResultCount`/`getSingleFrontendSearchResultUrl` plus the
+  `search-single-result-auto-nav` module's `match()`/`run()` end-to-end, via the same
+  `window.location.replace` stub technique. Applies to any `/search` query, not just ASN lookups: when
+  the frontend results page reports exactly one match across every category, the module skips the
+  results page and navigates straight to it. Mutually exclusive with the ASN zero-result redirect above
+  since one requires a zero count and the other requires exactly one);
+- FP's per-netixlan IX-F verify/resolve (`fp-netixlan-ixf-verify.test.js` —
+  `normalizeIpv6ForCompareFp`, `extractIxfMatchForAsnIp`, `buildIxfDiff`, `buildNetixlanResolvePayload`,
+  plus the `netixlan-ixf-verify` module's `match()`. Adds a "Verify IX-F" button per netixlan row on a
+  network's own page (gated behind Admin Ops Mode) that fetches that row's exchange's IX-F member-export
+  feed — cross-origin via the shared `gmRequestWithRetry` wrapper, response cached under the shared
+  storage cache keyed by export URL so re-verifying a row or checking a second row at the same exchange
+  doesn't re-fetch it — and diffs it against the live PDB record. A "Resolve discrepancy" second click
+  PUTs corrected `speed`/`is_rs_peer`/`operational` only; `ipaddr4`/`ipaddr6` mismatches are informational
+  only (use CP's renumber tool instead — a distinct, already safety-gated flow this shouldn't quietly
+  duplicate). When IX-F has no entry for the ASN at all, a "Remove netixlan entry" option DELETEs the row
+  after a native `confirm()` (deliberately not just a second custom-UI click, given a delete is
+  non-reversible). This is FP's first write capability and first cross-origin fetch, so
+  `peeringdb-fp-consolidated-tools.meta.js`/`.src.js` gained `GM_xmlhttpRequest` + `@connect *`. Like
+  `asn-404-cp-search-redirect`, the fetch/DOM/click-wiring orchestration itself is **not** unit tested —
+  only the pure matching/diff/payload functions above are; see the module's header comment in the
+  `.src.js`);
+- FP's do-not-touch write guard on that same IX-F flow (`fp-netixlan-do-not-touch-guard.test.js` —
+  `getDoNotTouchNetixlanParentInfo` (maps a netixlan row's `net_id`/`ix_id` — `ixlan_id` as ix
+  fallback — into `EXAMPLE_ORG_DO_NOT_TOUCH_ENTITY_IDS`, the subset holding org 25554 "PeeringDB
+  Example Organization" and its child records only, defined in `lib/admincom-entity-exclusions.js`;
+  the broader `UPDATE_NAME_EXCLUDED_ENTITY_IDS` there is the update-name tooling's exclusion list and
+  mostly names real third-party records, so several cases pin that it does NOT block these writes),
+  plus `resolveIxfDiscrepancy`/`removeNetixlanEntry`
+  driven for real through the shim's fake fetch, `cp-ixf-merge-apply.test.js`-style: the
+  load-bearing assertions are negative — no PUT/DELETE recorded, and no `confirm()` shown, when the
+  row's parent net or ix is do-not-touch protected — each paired with a non-excluded control that
+  proves the same call does issue the write, so a broken write path cannot masquerade as the guard
+  holding);
+- the shared cache namespace's remaining helpers (`dp-shared-cache-helpers.test.js` —
+  `getSharedCacheStorageKey`'s type/id validation and normalization branch, and the negative-cache
+  pair `cacheNegativeLookup`/`isNegativeCacheEntry` that DP's entity fetchers use to avoid repeated
+  failed lookups, including a round-trip write → read → classify case. Loaded through DP since it's
+  the current sole direct caller of these three, though the underlying `lib/admincom-common.js`
+  fragment is identical across all three scripts. One case documents a real discrepancy between
+  `isNegativeCacheEntry`'s declared `boolean` return type and its actual behavior — it returns the
+  falsy input itself (`null`/`undefined`), not coerced to `false` — locked in rather than fixed);
+- the test shim itself (`browser-shim.test.js` — the fake fetch's `headers.get()`, status/ok
+  derivation, the `{ __response: true, ... }` and `{ __sequence: [...] }` fixture forms, and call
+  recording. The shim gets its own tests because a gap in it silently makes production paths
+  *unreachable* rather than merely untested: its fake response exposed no `headers.get()`, so
+  `fetchWithRetry`'s `Retry-After` branch threw on contact and the retry policy went unexercised
+  for as long as it existed);
+- CP's `pdbFetch` error contract (`cp-pdbfetch-errors.test.js` — that it rejects with a typed
+  `PdbFetchError` rather than resolving `null`, and that `fetchRecentNetixlanChanges`'
+  client-filter fallback is reachable again as a result);
+- CP's IX-F merge apply loop (`cp-ixf-merge-apply.test.js` — the real write path end to end
+  through the shim, asserting on recorded request methods. The load-bearing assertions are
+  negative: no `DELETE` is issued when the keeper read-back disagrees, when the live re-check
+  fails, when a field mismatch is unacknowledged, or when the IX-F map is unavailable);
+- CP's modal safeguards (`cp-modal-safeguards.test.js` — **source** assertions, not behavioral
+  ones, and the file explains why at length: the shim's `FakeElement` has no `addEventListener`,
+  so a modal cannot be constructed or clicked through `loadScript` at all. They pin that `close()`
+  still cancels, that each opener still holds until dismissal, and that the type-to-confirm input
+  is still not pre-filled — the three safeguards that were previously present in the UI and inert
+  in effect);
+- the build script's two guards — the `@include` marker (`build-include-marker.test.js`) and
+  `@version` parity between each `.src.js` and its `.meta.js` (`build-version-parity.test.js`,
+  covering a mismatch, a missing manifest, a missing `@version` line on either side, two bad pairs
+  in one run, and a stray `@version` below the metadata block). These are the only tests that spawn
+  a process: the build script is Python and the suite is `node:test`, but the alternative is a
+  second test runner, which the note above says not to add without discussing it first. They share
+  `tests/helpers/build-script-runner.js`, which runs `build_userscripts.py` against a throwaway
+  repo layout in a temp dir; its fixture defaults produce a *well-formed* single-script repo so a
+  fixture built to exercise one guard does not trip the other. Both skip with a reason when no
+  Python is on `PATH`.
 
+These are the highest-regression-risk surfaces, since the strings/DOM output are asserted verbatim.
+It does **not** cover every module in every script (CP alone has ~207 top-level helper functions);
+most still rely on manual smoke testing, which remains the primary verification method for
+DOM-heavy modules. The initial coverage-expansion pass called itself complete; it was not — the
+retry wrappers had no coverage and the shim could not have exercised them. Treat any "fully
+covered" claim as something to re-check against the harness. See `docs/CONCERNS.md`'s Top Risks
+row for the current state and how to keep extending it —
+add functions to the relevant `window.__pdbXxTestHooks__` object and follow the pattern of the test
+files above rather than waiting on a `lib/*.js` extraction first.
+
+- `node --test` (run from `user.js/`) — runs the full suite; auto-discovers `tests/**/*.test.js`.
+- `user.js/tests/helpers/browser-shim.js` — hand-rolled fake `window`/`document` (no jsdom): loads
+  a generated `.user.js` into a `node:vm` context and reads exposed functions off
+  `window.__pdbFpTestHooks__` / `window.__pdbCpTestHooks__` / `window.__pdbDpTestHooks__`. Those
+  hooks only exist when `window.__PDB_TEST__` is set on the sandbox before eval (see the bottom of
+  each `.src.js`) — this skips the real browser bootstrap (MutationObserver/requestAnimationFrame/
+  GM_* calls/menu registration) that a minimal test DOM can't support, and is never set by
+  Tampermonkey, so production behavior is unchanged. The shim also provides a minimal
+  `document.createElement`-capable `FakeElement` (supports `insertAdjacentElement`/`append`/
+  attributes — enough to test code that creates and inserts DOM nodes, e.g. DP's org shortcut),
+  `document.createTextNode`/`document.createDocumentFragment` (`FakeTextNode`/
+  `FakeDocumentFragment`, the latter just `FakeElement` under a non-tag name — enough to test code
+  that builds a fragment of mixed text/element children, e.g. DP's `linkifyText`), an
+  optional `fetchMap` (exact request URL → JSON body) that backs a fake `fetch()` so API-calling
+  functions run for real against canned data with zero live network access, and an optional
+  `localStorage` override (`makeFakeStorage()`, exported) so two separate `loadScript()` calls can be
+  pointed at the *same* fake storage instance to simulate two same-origin scripts sharing real
+  browser storage (used to test CP/FP cache sharing). Tests run against the generated `.user.js` (the
+  artifact users actually install), so regenerate before running tests if you've edited a `.src.js`.
+- `user.js/tests/helpers/pure-lib-loader.js` — for `lib/*.js` fragments with zero window/document/
+  fetch/GM_* references (e.g. `lib/cp-name-normalization.js`, or the retry/backoff half of
+  `lib/admincom-common.js`): no vm sandbox needed, just `new Function(source + return {...names})` to
+  get real references to the requested top-level functions/consts. Simpler and faster than
+  `browser-shim.js` for pure string/regex-transform code; don't reach for it if the fragment touches
+  the DOM or browser globals.
+- `user.js/tests/live/` — opt-in, network-touching hardening tests (currently just FP entity-page
+  titles) that fetch a handful of real records from the public PeeringDB API and check the title
+  format against real field values/shapes, not just synthetic fixtures. **Not** part of the default
+  `node --test` run — skipped unless `PDB_LIVE_TESTS=1` is set — because PeeringDB's public API is
+  rate-limited to 20 requests/minute for anonymous callers and a network dependency doesn't belong
+  in the suite that runs on every edit. Run explicitly with
+  `PDB_LIVE_TESTS=1 node --test tests/live/*.test.js` (from `user.js/`); each file in there makes at
+  most a handful of spaced-out requests — re-check that budget before adding more calls, and never
+  loop it or wire it into CI on every push.
 - `node --check user.js/*.user.js` — syntax sanity check only; catches parse errors, not behavior.
 - `python user.js/scripts/build_userscripts.py --check` — confirms generated output matches source.
 - Manual smoke test: install the regenerated `.user.js` in Tampermonkey and exercise the affected
@@ -61,15 +259,24 @@ There is no automated test suite (no CI workflow, no package.json, no test runne
   `major.minor.bugfix` (see README's Metadata convention — if a script still carries an old
   `.YYYYMMDD` 4th segment, bump the bugfix number rather than dropping the date, or Tampermonkey will
   read it as a downgrade). Don't touch `@updateURL`/`@downloadURL`/`@supportURL`.
+  The build script enforces that the two `@version` values match, so forgetting one fails
+  `build_userscripts.py --check` (and therefore CI) rather than shipping a silent mismatch.
+- Don't reintroduce a hard-coded version constant. Each script reads its own version from
+  `GM_info.script.version`, which Tampermonkey binds to the `@version` header at install
+  time — so the header is the single source of truth and `SCRIPT_VERSION` is derived, never
+  maintained. CP stamps that value into its audit logs, so drift there is a correctness
+  bug, not a cosmetic one.
 - Don't rename the `pdbCpConsolidated.*` / `pdbFpConsolidated.*` storage-key namespaces or the shared
   `pdbAdmincom.debug` flag (CP + FP intentionally share that one key since both run on the
   `peeringdb.com` origin) — saved user config depends on these. General naming pattern:
   [docs/CONVENTIONS.md](docs/CONVENTIONS.md) "Naming Rules".
 - Adding a module to CP or FP? Give it a stable ID, gate it through the existing `disabledModules`
   pattern like its neighbors, and add the ID to README's Module ID catalog so it stays in sync.
-- A function tagged `@ai Preserve ...` or `@ai Keep behavior stable and prefer minimal, localized
-  edits.` encodes a contract something else depends on — read the annotation before refactoring past
-  it. Full convention: [docs/CONVENTIONS.md](docs/CONVENTIONS.md) "Documentation convention".
+- Default posture for every function in this repo — keep behavior stable and prefer minimal,
+  localized edits — applies globally, whether or not the function carries an `@ai` tag; `@ai` is
+  reserved for function-specific invariants. A function tagged `@ai ...` encodes a contract
+  something else depends on — read the annotation before refactoring past it. Full convention:
+  [docs/CONVENTIONS.md](docs/CONVENTIONS.md) "Documentation convention".
 - A script listed under README's "Legacy scripts" section is a deprecation stub — don't add real
   logic to it, point users at the consolidated replacement instead.
 
@@ -87,9 +294,12 @@ effectively deploys — Tampermonkey auto-updates by polling the `.meta.js` on t
   `feat`, `fix`, `chore`; observed scopes are `cp`, `fp`, `dp` and `deskpro` (used interchangeably for
   the DeskPro script — prefer `dp` for new commits to converge), `git`, `root`. Check
   `git log --oneline` for recent examples before picking a scope.
-- No enforced CI checks exist today. Before opening a PR: run the regenerate + `--check` commands
-  above, confirm `node --check` passes on any changed `.user.js`, and bump `@version` per the
-  metadata convention.
+- CI (`.github/workflows/verify.yml`) enforces the build-check, syntax-check, and `node --test` on
+  every push/PR — but run them locally first rather than relying on CI to catch it. Before opening a
+  PR: run the regenerate + `--check` commands above, confirm `node --check` passes on any changed
+  `.user.js`, run `node --test` from `user.js/` (add/update cases under `user.js/tests/` if you
+  touched code covered there, or want similar coverage for something newly-touched), and bump
+  `@version` per the metadata convention.
 
 ## Additional notes
 
